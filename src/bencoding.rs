@@ -60,155 +60,157 @@ impl Value {
 
     pub fn new(source: String) -> Self {
         let v: Vec<char> = source.chars().collect();
-        Self::from_char_vec(&v, 0).0
+        from_char_vec(&v, 0).0
     }
 
-    // source is the source data
-    // index is where to look from the source
-    // return Value, index of next char to read
-    fn from_char_vec(source: &Vec<char>, index: usize) -> (Self, usize) {
-        match source.get(index) {
-            Some('0'..='9') => Value::parse_str(source, index),
-            Some('i') => Value::parse_int(source, index),
-            Some('l') => Value::parse_list(source, index),
-            Some('d') => Value::parse_dict(source, index),
-            _ => (Value::new_error(ErrorElem::Unknown, index), index),
-        }
-    }
 
-    fn parse_str(source: &Vec<char>, index: usize) -> (Self, usize) {
-        let mut index = index;
-        let start_string_len_index = index;
-        let end_string_len_index;
-        loop {
-            match source.get(index) {
-                Some('0'..='9') => index += 1,
-                Some(':') => {
-                    end_string_len_index = index;
-                    index += 1;
-                    break;
-                }
-                _ => return (Value::new_error(ErrorElem::Str, index), index),
-            }
-        }
-        let string_len_str: String = source[start_string_len_index..end_string_len_index]
-            .into_iter()
-            .collect();
-        let string_len_opt = string_len_str.parse::<usize>();
-        let string_len;
-        match string_len_opt {
-            Ok(len) => string_len = len,
-            Err(_) => {
-                return (
-                    Value::new_error(ErrorElem::Str, start_string_len_index),
-                    index,
-                )
-            }
-        }
-        if string_len == 0 {
-            return (Value::Str("".to_string()), index);
-        }
-        let end_string_index = index + string_len;
-        if end_string_index > source.len() {
-            return (
-                Value::new_error(ErrorElem::Str, start_string_len_index),
-                index,
-            );
-        }
-        let string_value: String = source[index..end_string_index].into_iter().collect();
-        return (Value::Str(string_value), end_string_index);
-    }
-
-    fn parse_int(source: &Vec<char>, index: usize) -> (Self, usize) {
-        let mut index = index + 1;
-        let start_int_index = index;
-        let end_int_index;
-        loop {
-            match source.get(index) {
-                Some('0'..='9' | '-') => index += 1,
-                Some('e') => {
-                    end_int_index = index;
-                    index += 1;
-                    break;
-                }
-                _ => return (Value::new_error(ErrorElem::Int, index), index),
-            }
-        }
-        let int_str: String = source[start_int_index..end_int_index].into_iter().collect();
-
-        // check invalid
-        if int_str == "-0" || (int_str.starts_with("0") && int_str.len() > 1) {
-            return (
-                Value::new_error(ErrorElem::Int, start_int_index),
-                end_int_index,
-            );
-        }
-
-        // parse int and return
-        let int_opt = int_str.parse::<i64>();
-        match int_opt {
-            Ok(int_val) => return (Value::Int(int_val), end_int_index + 1),
-            Err(_) => return (Value::new_error(ErrorElem::Int, start_int_index), index),
-        }
-    }
-
-    fn parse_list(source: &Vec<char>, index: usize) -> (Self, usize) {
-        let mut l = Vec::new();
-        let mut index = index + 1;
-        loop {
-            match source.get(index) {
-                None => return (Value::new_error(ErrorElem::List, index), index),
-                Some('e') => {
-                    index += 1;
-                    break;
-                }
-                _ => {
-                    let (v, new_index) = Self::from_char_vec(source, index);
-                    if let Value::Error(_) = v {
-                        return (v, index);
-                    } else {
-                        index = new_index;
-                        l.push(v);
-                    }
-                }
-            }
-        }
-        (Value::List(l), index)
-    }
-
-    fn parse_dict(source: &Vec<char>, index: usize) -> (Self, usize) {
-        let mut d = HashMap::new();
-        let mut index = index + 1;
-        loop {
-            match source.get(index) {
-                None => return (Value::new_error(ErrorElem::Dict, index), index),
-                Some('e') => {
-                    index += 1;
-                    break;
-                }
-                _ => {
-                    let (v, new_index) = Self::from_char_vec(source, index);
-                    if let Value::Str(k) = v {
-                        index = new_index;
-                        let (v, new_index) = Self::from_char_vec(source, index);
-                        if let Value::Error(_) = v {
-                            return (v, index);
-                        } else {
-                            index = new_index;
-                            d.insert(k, v);
-                        }
-                    } else {
-                        return (Value::new_error(ErrorElem::Dict, index), index);
-                    }
-                }
-            }
-        }
-        (Value::Dict(d), index)
-    }
 }
 
 fn encode_string(s: &String) -> String {
     format!("{}:{}", s.len(), s)
+}
+
+// source is the source data
+// index is where to look from the source
+// return Value, index of next char to read
+fn from_char_vec(source: &Vec<char>, index: usize) -> (Value, usize) {
+    match source.get(index) {
+        Some('0'..='9') => parse_str(source, index),
+        Some('i') => parse_int(source, index),
+        Some('l') => parse_list(source, index),
+        Some('d') => parse_dict(source, index),
+        _ => (Value::new_error(ErrorElem::Unknown, index), index),
+    }
+}
+
+fn parse_str(source: &Vec<char>, index: usize) -> (Value, usize) {
+    let mut index = index;
+    let start_string_len_index = index;
+    let end_string_len_index;
+    loop {
+        match source.get(index) {
+            Some('0'..='9') => index += 1,
+            Some(':') => {
+                end_string_len_index = index;
+                index += 1;
+                break;
+            }
+            _ => return (Value::new_error(ErrorElem::Str, index), index),
+        }
+    }
+    let string_len_str: String = source[start_string_len_index..end_string_len_index]
+        .into_iter()
+        .collect();
+    let string_len_opt = string_len_str.parse::<usize>();
+    let string_len;
+    match string_len_opt {
+        Ok(len) => string_len = len,
+        Err(_) => {
+            return (
+                Value::new_error(ErrorElem::Str, start_string_len_index),
+                index,
+            )
+        }
+    }
+    if string_len == 0 {
+        return (Value::Str("".to_string()), index);
+    }
+    let end_string_index = index + string_len;
+    if end_string_index > source.len() {
+        return (
+            Value::new_error(ErrorElem::Str, start_string_len_index),
+            index,
+        );
+    }
+    let string_value: String = source[index..end_string_index].into_iter().collect();
+    return (Value::Str(string_value), end_string_index);
+}
+
+fn parse_int(source: &Vec<char>, index: usize) -> (Value, usize) {
+    let mut index = index + 1;
+    let start_int_index = index;
+    let end_int_index;
+    loop {
+        match source.get(index) {
+            Some('0'..='9' | '-') => index += 1,
+            Some('e') => {
+                end_int_index = index;
+                index += 1;
+                break;
+            }
+            _ => return (Value::new_error(ErrorElem::Int, index), index),
+        }
+    }
+    let int_str: String = source[start_int_index..end_int_index].into_iter().collect();
+
+    // check invalid
+    if int_str == "-0" || (int_str.starts_with("0") && int_str.len() > 1) {
+        return (
+            Value::new_error(ErrorElem::Int, start_int_index),
+            end_int_index,
+        );
+    }
+
+    // parse int and return
+    let int_opt = int_str.parse::<i64>();
+    match int_opt {
+        Ok(int_val) => return (Value::Int(int_val), end_int_index + 1),
+        Err(_) => return (Value::new_error(ErrorElem::Int, start_int_index), index),
+    }
+}
+
+fn parse_list(source: &Vec<char>, index: usize) -> (Value, usize) {
+    let mut l = Vec::new();
+    let mut index = index + 1;
+    loop {
+        match source.get(index) {
+            None => return (Value::new_error(ErrorElem::List, index), index),
+            Some('e') => {
+                index += 1;
+                break;
+            }
+            _ => {
+                let (v, new_index) = from_char_vec(source, index);
+                if let Value::Error(_) = v {
+                    return (v, index);
+                } else {
+                    index = new_index;
+                    l.push(v);
+                }
+            }
+        }
+    }
+    (Value::List(l), index)
+}
+
+fn parse_dict(source: &Vec<char>, index: usize) -> (Value, usize) {
+    let mut d = HashMap::new();
+    let mut index = index + 1;
+    loop {
+        match source.get(index) {
+            None => return (Value::new_error(ErrorElem::Dict, index), index),
+            Some('e') => {
+                index += 1;
+                break;
+            }
+            _ => {
+                let (v, new_index) = from_char_vec(source, index);
+                if let Value::Str(k) = v {
+                    index = new_index;
+                    let (v, new_index) = from_char_vec(source, index);
+                    if let Value::Error(_) = v {
+                        return (v, index);
+                    } else {
+                        index = new_index;
+                        d.insert(k, v);
+                    }
+                } else {
+                    return (Value::new_error(ErrorElem::Dict, index), index);
+                }
+            }
+        }
+    }
+    (Value::Dict(d), index)
 }
 
 #[cfg(test)]
