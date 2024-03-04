@@ -1,5 +1,5 @@
-use crate::bencoding::Hash;
 use crate::bencoding::Value;
+use sha1::{Digest, Sha1};
 use std::str;
 use Result;
 
@@ -8,7 +8,7 @@ pub struct Metainfo {
     announce: String,
     piece_length: i64,
     pieces: Vec<u8>,
-    info_hash: Hash,
+    info_hash: [u8; 20],
     file: MetainfoFile,
 }
 
@@ -37,10 +37,10 @@ pub struct MultifileFile {
 }
 
 impl Metainfo {
-    pub fn new(v: &Value) -> Result<Self, &'static str> {
+    pub fn new(v: &Value, source: &Vec<u8>) -> Result<Self, &'static str> {
         let torrent_map;
         match v {
-            Value::Dict(m, _) => torrent_map = m,
+            Value::Dict(m, _, _) => torrent_map = m,
             _ => return Err("The .torrent file is invalid: it does not contain a dict"),
         }
 
@@ -55,7 +55,10 @@ impl Metainfo {
 
         // info dict
         let (info_dict, info_hash) = match torrent_map.get(&b"info".to_vec()) {
-            Some(Value::Dict(a, h)) => (a, h),
+            Some(Value::Dict(a, s, e)) => (
+                a,
+                Sha1::digest(&source[*s..*e]).as_slice().try_into().unwrap(),
+            ),
             _ => return Err("The .torrent file does not contain a valid \"info\""),
         };
 
@@ -95,7 +98,7 @@ impl Metainfo {
             for f in files_list {
                 let entry =
                     match f {
-                        Value::Dict(a, _) => a,
+                        Value::Dict(a, _, _) => a,
                         _ => return Err(
                             "The .torrent file \"info.files\" kv has an entry that is not a dict",
                         ),
@@ -146,7 +149,7 @@ impl Metainfo {
             announce: announce_string,
             piece_length: *piece_length_i64_value,
             pieces: pieces_vec,
-            info_hash: *info_hash,
+            info_hash: info_hash,
             file: metainfo_file,
         })
     }

@@ -1,9 +1,7 @@
-use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::str;
 
 type IndexOfError = usize;
-pub type Hash = [u8; 20];
 
 #[derive(PartialEq, Debug)]
 pub enum ErrorElem {
@@ -26,7 +24,7 @@ pub enum Value {
     Str(Vec<u8>),
     Int(i64),
     List(Vec<Value>),
-    Dict(HashMap<Vec<u8>, Value>, Hash),
+    Dict(HashMap<Vec<u8>, Value>, usize, usize), //hash, startIndex, endIndex (index of next char not comprising the dict, similar to range)
 }
 
 impl Value {
@@ -40,7 +38,7 @@ impl Value {
             Value::Str(v) => encode_str(v),
             Value::Int(v) => encode_int(v),
             Value::List(v) => encode_list(v),
-            Value::Dict(v, _) => encode_dict(v),
+            Value::Dict(v, _, _) => encode_dict(v),
         }
     }
 
@@ -226,16 +224,12 @@ fn parse_dict(source: &Vec<u8>, index: usize) -> (Value, usize) {
             }
         }
     }
-    let h: Hash = Sha1::digest(&source[start..index])
-        .as_slice()
-        .try_into()
-        .unwrap();
-    (Value::Dict(d, h), index)
+
+    (Value::Dict(d, start, index), index)
 }
 
 #[cfg(test)]
 mod tests {
-    use sha1::{Digest, Sha1};
     use std::collections::HashMap;
 
     use super::Value;
@@ -245,7 +239,7 @@ mod tests {
     #[test]
     fn encode_value() {
         let val_l = Value::List(vec![
-            Value::Dict(HashMap::from([(b"k1".to_vec(), Value::Int(1))]), [0; 20]),
+            Value::Dict(HashMap::from([(b"k1".to_vec(), Value::Int(1))]), 0, 0),
             Value::Int(2),
             Value::Int(3),
             Value::Str(b"bye".to_vec()),
@@ -309,10 +303,7 @@ mod tests {
     #[test]
     fn decode_list3() {
         let val_l = Value::List(vec![
-            Value::Dict(
-                HashMap::from([(b"k1".to_vec(), Value::Int(1))]),
-                Sha1::digest(b"d2:k1i1ee").as_slice().try_into().unwrap(),
-            ),
+            Value::Dict(HashMap::from([(b"k1".to_vec(), Value::Int(1))]), 1, 10),
             Value::Int(2),
             Value::Int(3),
             Value::Str(b"bye".to_vec()),
@@ -333,10 +324,8 @@ mod tests {
                 (b"k1".to_vec(), Value::Str(b"e2".to_vec())),
                 (b"k3".to_vec(), Value::Str(b"e3".to_vec())),
             ]),
-            Sha1::digest(b"d2:k12:e22:k32:e3e")
-                .as_slice()
-                .try_into()
-                .unwrap(),
+            0,
+            18,
         );
         assert_eq!(Value::new(&b"d2:k12:e22:k32:e3e".to_vec()), val_l);
     }
@@ -355,10 +344,8 @@ mod tests {
                 ),
                 (b"k2".to_vec(), Value::Str(b"e3".to_vec())),
             ]),
-            Sha1::digest(b"d2:k1li0e5:hello0:e2:k22:e3e")
-                .as_slice()
-                .try_into()
-                .unwrap(),
+            0,
+            28,
         );
         assert_eq!(Value::new(&b"d2:k1li0e5:hello0:e2:k22:e3e".to_vec()), val_l);
     }
