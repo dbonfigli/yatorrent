@@ -44,7 +44,7 @@ impl Value {
         }
     }
 
-    pub fn new(source: Vec<u8>) -> Self {
+    pub fn new(source: &Vec<u8>) -> Self {
         from_char_vec(&source, 0).0
     }
 }
@@ -255,19 +255,19 @@ mod tests {
 
     #[test]
     fn decode_int() {
-        assert_eq!(Value::new(b"i2e".to_vec()), Value::Int(2));
-        assert_eq!(Value::new(b"i23e".to_vec()), Value::Int(23));
-        assert_eq!(Value::new(b"i-2312e".to_vec()), Value::Int(-2312));
-        assert_eq!(Value::new(b"i0e".to_vec()), Value::Int(0));
+        assert_eq!(Value::new(&b"i2e".to_vec()), Value::Int(2));
+        assert_eq!(Value::new(&b"i23e".to_vec()), Value::Int(23));
+        assert_eq!(Value::new(&b"i-2312e".to_vec()), Value::Int(-2312));
+        assert_eq!(Value::new(&b"i0e".to_vec()), Value::Int(0));
         assert_eq!(
-            Value::new(b"i-0e".to_vec()),
+            Value::new(&b"i-0e".to_vec()),
             Value::Error(ParseError {
                 elem: ErrorElem::Int,
                 index: 1
             })
         );
         assert_eq!(
-            Value::new(b"i01e".to_vec()),
+            Value::new(&b"i01e".to_vec()),
             Value::Error(ParseError {
                 elem: ErrorElem::Int,
                 index: 1
@@ -278,12 +278,12 @@ mod tests {
     #[test]
     fn decode_str() {
         assert_eq!(
-            Value::new(b"5:hello".to_vec()),
+            Value::new(&b"5:hello".to_vec()),
             Value::Str(b"hello".to_vec())
         );
-        assert_eq!(Value::new(b"0:".to_vec()), Value::Str(b"".to_vec()));
+        assert_eq!(Value::new(&b"0:".to_vec()), Value::Str(b"".to_vec()));
         assert_eq!(
-            Value::new(b"6:hello".to_vec()),
+            Value::new(&b"6:hello".to_vec()),
             Value::Error(ParseError {
                 elem: ErrorElem::Str,
                 index: 0
@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn decode_list() {
         let val_l = Value::List(vec![Value::Str(b"bye".to_vec())]);
-        assert_eq!(Value::new(b"l3:byee".to_vec()), val_l);
+        assert_eq!(Value::new(&b"l3:byee".to_vec()), val_l);
     }
 
     #[test]
@@ -303,7 +303,7 @@ mod tests {
             Value::Str(b"bye".to_vec()),
             Value::Str(b"hello".to_vec()),
         ]);
-        assert_eq!(Value::new(b"l3:bye5:helloe".to_vec()), val_l);
+        assert_eq!(Value::new(&b"l3:bye5:helloe".to_vec()), val_l);
     }
 
     #[test]
@@ -317,13 +317,13 @@ mod tests {
             Value::Int(3),
             Value::Str(b"bye".to_vec()),
         ]);
-        assert_eq!(Value::new(b"ld2:k1i1eei2ei3e3:byee".to_vec()), val_l);
+        assert_eq!(Value::new(&b"ld2:k1i1eei2ei3e3:byee".to_vec()), val_l);
     }
 
     #[test]
     fn decode_list4() {
         let val_l = Value::List(vec![Value::Int(2), Value::Int(3), Value::Int(-3)]);
-        assert_eq!(Value::new(b"li2ei3ei-3ee".to_vec()), val_l);
+        assert_eq!(Value::new(&b"li2ei3ei-3ee".to_vec()), val_l);
     }
 
     #[test]
@@ -333,9 +333,12 @@ mod tests {
                 (b"k1".to_vec(), Value::Str(b"e2".to_vec())),
                 (b"k3".to_vec(), Value::Str(b"e3".to_vec())),
             ]),
-            Sha1::digest(b"d2:k12:e22:k32:e3e").as_slice().try_into().unwrap(),
+            Sha1::digest(b"d2:k12:e22:k32:e3e")
+                .as_slice()
+                .try_into()
+                .unwrap(),
         );
-        assert_eq!(Value::new(b"d2:k12:e22:k32:e3e".to_vec()), val_l);
+        assert_eq!(Value::new(&b"d2:k12:e22:k32:e3e".to_vec()), val_l);
     }
 
     #[test]
@@ -352,8 +355,11 @@ mod tests {
                 ),
                 (b"k2".to_vec(), Value::Str(b"e3".to_vec())),
             ]),
-            Sha1::digest(b"d2:k1li0e5:hello0:e2:k22:e3e").as_slice().try_into().unwrap(),
+            Sha1::digest(b"d2:k1li0e5:hello0:e2:k22:e3e")
+                .as_slice()
+                .try_into()
+                .unwrap(),
         );
-        assert_eq!(Value::new(b"d2:k1li0e5:hello0:e2:k22:e3e".to_vec()), val_l);
+        assert_eq!(Value::new(&b"d2:k1li0e5:hello0:e2:k22:e3e".to_vec()), val_l);
     }
 }

@@ -1,5 +1,5 @@
-use crate::bencoding::Value;
 use crate::bencoding::Hash;
+use crate::bencoding::Value;
 use std::str;
 use Result;
 
@@ -37,7 +37,7 @@ pub struct MultifileFile {
 }
 
 impl Metainfo {
-    pub fn new(v: Value) -> Result<Self, &'static str> {
+    pub fn new(v: &Value) -> Result<Self, &'static str> {
         let torrent_map;
         match v {
             Value::Dict(m, _) => torrent_map = m,
