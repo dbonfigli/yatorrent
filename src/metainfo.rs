@@ -5,17 +5,17 @@ use Result;
 
 #[derive(PartialEq, Debug)]
 pub struct Metainfo {
-    announce: String,
-    piece_length: i64,
-    pieces: Vec<u8>,
-    info_hash: [u8; 20],
-    file: MetainfoFile,
+    pub announce: String,
+    pub piece_length: i64,
+    pub pieces: Vec<u8>,
+    pub info_hash: [u8; 20],
+    pub file: MetainfoFile,
 }
 
 #[derive(PartialEq, Debug)]
 pub enum MetainfoFile {
-    singleFile(MetainfoSingleFile),
-    multiFile(MetainfoMultiFile),
+    SingleFile(MetainfoSingleFile),
+    MultiFile(MetainfoMultiFile),
 }
 
 #[derive(PartialEq, Debug)]
@@ -89,7 +89,7 @@ impl Metainfo {
         // file / files
         let metainfo_file;
         if let Some(Value::Int(a)) = info_dict.get(&b"length".to_vec()) {
-            metainfo_file = MetainfoFile::singleFile(MetainfoSingleFile {
+            metainfo_file = MetainfoFile::SingleFile(MetainfoSingleFile {
                 name: name_string,
                 length: *a,
             });
@@ -137,7 +137,7 @@ impl Metainfo {
                     path: entry_path_list,
                 })
             }
-            metainfo_file = MetainfoFile::multiFile(MetainfoMultiFile {
+            metainfo_file = MetainfoFile::MultiFile(MetainfoMultiFile {
                 name: name_string,
                 files: files,
             })
