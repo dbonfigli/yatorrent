@@ -6,9 +6,9 @@ use Result;
 #[derive(PartialEq, Debug)]
 pub struct Metainfo {
     pub announce: String,
-    pub piece_length: i64,
-    pub pieces: Vec<u8>,
-    pub info_hash: [u8; 20],
+    pub piece_length: i64,   // number of bytes in each piece (integer)
+    pub pieces: Vec<u8>, // string consisting of the concatenation of all 20-byte SHA1 hash values, one per piece (byte string, i.e. not urlencoded)
+    pub info_hash: [u8; 20], // urlencoded 20-byte SHA1 hash of the value of the info key from the Metainfo file. Note that the value will be a bencoded dictionary, given the definition of the info key above.
     pub file: MetainfoFile,
 }
 
@@ -20,29 +20,28 @@ pub enum MetainfoFile {
 
 #[derive(PartialEq, Debug)]
 pub struct MetainfoSingleFile {
-    name: String,
-    length: i64,
+    name: String, // the filename. This is purely advisory. (string)
+    length: i64,  // length of the file in bytes. (integer)
 }
 
 #[derive(PartialEq, Debug)]
 pub struct MetainfoMultiFile {
-    name: String,
-    files: Vec<MultifileFile>,
+    name: String, // the name of the directory in which to store all the files. This is purely advisory. (string)
+    files: Vec<MultifileFile>, // a list of dictionaries, one for each file.
 }
 
 #[derive(PartialEq, Debug)]
 pub struct MultifileFile {
-    length: i64,
-    path: Vec<String>,
+    length: i64,       // length of the file in bytes. (integer)
+    path: Vec<String>, // a list containing one or more string elements that together represent the path and filename. Each element in the list corresponds to either a directory name or (in the case of the final element) the filename. For example, a the file "dir1/dir2/file.ext" would consist of three string elements: "dir1", "dir2", and "file.ext". This is encoded as a bencoded list of strings such as l4:dir14:dir28:file.exte
 }
 
 impl Metainfo {
     pub fn new(v: &Value, source: &Vec<u8>) -> Result<Self, &'static str> {
-        let torrent_map;
-        match v {
-            Value::Dict(m, _, _) => torrent_map = m,
+        let torrent_map = match v {
+            Value::Dict(m, _, _) =>  m,
             _ => return Err("The .torrent file is invalid: it does not contain a dict"),
-        }
+        };
 
         // announce
         let announce_string = match torrent_map.get(&b"announce".to_vec()) {
