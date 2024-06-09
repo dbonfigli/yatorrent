@@ -1,8 +1,6 @@
 use crate::bencoding::Value;
 use rand::Rng;
-use std::iter;
-use std::str;
-use std::{error::Error, io::Read};
+use std::{error::Error, io::Read, iter, str};
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct Peer {
@@ -35,14 +33,15 @@ pub enum Event {
     Completed,
 }
 
-impl Event {
-    fn as_str(&self) -> &'static str {
+impl ToString for Event {
+    fn to_string(&self) -> String {
         match self {
             Event::None => "",
             Event::Started => "started",
             Event::Stopped => "stoppped",
             Event::Completed => "completed",
         }
+        .to_string()
     }
 }
 
@@ -94,7 +93,7 @@ impl TrackerClient {
                 ("downloaded", downloaded.to_string()),
                 ("left", left.to_string()),
                 ("compact", COMPACT.to_string()),
-                ("event", event.as_str().to_string()),
+                ("event", event.to_string()),
             ],
         )?;
 
