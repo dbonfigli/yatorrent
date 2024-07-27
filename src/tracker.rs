@@ -72,7 +72,7 @@ impl TrackerClient {
         }
     }
 
-    async fn request(
+    pub async fn request(
         &mut self,
         info_hash: [u8; 20],
         uploaded: i64,
@@ -80,13 +80,9 @@ impl TrackerClient {
         left: i64,
         event: Event,
     ) -> Result<Response, Box<dyn Error>> {
-        let url = reqwest::Url::parse_with_params(
+        let mut url = reqwest::Url::parse_with_params(
             self.tracker_url.as_str(),
             &[
-                (
-                    "info_hash",
-                    serde_urlencoded::to_string(info_hash).expect("cannot url encode info hash"),
-                ),
                 ("peer_id", self.peer_id.clone()),
                 ("port", self.listenting_port.to_string()),
                 ("uploaded", uploaded.to_string()),
@@ -96,6 +92,15 @@ impl TrackerClient {
                 ("event", event.to_string()),
             ],
         )?;
+
+        // we need this so to avoid reqwest to urlencode again info_hash - binary array cannot be natively url encoded by it
+        if let Some(query) = url.query() {
+            url.set_query(Some(
+                &("info_hash=".to_string() + &url_encode_info_hash(info_hash) + "&" + query),
+            ))
+        }
+
+        println!("requesting url: {}", url); //todo: change this to debug log
 
         let body: Vec<u8> = match reqwest::get(url)
             .await?
@@ -254,6 +259,14 @@ fn get_peers_wiht_binary_model(peers_bytes: &Vec<u8>) -> Result<Vec<Peer>, Box<d
         });
     }
     Ok(peers_list)
+}
+
+fn url_encode_info_hash(binary_array: [u8; 20]) -> String {
+    let mut url_encoded = "".to_string();
+    for v in binary_array {
+        url_encoded = url_encoded + &format!("%{:02X}", v)
+    }
+    url_encoded
 }
 
 #[cfg(test)]
