@@ -20,26 +20,26 @@ pub enum MetainfoFile {
 
 #[derive(PartialEq, Debug)]
 pub struct MetainfoSingleFile {
-    name: String, // the filename. This is purely advisory. (string)
-    length: i64,  // length of the file in bytes. (integer)
+    pub name: String, // the filename. This is purely advisory. (string)
+    pub length: i64,  // length of the file in bytes. (integer)
 }
 
 #[derive(PartialEq, Debug)]
 pub struct MetainfoMultiFile {
-    name: String, // the name of the directory in which to store all the files. This is purely advisory. (string)
-    files: Vec<MultifileFile>, // a list of dictionaries, one for each file.
+    pub name: String, // the name of the directory in which to store all the files. This is purely advisory. (string)
+    pub files: Vec<MultifileFile>, // a list of dictionaries, one for each file.
 }
 
 #[derive(PartialEq, Debug)]
 pub struct MultifileFile {
-    length: i64,       // length of the file in bytes. (integer)
-    path: Vec<String>, // a list containing one or more string elements that together represent the path and filename. Each element in the list corresponds to either a directory name or (in the case of the final element) the filename. For example, a the file "dir1/dir2/file.ext" would consist of three string elements: "dir1", "dir2", and "file.ext". This is encoded as a bencoded list of strings such as l4:dir14:dir28:file.exte
+    pub length: i64,       // length of the file in bytes. (integer)
+    pub path: Vec<String>, // a list containing one or more string elements that together represent the path and filename. Each element in the list corresponds to either a directory name or (in the case of the final element) the filename. For example, a the file "dir1/dir2/file.ext" would consist of three string elements: "dir1", "dir2", and "file.ext". This is encoded as a bencoded list of strings such as l4:dir14:dir28:file.exte
 }
 
 impl Metainfo {
     pub fn new(v: &Value, source: &Vec<u8>) -> Result<Self, &'static str> {
         let torrent_map = match v {
-            Value::Dict(m, _, _) =>  m,
+            Value::Dict(m, _, _) => m,
             _ => return Err("The .torrent file is invalid: it does not contain a dict"),
         };
 
@@ -151,5 +151,20 @@ impl Metainfo {
             info_hash: info_hash,
             file: metainfo_file,
         })
+    }
+
+    pub fn get_files(&self) -> Vec<(String, i64)> {
+        match &self.file {
+            MetainfoFile::SingleFile(m) => {
+                vec![(m.name.clone(), m.length)]
+            }
+            MetainfoFile::MultiFile(m) => {
+                let mut files = Vec::new();
+                for file in &m.files {
+                    files.push((file.path.join("/"), file.length))
+                }
+                files
+            }
+        }
     }
 }

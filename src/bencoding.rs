@@ -14,8 +14,8 @@ pub enum ErrorElem {
 
 #[derive(PartialEq, Debug)]
 pub struct ParseError {
-    elem: ErrorElem,
-    index: IndexOfError,
+    pub elem: ErrorElem,
+    pub index: IndexOfError,
 }
 
 #[derive(PartialEq, Debug)]
