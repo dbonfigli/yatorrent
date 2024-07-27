@@ -55,11 +55,11 @@ pub struct TrackerClient {
 }
 
 fn generate_peer_id() -> String {
-    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const CHARSET: &[u8] = b"0123456789";
     let mut rng = rand::thread_rng();
     let one_char = || CHARSET[rng.gen_range(0..CHARSET.len())] as char;
-    let random_string: String = iter::repeat_with(one_char).take(17).collect();
-    format!("YT-{random_string}")
+    let random_string: String = iter::repeat_with(one_char).take(12).collect();
+    format!("-YT0001-{random_string}")
 }
 
 impl TrackerClient {
