@@ -100,7 +100,7 @@ impl TrackerClient {
             ))
         }
 
-        println!("requesting url: {}", url); //todo: change this to debug log
+        log::debug!("requesting url: {}", url);
 
         let body: Vec<u8> = match reqwest::get(url)
             .await?
