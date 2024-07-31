@@ -28,19 +28,18 @@ pub enum Response {
 
 impl fmt::Display for Response {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "tracker response:\n")?;
         match self {
             Response::Ok(ok_response) => {
                 if let Some(warning_message) = &ok_response.warning_message {
-                    write!(f, "  WARNING {}", warning_message)?;
+                    write!(f, "WARNING {}", warning_message)?;
                 }
                 let peers = ok_response
                     .peers
                     .iter()
-                    .map(|p| format!("    - {}:{} (id: {:?})", p.ip, p.port, p.peer_id))
+                    .map(|p| format!("  - {}:{} (id: {:?})", p.ip, p.port, p.peer_id))
                     .collect::<Vec<String>>()
                     .join("\n");
-                write!(f, "  interval: {}\n  min_interval: {:?}\n  tracker_id: {:?}\n  n. peers completed: {}\n  n. peers incomplete: {}\n  peers:\n{}", ok_response.interval, ok_response.min_interval, ok_response.tracker_id, ok_response.complete, ok_response.incomplete, peers)
+                write!(f, "interval: {}\nmin_interval: {:?}\ntracker_id: {:?}\nn. peers completed: {}\nn. peers incomplete: {}\npeers:\n{}", ok_response.interval, ok_response.min_interval, ok_response.tracker_id, ok_response.complete, ok_response.incomplete, peers)
             }
             Response::Failure(failure_message) => {
                 write!(f, "FAILURE: {}", failure_message)

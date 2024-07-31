@@ -55,9 +55,10 @@ impl fmt::Display for Metainfo {
             .join("\n");
         write!(
             f,
-            "metainfo:\n  announce: {}\n  piece_lenght: {}\n  info_hash: {}\n  files:\n{}",
+            "announce: {}\npiece_lenght: {}\npieces: {}\ninfo_hash: {}\nfiles:\n{}",
             self.announce,
             self.piece_length,
+            self.pieces.len(),
             pretty_info_hash(self.info_hash),
             files
         )
