@@ -243,14 +243,14 @@ fn get_peers_wiht_binary_model(peers_bytes: &Vec<u8>) -> Result<Vec<Peer>, Box<d
     for i in (0..=(peers_bytes.len() - 1)).step_by(6) {
         let peer_ip_bytes = &peers_bytes[i..i + 4];
         let ip = [
-            (peer_ip_bytes[3]).to_string(),
-            (peer_ip_bytes[2]).to_string(),
+            (peer_ip_bytes[0]).to_string(),
             (peer_ip_bytes[1]).to_string(),
-            peer_ip_bytes[0].to_string(),
+            (peer_ip_bytes[2]).to_string(),
+            peer_ip_bytes[3].to_string(),
         ]
         .join(".");
         let peer_port_bytes = &peers_bytes[i + 4..i + 6];
-        let port = peer_port_bytes[0] as u32 + peer_port_bytes[1] as u32 * 256;
+        let port = peer_port_bytes[0] as u32 * 256 + peer_port_bytes[1] as u32;
 
         peers_list.push(Peer {
             peer_id: Option::None,
