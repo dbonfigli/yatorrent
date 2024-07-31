@@ -46,20 +46,12 @@ pub fn pretty_info_hash(info_hash: [u8; 20]) -> String {
 
 impl fmt::Display for Metainfo {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let prety_info_hash = self
-            .info_hash
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect::<Vec<_>>()
-            .join("");
-
         let files = self
             .get_files()
             .iter()
             .map(|f| f.0.clone())
             .collect::<Vec<String>>()
             .join(", ");
-
         write!(
             f,
             "metainfo:\n  announce: {}\n  piece_lenght: {}\n  info_hash: {}\n  files: {}",
