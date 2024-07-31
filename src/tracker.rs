@@ -1,12 +1,12 @@
 use crate::bencoding::Value;
 use rand::Rng;
-use std::{error::Error, io::Read, iter, str};
+use std::{error::Error, fmt, io::Read, iter, str};
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct Peer {
-    peer_id: Option<String>, // peer's self-selected ID, as described above for the tracker request (string)
-    ip: String, // peer's IP address either IPv6 (hexed) or IPv4 (dotted quad) or DNS name (string)
-    port: u32,  // peer's port number (integer)
+    pub peer_id: Option<String>, // peer's self-selected ID, as described above for the tracker request (string)
+    pub ip: String, // peer's IP address either IPv6 (hexed) or IPv4 (dotted quad) or DNS name (string)
+    pub port: u32,  // peer's port number (integer)
 }
 
 #[derive(PartialEq, Debug)]
@@ -24,6 +24,29 @@ pub struct OkResponse {
 pub enum Response {
     Ok(OkResponse),
     Failure(String), // failure_reason; if present, then no other keys may be present. The value is a human-readable error message as to why the request failed (string).
+}
+
+impl fmt::Display for Response {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "tracker response:\n")?;
+        match self {
+            Response::Ok(ok_response) => {
+                if let Some(warning_message) = &ok_response.warning_message {
+                    write!(f, "  WARNING {}", warning_message)?;
+                }
+                let peers = ok_response
+                    .peers
+                    .iter()
+                    .map(|p| format!("    - {}:{} (id: {:?})", p.ip, p.port, p.peer_id))
+                    .collect::<Vec<String>>()
+                    .join("\n");
+                write!(f, "  interval: {}\n  min_interval: {:?}\n  tracker_id: {:?}\n  n. peers completed: {}\n  n. peers incomplete: {}\n  peers:\n{}", ok_response.interval, ok_response.min_interval, ok_response.tracker_id, ok_response.complete, ok_response.incomplete, peers)
+            }
+            Response::Failure(failure_message) => {
+                write!(f, "FAILURE: {}", failure_message)
+            }
+        }
+    }
 }
 
 pub enum Event {
@@ -48,7 +71,7 @@ impl ToString for Event {
 const COMPACT: i32 = 1;
 
 pub struct TrackerClient {
-    peer_id: String,
+    pub peer_id: String,
     tracker_id: Option<String>,
     listenting_port: i32,
     tracker_url: String,
