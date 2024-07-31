@@ -2,6 +2,7 @@ use std::error::Error;
 
 use parse_display::Display;
 
+#[derive(Debug)]
 pub enum Message {
     KeepAlive,
     Choke,

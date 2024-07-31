@@ -32,7 +32,7 @@ impl Protocol for TcpStream {
                 if let Err(e) = write.write_all(&buf).await {
                     return Err(e.into());
                 } else {
-                    log::debug!("peer {}: handshake sent", &peer_addr);
+                    log::debug!("peer {}: full handshake sent", &peer_addr);
                     return Ok(());
                 }
             },
@@ -65,7 +65,7 @@ impl Protocol for TcpStream {
                 }
 
                 log::debug!(
-                    "peer {}: first part of handshake received by, receiving handshake peer id",
+                    "peer {}: first part of handshake received, receiving handshake peer id",
                     &peer_addr
                 );
                 let mut peer_id: [u8; 20] = [0; 20];
@@ -223,15 +223,15 @@ impl Protocol for TcpStream {
         }
         match type_message_buf[0] {
             // choke
-            b'0' => return Ok(Message::Choke),
+            0 => return Ok(Message::Choke),
             // unchoke
-            b'1' => return Ok(Message::Unchoke),
+            1 => return Ok(Message::Unchoke),
             // interested
-            b'2' => return Ok(Message::Interested),
+            2 => return Ok(Message::Interested),
             // not interested
-            b'3' => return Ok(Message::NotInterested),
+            3 => return Ok(Message::NotInterested),
             // have
-            b'4' => {
+            4 => {
                 let mut buf: [u8; 4] = [0; 4];
                 if let Err(e) = self.read_exact(&mut buf).await {
                     return Err(e.into());
@@ -239,7 +239,7 @@ impl Protocol for TcpStream {
                 return Ok(Message::Have(u32::from_be_bytes(buf)));
             }
             // bitfield
-            b'5' => {
+            5 => {
                 let bitfield_byte_size: usize = (size_message - 1).try_into()?;
                 let mut buf = vec![0; bitfield_byte_size];
                 if let Err(e) = self.read_exact(&mut buf).await {
@@ -249,7 +249,7 @@ impl Protocol for TcpStream {
                 return Ok(Message::Bitfield(bitfield));
             }
             // request
-            b'6' => {
+            6 => {
                 let mut index_buf: [u8; 4] = [0; 4];
                 if let Err(e) = self.read_exact(&mut index_buf).await {
                     return Err(e.into());
@@ -269,7 +269,7 @@ impl Protocol for TcpStream {
                 ));
             }
             // piece
-            b'7' => {
+            7 => {
                 let mut index_buf: [u8; 4] = [0; 4];
                 if let Err(e) = self.read_exact(&mut index_buf).await {
                     return Err(e.into());
@@ -290,7 +290,7 @@ impl Protocol for TcpStream {
                 ));
             }
             // cancel
-            b'8' => {
+            8 => {
                 let mut index_buf: [u8; 4] = [0; 4];
                 if let Err(e) = self.read_exact(&mut index_buf).await {
                     return Err(e.into());
@@ -310,14 +310,19 @@ impl Protocol for TcpStream {
                 ));
             }
             // port
-            b'9' => {
+            9 => {
                 let mut buf: [u8; 2] = [0; 2];
                 if let Err(e) = self.read_exact(&mut buf).await {
                     return Err(e.into());
                 }
                 return Ok(Message::Port(u16::from_be_bytes(buf)));
             }
-            _ => return Err(ProtocolError::new("could not parse message type".to_string()).into()),
+            unknown_message_id => {
+                return Err(ProtocolError::new(
+                    format!("could not parse message type id: {}", unknown_message_id).to_string(),
+                )
+                .into())
+            }
         }
     }
 }
