@@ -1,5 +1,6 @@
 use crate::bencoding::Value;
 use sha1::{Digest, Sha1};
+use size::Size;
 use std::{fmt, str};
 use Result;
 
@@ -49,12 +50,12 @@ impl fmt::Display for Metainfo {
         let files = self
             .get_files()
             .iter()
-            .map(|f| f.0.clone())
+            .map(|f| format!("    - {} ({})", f.0, Size::from_bytes(f.1)))
             .collect::<Vec<String>>()
-            .join(", ");
+            .join("\n");
         write!(
             f,
-            "metainfo:\n  announce: {}\n  piece_lenght: {}\n  info_hash: {}\n  files: {}",
+            "metainfo:\n  announce: {}\n  piece_lenght: {}\n  info_hash: {}\n  files:\n{}",
             self.announce,
             self.piece_length,
             pretty_info_hash(self.info_hash),
