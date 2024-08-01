@@ -7,9 +7,9 @@ use Result;
 #[derive(PartialEq, Debug)]
 pub struct Metainfo {
     pub announce: String,
-    pub piece_length: i64,   // number of bytes in each piece (integer)
-    pub pieces: Vec<u8>, // string consisting of the concatenation of all 20-byte SHA1 hash values, one per piece (byte string, i.e. not urlencoded)
-    pub info_hash: [u8; 20], // urlencoded 20-byte SHA1 hash of the value of the info key from the Metainfo file. Note that the value will be a bencoded dictionary, given the definition of the info key above.
+    pub piece_length: i64,     // number of bytes in each piece (integer)
+    pub pieces: Vec<[u8; 20]>, // 20-byte SHA1 of each piece
+    pub info_hash: [u8; 20], // 20-byte SHA1 hash of the value of the info key from the Metainfo file
     pub file: MetainfoFile,
 }
 
@@ -55,7 +55,7 @@ impl fmt::Display for Metainfo {
             .join("\n");
         write!(
             f,
-            "announce: {}\npiece_lenght: {}\npieces: {}\ninfo_hash: {}\nfiles:\n{}",
+            "announce: {}\npiece_lenght: {}\nn. pieces: {}\ninfo_hash: {}\nfiles:\n{}",
             self.announce,
             self.piece_length,
             self.pieces.len(),
@@ -110,7 +110,18 @@ impl Metainfo {
 
         // pieces
         let pieces_vec = match info_dict.get(&b"pieces".to_vec()) {
-            Some(Value::Str(a)) => a.clone(),
+            Some(Value::Str(a)) => {
+                if a.len() % 20 != 0 {
+                    return Err("The .torrent file contains \"info.pieces\" that is not a string of lenght divisible by 20");
+                }
+                let mut pieces = Vec::new();
+                for p in 0..a.len() / 20 {
+                    let mut piece: [u8; 20] = [0; 20];
+                    piece.clone_from_slice(&a[p..p + 20]);
+                    pieces.push(piece);
+                }
+                pieces
+            }
             _ => return Err("The .torrent file does not contain a valid \"info.pieces\""),
         };
 
