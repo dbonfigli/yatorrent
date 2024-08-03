@@ -299,8 +299,8 @@ mod tests {
     #[test]
     fn binary_peer_conversion() {
         let byte_peers = [
-            0x4, 0x3, 0x2, 0x1, /* ip 1.2.3.4 */ 0x50, 0x00, /* port 80 */
-            0x8, 0x7, 0x6, 0x5, /* ip 5.6.7.8 */ 0xbd, 0x04, /* port 1213 */
+            0x1, 0x2, 0x3, 0x4, /* ip 1.2.3.4 */ 0x00, 0x50, /* port 80 */
+            0x5, 0x6, 0x7, 0x8, /* ip 5.6.7.8 */ 0x04, 0xbd, /* port 1213 */
         ]
         .to_vec();
         let peers_result = get_peers_wiht_binary_model(&byte_peers);

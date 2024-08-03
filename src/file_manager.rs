@@ -1,5 +1,4 @@
 use std::cmp;
-use std::error::Error;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -93,7 +92,7 @@ impl FileManager {
         }
     }
 
-    pub fn refresh_completed_pieces(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn refresh_completed_pieces(&mut self) {
         log::info!("checking pieces already downloaded...");
 
         let mut cur_file_path = Path::new("").to_path_buf();
@@ -172,8 +171,6 @@ impl FileManager {
             self.piece_completion_status.len(),
             total_completed * 100 / self.piece_completion_status.len()
         );
-
-        Ok(())
     }
 }
 
