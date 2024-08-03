@@ -1,6 +1,5 @@
-use std::error::Error;
-
 use parse_display::Display;
+use std::error::Error;
 
 #[derive(Debug)]
 pub enum Message {

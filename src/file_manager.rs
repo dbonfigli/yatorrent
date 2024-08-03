@@ -312,4 +312,93 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn test_refresh_completed_files_1() {
+        let file_list = vec![
+            ("f1".to_string(), 10),
+            ("f2".to_string(), 10),
+            ("f3".to_string(), 5),
+            ("f4".to_string(), 3),
+            ("f5".to_string(), 3),
+        ];
+        let pieces = vec![
+            b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
+            b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
+            b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
+        ];
+        let piece_length = 10;
+
+        let mut res = FileManager::new(Path::new("./"), file_list, piece_length, pieces);
+        res.piece_completion_status = vec![false, true, false];
+        res.refresh_completed_files();
+        assert_eq!(
+            res.file_list,
+            vec![
+                (std::path::PathBuf::from("./f1"), 10, false),
+                (std::path::PathBuf::from("./f2"), 10, true),
+                (std::path::PathBuf::from("./f3"), 5, false),
+                (std::path::PathBuf::from("./f4"), 3, false),
+                (std::path::PathBuf::from("./f5"), 3, false),
+            ]
+        )
+    }
+
+    #[test]
+    fn test_refresh_completed_files_2() {
+        let file_list = vec![
+            ("f1".to_string(), 10),
+            ("f2".to_string(), 10),
+            ("f3".to_string(), 5),
+            ("f4".to_string(), 3),
+            ("f5".to_string(), 3),
+        ];
+        let pieces = vec![
+            b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
+            b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
+            b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
+        ];
+        let piece_length = 10;
+
+        let mut res = FileManager::new(Path::new("./"), file_list, piece_length, pieces);
+        res.piece_completion_status = vec![true, false, true];
+        res.refresh_completed_files();
+        assert_eq!(
+            res.file_list,
+            vec![
+                (std::path::PathBuf::from("./f1"), 10, true),
+                (std::path::PathBuf::from("./f2"), 10, false),
+                (std::path::PathBuf::from("./f3"), 5, true),
+                (std::path::PathBuf::from("./f4"), 3, true),
+                (std::path::PathBuf::from("./f5"), 3, true),
+            ]
+        )
+    }
+
+    #[test]
+    fn test_refresh_completed_files_3() {
+        let file_list = vec![
+            ("f1".to_string(), 5),
+            ("f2".to_string(), 20),
+            ("f3".to_string(), 5),
+        ];
+        let pieces = vec![
+            b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
+            b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
+            b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
+        ];
+        let piece_length = 10;
+
+        let mut res = FileManager::new(Path::new("relative/"), file_list, piece_length, pieces);
+        res.piece_completion_status = vec![true, true, true];
+        res.refresh_completed_files();
+        assert_eq!(
+            res.file_list,
+            vec![
+                (std::path::PathBuf::from("relative/f1"), 5, true),
+                (std::path::PathBuf::from("relative/f2"), 20, true),
+                (std::path::PathBuf::from("relative/f3"), 5, true),
+            ]
+        );
+    }
 }
