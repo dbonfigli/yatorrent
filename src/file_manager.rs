@@ -94,29 +94,47 @@ impl FileManager {
     }
 
     pub fn refresh_completed_pieces(&mut self) -> Result<(), Box<dyn Error>> {
+        log::info!("checking pieces already downloaded...");
+
+        if self.piece_to_files.len() == 0 || self.piece_to_files[0].len() == 0 {
+            return Ok(());
+        }
+        let (mut cur_file, _, _) = self.piece_to_files[0][0].clone();
+        let mut opened_cur_file = File::open(cur_file.clone());
+
         for (idx, file_vec) in self.piece_to_files.iter().enumerate() {
+            if idx % (self.piece_to_files.len() / 10) == 0 {
+                log::info!("{}%...", idx * 100 / self.piece_to_files.len());
+            }
+
             self.piece_completion_status[idx] = false;
 
             // read the data of the piece from the files
             let mut piece_data: Vec<u8> = Vec::new();
             let mut could_not_read_piece = false;
             for (file_path, start, end) in file_vec {
-                match File::open(file_path) {
-                    Err(e) => {
+                // forward to a new file if the current piece fragment refers to a different file
+                if *file_path != cur_file {
+                    cur_file = file_path.clone();
+                    opened_cur_file = File::open(cur_file.clone());
+                }
+
+                match opened_cur_file {
+                    Err(ref e) => {
                         log::error!("error opening file, path {:#?}: {}", file_path, e);
                         could_not_read_piece = true;
                         break;
                     }
                     Ok(ref mut f) => {
                         if let Err(_) = f.seek(SeekFrom::Start(*start as u64)) {
-                            log::error!("error seeking file");
+                            //log::error!("error seeking file");
                             could_not_read_piece = true;
                             break;
                         }
 
                         let mut buffer: Vec<u8> = vec![0; (end - start).try_into().unwrap()];
                         if let Err(_) = f.read_exact(&mut buffer) {
-                            log::error!("error reading file");
+                            //log::error!("error reading file");
                             could_not_read_piece = true;
                             break;
                         }
@@ -132,19 +150,20 @@ impl FileManager {
             let piece_sha: [u8; 20] = Sha1::digest(&piece_data).as_slice().try_into().unwrap();
             if self.piece_hashes[idx] == piece_sha {
                 self.piece_completion_status[idx] = true;
-                log::info!(
-                    "hash OKKKK: expected {}, got {}",
-                    crate::metainfo::pretty_info_hash(self.piece_hashes[idx]),
-                    crate::metainfo::pretty_info_hash(piece_sha),
-                );
-            } else {
-                log::error!(
-                    "hash did not correspond: expected {}, got {}",
-                    crate::metainfo::pretty_info_hash(self.piece_hashes[idx]),
-                    crate::metainfo::pretty_info_hash(piece_sha),
-                );
             }
         }
+
+        let total_completed =
+            self.piece_completion_status
+                .iter()
+                .fold(0, |acc, v| if *v { acc + 1 } else { acc });
+        log::info!(
+            "checking pieces already downloaded completed: {} out of {} ({}%) pieces already completed",
+            total_completed,
+            self.piece_completion_status.len(),
+            total_completed * 100 / self.piece_completion_status.len()
+        );
+
         Ok(())
     }
 }
