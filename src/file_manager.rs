@@ -1,6 +1,7 @@
-use std::cmp;
-use std::io::{ErrorKind, Read, Seek, SeekFrom};
+use std::error::Error;
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::{cmp, fs};
 
 use std::fs::File;
 
@@ -216,6 +217,61 @@ impl FileManager {
                 if *status { "completed" } else { "incomplete" }
             );
         }
+    }
+
+    pub fn read_piece(&self, piece_idx: usize) -> Result<Vec<u8>, Box<dyn Error>> {
+        if piece_idx >= self.piece_to_files.len() {
+            return Err(Box::from(format!(
+                "requested to read piece idx {} that is not in range (total pieces: {})",
+                piece_idx,
+                self.piece_to_files.len()
+            )));
+        }
+        if !self.piece_completion_status[piece_idx] {
+            return Err(Box::from(format!(
+                "requested to read piece idx {} that we don't have",
+                piece_idx
+            )));
+        }
+        let mut piece_buf: Vec<u8> = Vec::new();
+        for (file_path, start, end) in self.piece_to_files[piece_idx].iter() {
+            let mut opened_file = File::open(file_path)?;
+            opened_file.seek(SeekFrom::Start(*start as u64))?;
+            let mut file_buf: Vec<u8> = vec![0; (end - start).try_into().unwrap()];
+            opened_file.read_exact(&mut file_buf)?;
+            piece_buf.append(&mut file_buf);
+        }
+        Ok(piece_buf)
+    }
+
+    pub fn write_piece(&mut self, piece_idx: usize, data: Vec<u8>) -> Result<(), Box<dyn Error>> {
+        if self.piece_completion_status[piece_idx] {
+            log::debug!(
+                "we already have the piece {}, will avoid to write it again",
+                piece_idx
+            );
+            return Ok(());
+        }
+        let piece_sha: [u8; 20] = Sha1::digest(&data).as_slice().try_into().unwrap();
+        if piece_sha != self.piece_hashes[piece_idx] {
+            return Err(Box::from(
+              format!("the sha of the data we want to write for piece {} do not match the sha we expect, write aborted", piece_idx)));
+        }
+
+        let mut written: i64 = 0;
+        for (file_path, start, end) in self.piece_to_files[piece_idx].iter() {
+            if let Some(dir) = file_path.parent() {
+                fs::create_dir_all(dir)?;
+            }
+            let mut opened_file = File::options().write(true).open(file_path)?;
+            opened_file.seek(SeekFrom::Start(*start as u64))?;
+            opened_file.write_all(&data[written as usize..(end - start) as usize])?;
+            written += end - start;
+        }
+
+        self.piece_completion_status[piece_idx] = true;
+        self.refresh_completed_files(); //todo: optimize this
+        Ok(())
     }
 }
 
