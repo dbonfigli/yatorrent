@@ -110,17 +110,17 @@ impl Metainfo {
 
         // pieces
         let pieces_vec = match info_dict.get(&b"pieces".to_vec()) {
-            Some(Value::Str(a)) => {
-                if a.len() % 20 != 0 {
-                    return Err("The .torrent file contains \"info.pieces\" that is not a string of lenght divisible by 20");
+            Some(Value::Str(pieces_byte_vec)) => {
+                if pieces_byte_vec.len() % 20 != 0 {
+                    return Err("The .torrent file contains \"info.pieces\" that is not a string of length divisible by 20");
                 }
-                let mut pieces = Vec::new();
-                for p in 0..a.len() / 20 {
+                let mut pieces_vec = Vec::new();
+                for p in (0..pieces_byte_vec.len()).step_by(20) {
                     let mut piece: [u8; 20] = [0; 20];
-                    piece.clone_from_slice(&a[p..p + 20]);
-                    pieces.push(piece);
+                    piece.clone_from_slice(&pieces_byte_vec[p..p + 20]);
+                    pieces_vec.push(piece);
                 }
-                pieces
+                pieces_vec
             }
             _ => return Err("The .torrent file does not contain a valid \"info.pieces\""),
         };
