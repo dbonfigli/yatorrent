@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -19,18 +19,35 @@ pub struct FileManager {
 
 struct FileHandles {
     file_handles: HashMap<PathBuf, File>,
+    opened_for_write: HashSet<PathBuf>,
 }
 
 impl FileHandles {
     fn new() -> FileHandles {
         FileHandles {
             file_handles: HashMap::new(),
+            opened_for_write: HashSet::new(),
         }
     }
 
-    fn get_file(&mut self, file_path: &PathBuf) -> Result<&File, Box<dyn Error>> {
-        if !self.file_handles.contains_key(file_path) {
-            let f = File::options().write(true).open(file_path)?;
+    fn get_file(
+        &mut self,
+        file_path: &PathBuf,
+        open_for_write: bool,
+    ) -> Result<&File, Box<dyn Error>> {
+        if !self.file_handles.contains_key(file_path)
+            || (open_for_write && !self.opened_for_write.contains(file_path))
+        {
+            if open_for_write && !self.opened_for_write.contains(file_path) {
+                if let Some(dir) = file_path.parent() {
+                    fs::create_dir_all(dir)?;
+                }
+            }
+            let f = File::options()
+                .read(true)
+                .write(open_for_write)
+                .create(open_for_write)
+                .open(file_path)?;
             self.file_handles.insert(file_path.clone(), f);
         }
         Ok(self.file_handles.get(&file_path.clone()).unwrap())
@@ -258,7 +275,7 @@ impl FileManager {
         }
         let mut piece_buf: Vec<u8> = Vec::new();
         for (file_path, start, end) in self.piece_to_files[piece_idx].iter() {
-            let mut opened_file = self.file_handles.get_file(file_path)?;
+            let mut opened_file = self.file_handles.get_file(file_path, false)?;
             opened_file.seek(SeekFrom::Start(*start as u64))?;
             let mut file_buf: Vec<u8> = vec![0; (end - start).try_into().unwrap()];
             opened_file.read_exact(&mut file_buf)?;
@@ -283,10 +300,7 @@ impl FileManager {
 
         let mut written: i64 = 0;
         for (file_path, start, end) in self.piece_to_files[piece_idx].iter() {
-            if let Some(dir) = file_path.parent() {
-                fs::create_dir_all(dir)?;
-            }
-            let mut opened_file = self.file_handles.get_file(file_path)?;
+            let mut opened_file = self.file_handles.get_file(file_path, true)?;
             opened_file.seek(SeekFrom::Start(*start as u64))?;
             opened_file.write_all(&data[written as usize..(end - start) as usize])?;
             written += end - start;
