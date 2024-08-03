@@ -1,6 +1,6 @@
 use std::cmp;
 use std::error::Error;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use std::fs::File;
@@ -96,15 +96,15 @@ impl FileManager {
     pub fn refresh_completed_pieces(&mut self) -> Result<(), Box<dyn Error>> {
         log::info!("checking pieces already downloaded...");
 
-        if self.piece_to_files.len() == 0 || self.piece_to_files[0].len() == 0 {
-            return Ok(());
-        }
-        let (mut cur_file, _, _) = self.piece_to_files[0][0].clone();
-        let mut opened_cur_file = File::open(cur_file.clone());
+        let mut cur_file_path = Path::new("").to_path_buf();
+        let mut opened_cur_file = Err(ErrorKind::InvalidData.into());
 
         for (idx, file_vec) in self.piece_to_files.iter().enumerate() {
             if idx % (self.piece_to_files.len() / 10) == 0 {
-                log::info!("{}%...", idx * 100 / self.piece_to_files.len());
+                log::info!(
+                    "{}%...",
+                    f64::round((idx as f64 * 100.0) / self.piece_to_files.len() as f64)
+                );
             }
 
             self.piece_completion_status[idx] = false;
@@ -112,16 +112,20 @@ impl FileManager {
             // read the data of the piece from the files
             let mut piece_data: Vec<u8> = Vec::new();
             let mut could_not_read_piece = false;
-            for (file_path, start, end) in file_vec {
+            for (piece_fragment_file_path, start, end) in file_vec {
                 // forward to a new file if the current piece fragment refers to a different file
-                if *file_path != cur_file {
-                    cur_file = file_path.clone();
-                    opened_cur_file = File::open(cur_file.clone());
+                if *piece_fragment_file_path != cur_file_path {
+                    cur_file_path = piece_fragment_file_path.clone();
+                    opened_cur_file = File::open(cur_file_path.clone());
                 }
 
                 match opened_cur_file {
                     Err(ref e) => {
-                        log::error!("error opening file, path {:#?}: {}", file_path, e);
+                        log::error!(
+                            "error opening file, path {:#?}: {}",
+                            piece_fragment_file_path,
+                            e
+                        );
                         could_not_read_piece = true;
                         break;
                     }
