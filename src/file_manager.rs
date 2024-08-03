@@ -5,10 +5,11 @@ use std::path::{Path, PathBuf};
 use std::fs::File;
 
 use sha1::{Digest, Sha1};
+use size::Size;
 
 pub struct FileManager {
-    file_list: Vec<(PathBuf, i64)>,                // name with path, size
-    piece_hashes: Vec<[u8; 20]>,                   // piece identified by position in array -> hash
+    file_list: Vec<(PathBuf, i64, bool)>, // name with path, size, download completed / incomplete
+    piece_hashes: Vec<[u8; 20]>,          // piece identified by position in array -> hash
     piece_to_files: Vec<Vec<(PathBuf, i64, i64)>>, // piece identified by position in array -> list of files the piece belong to, with start byte and end byte within that file. A piece can span many files
     pub piece_completion_status: Vec<bool>, // piece identified by position in array -> download completed / incomplete
 }
@@ -26,13 +27,19 @@ impl FileManager {
             total_file_size += size;
         }
         if total_file_size > piece_length * piece_hashes.len() as i64 {
-            log::warn!("the total file size of all files exceed the #pieces * piece_lenght we have, this is strange, the exceeded files will not be downloaded");
+            log::warn!("the total file size of all files exceed the #pieces * piece_length we have, this is strange, the exceeded files will not be downloaded");
         }
 
         // generate file list
         let fm_file_list = file_list
             .iter()
-            .map(|(file_name, s)| (Path::new(file_name).to_owned(), *s))
+            .map(|(file_name_path, s)| {
+                (
+                    Path::new(base_path).join(file_name_path).to_owned(),
+                    *s,
+                    false,
+                )
+            })
             .collect();
 
         // generate piece_to_files
@@ -124,11 +131,11 @@ impl FileManager {
 
                 match opened_cur_file {
                     Err(ref e) => {
-                        log::error!(
-                            "error opening file, path {:#?}: {}",
-                            piece_fragment_file_path,
-                            e
-                        );
+                        // log::error!(
+                        //     "error opening file, path {:#?}: {}",
+                        //     piece_fragment_file_path,
+                        //     e
+                        // );
                         could_not_read_piece = true;
                         break;
                     }
@@ -171,6 +178,44 @@ impl FileManager {
             self.piece_completion_status.len(),
             total_completed * 100 / self.piece_completion_status.len()
         );
+    }
+
+    // this must be run only if piece_completion_status is refreshed
+    pub fn refresh_completed_files(&mut self) {
+        for i in 0..self.file_list.len() {
+            self.file_list[i].2 = true;
+        }
+
+        let mut cur_file_idx = 0;
+        for (idx, file_vec) in self.piece_to_files.iter().enumerate() {
+            for (piece_fragment_file_path, _, _) in file_vec.iter() {
+                if self.file_list[cur_file_idx].0 != *piece_fragment_file_path {
+                    cur_file_idx += 1;
+                }
+                self.file_list[cur_file_idx].2 =
+                    self.file_list[cur_file_idx].2 & self.piece_completion_status[idx];
+            }
+        }
+
+        let total_completed = self
+            .file_list
+            .iter()
+            .fold(0, |acc, v| if v.2 { acc + 1 } else { acc });
+        log::info!(
+            "files completed: {} out of {} ({}%)",
+            total_completed,
+            self.file_list.len(),
+            total_completed * 100 / self.file_list.len()
+        );
+        log::info!("files status:");
+        for (file_path, size, status) in self.file_list.iter() {
+            log::info!(
+                "  - {:#?} ({}): {}",
+                file_path,
+                Size::from_bytes(*size),
+                if *status { "completed" } else { "incomplete" }
+            );
+        }
     }
 }
 
