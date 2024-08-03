@@ -98,6 +98,7 @@ impl FileManager {
 
         let mut cur_file_path = Path::new("").to_path_buf();
         let mut opened_cur_file = Err(ErrorKind::InvalidData.into());
+        let mut could_not_read_piece = false;
 
         for (idx, file_vec) in self.piece_to_files.iter().enumerate() {
             if idx % (self.piece_to_files.len() / 10) == 0 {
@@ -111,12 +112,15 @@ impl FileManager {
 
             // read the data of the piece from the files
             let mut piece_data: Vec<u8> = Vec::new();
-            let mut could_not_read_piece = false;
             for (piece_fragment_file_path, start, end) in file_vec {
                 // forward to a new file if the current piece fragment refers to a different file
                 if *piece_fragment_file_path != cur_file_path {
                     cur_file_path = piece_fragment_file_path.clone();
                     opened_cur_file = File::open(cur_file_path.clone());
+                    could_not_read_piece = false;
+                } else if could_not_read_piece {
+                    // if the file is the same as the previous one, and we got an error before, there is no point on repeating the read for this new piece fragment
+                    continue;
                 }
 
                 match opened_cur_file {
@@ -147,6 +151,7 @@ impl FileManager {
                     }
                 }
             }
+
             if could_not_read_piece {
                 continue;
             }
