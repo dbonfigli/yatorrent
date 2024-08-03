@@ -142,33 +142,21 @@ impl FileManager {
 
     pub fn refresh_completed_pieces(&mut self) {
         log::info!("checking pieces already downloaded...");
-
-        let mut cur_file_path = Path::new("").to_path_buf();
-        let mut opened_cur_file = Err(ErrorKind::InvalidData.into());
-        let mut could_not_read_piece = false;
-
         for (idx, file_vec) in self.piece_to_files.iter().enumerate() {
+            // print progress
             if idx % (self.piece_to_files.len() / 10) == 0 {
                 log::info!(
                     "{}%...",
                     f64::round((idx as f64 * 100.0) / self.piece_to_files.len() as f64)
                 );
             }
-
             self.piece_completion_status[idx] = false;
-
+            let mut could_not_read_piece = false;
             // read the data of the piece from the files
             let mut piece_data: Vec<u8> = Vec::new();
             for (piece_fragment_file_path, start, end) in file_vec {
-                // forward to a new file if the current piece fragment refers to a different file
-                if *piece_fragment_file_path != cur_file_path {
-                    cur_file_path = piece_fragment_file_path.clone();
-                    opened_cur_file = File::open(cur_file_path.clone());
-                    could_not_read_piece = false;
-                } else if could_not_read_piece {
-                    // if the file is the same as the previous one, and we got an error before, there is no point on repeating the read for this new piece fragment
-                    continue;
-                }
+                let mut opened_cur_file =
+                    self.file_handles.get_file(piece_fragment_file_path, false);
 
                 match opened_cur_file {
                     Err(ref e) => {
