@@ -36,10 +36,10 @@ impl fmt::Display for Response {
                 let peers = ok_response
                     .peers
                     .iter()
-                    .map(|p| format!("  - {}:{} (id: {:?})", p.ip, p.port, p.peer_id))
+                    .map(|p| format!("  - {}:{} (id: {:#?})", p.ip, p.port, p.peer_id))
                     .collect::<Vec<String>>()
                     .join("\n");
-                write!(f, "interval: {}\nmin_interval: {:?}\ntracker_id: {:?}\nn. peers completed: {}\nn. peers incomplete: {}\npeers:\n{}", ok_response.interval, ok_response.min_interval, ok_response.tracker_id, ok_response.complete, ok_response.incomplete, peers)
+                write!(f, "interval: {}\nmin_interval: {:#?}\ntracker_id: {:#?}\nn. peers completed: {}\nn. peers incomplete: {}\npeers:\n{}", ok_response.interval, ok_response.min_interval, ok_response.tracker_id, ok_response.complete, ok_response.incomplete, peers)
             }
             Response::Failure(failure_message) => {
                 write!(f, "FAILURE: {}", failure_message)

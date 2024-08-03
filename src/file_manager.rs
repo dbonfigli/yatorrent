@@ -1,32 +1,45 @@
 use std::cmp;
+use std::error::Error;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+use std::fs::File;
+
+use sha1::{Digest, Sha1};
+
 pub struct FileManager {
-    file_list: Vec<(String, i64)>, // name with path, size
-    piece_length: i64,
-    piece_hashes: Vec<[u8; 20]>, // list of piece hashes
-    piece_idx_to_files: Vec<Vec<(PathBuf, i64, i64)>>, // piece (identified by position in `pieces`) -> list fo files the piece belong to, with start byte and end byte within that file. A piece can span many files
+    file_list: Vec<(PathBuf, i64)>,                // name with path, size
+    piece_hashes: Vec<[u8; 20]>,                   // piece identified by position in array -> hash
+    piece_to_files: Vec<Vec<(PathBuf, i64, i64)>>, // piece identified by position in array -> list of files the piece belong to, with start byte and end byte within that file. A piece can span many files
+    pub piece_completion_status: Vec<bool>, // piece identified by position in array -> download completed / incomplete
 }
 
 impl FileManager {
     pub fn new(
-        base_path: String,
+        base_path: &Path,
         file_list: Vec<(String, i64)>,
         piece_length: i64,
         piece_hashes: Vec<[u8; 20]>,
     ) -> FileManager {
-        let mut piece_dix_to_files = Vec::new();
-        let mut current_file_index = 0;
-        let mut current_position_in_file = 0;
-
+        // warn if files do not match pieces
         let mut total_file_size = 0;
         for (_, size) in file_list.iter() {
             total_file_size += size;
         }
-        if (total_file_size > piece_length * piece_hashes.len() as i64) {
+        if total_file_size > piece_length * piece_hashes.len() as i64 {
             log::warn!("the total file size of all files exceed the #pieces * piece_lenght we have, this is strange, the exceeded files will not be downloaded");
         }
 
+        // generate file list
+        let fm_file_list = file_list
+            .iter()
+            .map(|(file_name, s)| (Path::new(file_name).to_owned(), *s))
+            .collect();
+
+        // generate piece_to_files
+        let mut piece_to_files = Vec::new();
+        let mut current_file_index = 0;
+        let mut current_position_in_file = 0;
         for piece_index in 0..piece_hashes.len() {
             let mut remaining_piece_bytes_to_allocate = piece_length;
             let mut files_spanning_piece = Vec::new();
@@ -52,7 +65,7 @@ impl FileManager {
                 if file_name_path.is_absolute() {
                     panic!("the torrent file contained a file with absolute path, this is not acceptable")
                 }
-                let path = Path::new(&base_path).join(file_name_path);
+                let path = Path::new(base_path).join(file_name_path);
 
                 files_spanning_piece.push((
                     path,
@@ -67,21 +80,78 @@ impl FileManager {
                 }
             }
 
-            piece_dix_to_files.push(files_spanning_piece);
+            piece_to_files.push(files_spanning_piece);
         }
 
+        let piece_completion_status = vec![false; piece_hashes.len()];
+
         FileManager {
-            file_list,
-            piece_length,
+            file_list: fm_file_list,
             piece_hashes,
-            piece_idx_to_files: piece_dix_to_files,
+            piece_to_files,
+            piece_completion_status,
         }
+    }
+
+    pub fn refresh_completed_pieces(&mut self) -> Result<(), Box<dyn Error>> {
+        for (idx, file_vec) in self.piece_to_files.iter().enumerate() {
+            self.piece_completion_status[idx] = false;
+
+            // read the data of the piece from the files
+            let mut piece_data: Vec<u8> = Vec::new();
+            let mut could_not_read_piece = false;
+            for (file_path, start, end) in file_vec {
+                match File::open(file_path) {
+                    Err(e) => {
+                        log::error!("error opening file, path {:#?}: {}", file_path, e);
+                        could_not_read_piece = true;
+                        break;
+                    }
+                    Ok(ref mut f) => {
+                        if let Err(_) = f.seek(SeekFrom::Start(*start as u64)) {
+                            log::error!("error seeking file");
+                            could_not_read_piece = true;
+                            break;
+                        }
+
+                        let mut buffer: Vec<u8> = vec![0; (end - start).try_into().unwrap()];
+                        if let Err(_) = f.read_exact(&mut buffer) {
+                            log::error!("error reading file");
+                            could_not_read_piece = true;
+                            break;
+                        }
+
+                        piece_data.append(&mut buffer);
+                    }
+                }
+            }
+            if could_not_read_piece {
+                continue;
+            }
+
+            let piece_sha: [u8; 20] = Sha1::digest(&piece_data).as_slice().try_into().unwrap();
+            if self.piece_hashes[idx] == piece_sha {
+                self.piece_completion_status[idx] = true;
+                log::info!(
+                    "hash OKKKK: expected {}, got {}",
+                    crate::metainfo::pretty_info_hash(self.piece_hashes[idx]),
+                    crate::metainfo::pretty_info_hash(piece_sha),
+                );
+            } else {
+                log::error!(
+                    "hash did not correspond: expected {}, got {}",
+                    crate::metainfo::pretty_info_hash(self.piece_hashes[idx]),
+                    crate::metainfo::pretty_info_hash(piece_sha),
+                );
+            }
+        }
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use super::FileManager;
 
@@ -99,13 +169,19 @@ mod tests {
         ];
         let piece_length = 10;
 
-        let res = FileManager::new("relative/".to_string(), file_list, piece_length, pieces);
+        let res = FileManager::new(Path::new("relative/"), file_list, piece_length, pieces);
         assert_eq!(
-            res.piece_idx_to_files,
+            res.piece_to_files,
             vec![
-                vec![(PathBuf::from("relative/f1"), 0, 5), (PathBuf::from("relative/f2"), 0, 5)],
+                vec![
+                    (PathBuf::from("relative/f1"), 0, 5),
+                    (PathBuf::from("relative/f2"), 0, 5)
+                ],
                 vec![(PathBuf::from("relative/f2"), 5, 15)],
-                vec![(PathBuf::from("relative/f2"), 15, 20), (PathBuf::from("relative/f3"), 0, 5)]
+                vec![
+                    (PathBuf::from("relative/f2"), 15, 20),
+                    (PathBuf::from("relative/f3"), 0, 5)
+                ]
             ]
         );
     }
@@ -116,9 +192,9 @@ mod tests {
         let pieces = vec![b"aaaaaaaaaaaaaaaaaaaa".to_owned()];
         let piece_length = 5;
 
-        let res = FileManager::new("/absolute/".to_string(), file_list, piece_length, pieces);
+        let res = FileManager::new(Path::new("/absolute/"), file_list, piece_length, pieces);
         assert_eq!(
-            res.piece_idx_to_files,
+            res.piece_to_files,
             vec![vec![(PathBuf::from("/absolute/f1"), 0, 5)]]
         );
     }
@@ -129,9 +205,9 @@ mod tests {
         let pieces = vec![b"aaaaaaaaaaaaaaaaaaaa".to_owned()];
         let piece_length = 6;
 
-        let res = FileManager::new("hello/moto".to_string(), file_list, piece_length, pieces);
+        let res = FileManager::new(Path::new("hello/moto"), file_list, piece_length, pieces);
         assert_eq!(
-            res.piece_idx_to_files,
+            res.piece_to_files,
             vec![vec![(PathBuf::from("hello/moto/f1"), 0, 5)]]
         );
     }
@@ -152,9 +228,9 @@ mod tests {
         ];
         let piece_length = 10;
 
-        let res = FileManager::new("./".to_string(), file_list, piece_length, pieces);
+        let res = FileManager::new(Path::new("./"), file_list, piece_length, pieces);
         assert_eq!(
-            res.piece_idx_to_files,
+            res.piece_to_files,
             vec![
                 vec![(PathBuf::from("./f1"), 0, 10)],
                 vec![(PathBuf::from("./f2"), 0, 10)],
