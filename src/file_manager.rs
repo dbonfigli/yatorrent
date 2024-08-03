@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::error::Error;
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -13,6 +14,27 @@ pub struct FileManager {
     piece_hashes: Vec<[u8; 20]>,          // piece identified by position in array -> hash
     piece_to_files: Vec<Vec<(PathBuf, i64, i64)>>, // piece identified by position in array -> list of files the piece belong to, with start byte and end byte within that file. A piece can span many files
     pub piece_completion_status: Vec<bool>, // piece identified by position in array -> download completed / incomplete
+    file_handles: FileHandles,
+}
+
+struct FileHandles {
+    file_handles: HashMap<PathBuf, File>,
+}
+
+impl FileHandles {
+    fn new() -> FileHandles {
+        FileHandles {
+            file_handles: HashMap::new(),
+        }
+    }
+
+    fn get_file(&mut self, file_path: &PathBuf) -> Result<&File, Box<dyn Error>> {
+        if !self.file_handles.contains_key(file_path) {
+            let f = File::options().write(true).open(file_path)?;
+            self.file_handles.insert(file_path.clone(), f);
+        }
+        Ok(self.file_handles.get(&file_path.clone()).unwrap())
+    }
 }
 
 impl FileManager {
@@ -97,6 +119,7 @@ impl FileManager {
             piece_hashes,
             piece_to_files,
             piece_completion_status,
+            file_handles: FileHandles::new(),
         }
     }
 
@@ -219,7 +242,7 @@ impl FileManager {
         }
     }
 
-    pub fn read_piece(&self, piece_idx: usize) -> Result<Vec<u8>, Box<dyn Error>> {
+    pub fn read_piece(&mut self, piece_idx: usize) -> Result<Vec<u8>, Box<dyn Error>> {
         if piece_idx >= self.piece_to_files.len() {
             return Err(Box::from(format!(
                 "requested to read piece idx {} that is not in range (total pieces: {})",
@@ -235,7 +258,7 @@ impl FileManager {
         }
         let mut piece_buf: Vec<u8> = Vec::new();
         for (file_path, start, end) in self.piece_to_files[piece_idx].iter() {
-            let mut opened_file = File::open(file_path)?;
+            let mut opened_file = self.file_handles.get_file(file_path)?;
             opened_file.seek(SeekFrom::Start(*start as u64))?;
             let mut file_buf: Vec<u8> = vec![0; (end - start).try_into().unwrap()];
             opened_file.read_exact(&mut file_buf)?;
@@ -263,7 +286,7 @@ impl FileManager {
             if let Some(dir) = file_path.parent() {
                 fs::create_dir_all(dir)?;
             }
-            let mut opened_file = File::options().write(true).open(file_path)?;
+            let mut opened_file = self.file_handles.get_file(file_path)?;
             opened_file.seek(SeekFrom::Start(*start as u64))?;
             opened_file.write_all(&data[written as usize..(end - start) as usize])?;
             written += end - start;
