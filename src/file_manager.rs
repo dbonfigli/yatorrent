@@ -15,7 +15,6 @@ pub struct FileManager {
     piece_to_files: Vec<Vec<(PathBuf, i64, i64)>>, // piece identified by position in array -> list of files the piece belong to, with start byte and end byte within that file. A piece can span many files
     pub piece_completion_status: Vec<bool>, // piece identified by position in array -> download completed / incomplete
     file_handles: FileHandles,
-    piece_length: i64,
 }
 
 struct FileHandles {
@@ -130,6 +129,7 @@ impl FileManager {
             piece_to_files.push(files_spanning_piece);
         }
 
+        // initialize piece_completion_status
         let piece_completion_status = vec![false; piece_hashes.len()];
 
         FileManager {
@@ -138,7 +138,6 @@ impl FileManager {
             piece_to_files,
             piece_completion_status,
             file_handles: FileHandles::new(),
-            piece_length,
         }
     }
 
@@ -148,11 +147,12 @@ impl FileManager {
             // print progress
             if idx % (self.piece_to_files.len() / 10) == 0 {
                 log::info!(
-                    "{}%...",
+                    "{:>3}%...",
                     f64::round((idx as f64 * 100.0) / self.piece_to_files.len() as f64)
                 );
             }
-            match self.read_piece_block_with_check(idx, 0, self.piece_length, false) {
+            match self.read_piece_block_with_have_piece_check(idx, 0, self.piece_length(idx), false)
+            {
                 Err(_) => {
                     self.piece_completion_status[idx] = false;
                 }
@@ -215,35 +215,50 @@ impl FileManager {
         }
     }
 
-    fn read_piece_block(
+    // the last piece could have a size less than the others
+    pub fn piece_length(&self, piece_idx: usize) -> i64 {
+        let mut total_size = 0;
+        for (_, start, end) in self.piece_to_files[piece_idx].iter() {
+            total_size += end - start;
+        }
+        total_size
+    }
+
+    pub fn read_piece_block(
         &mut self,
         piece_idx: usize,
         block_begin: i64,
         block_length: i64,
     ) -> Result<Vec<u8>, Box<dyn Error>> {
-        return self.read_piece_block_with_check(piece_idx, block_begin, block_length, true);
+        return self.read_piece_block_with_have_piece_check(
+            piece_idx,
+            block_begin,
+            block_length,
+            true,
+        );
     }
 
-    fn read_piece_block_with_check(
+    fn read_piece_block_with_have_piece_check(
         &mut self,
         piece_idx: usize,
         block_begin: i64,
         block_length: i64,
         check_if_have_piece: bool,
     ) -> Result<Vec<u8>, Box<dyn Error>> {
-        if self.piece_length < block_begin + block_length {
-            return Err(Box::from(format!(
-                "requested to read piece idx {} out of range: block_begin {} + block_length {} > piece_length {}",
-                piece_idx,
-                block_begin, block_length, self.piece_length
-            )));
-        }
         if piece_idx >= self.piece_to_files.len() {
             return Err(Box::from(format!(
                 "requested to read piece idx {} that is not in range (total pieces: {})",
                 piece_idx,
                 self.piece_to_files.len()
             )));
+        }
+        let piece_length = self.piece_length(piece_idx);
+        if piece_length < block_begin + block_length {
+            return Err(Box::from(format!(
+              "requested to read piece idx {} out of range: block_begin {} + block_length {} > piece_length {}",
+              piece_idx,
+              block_begin, block_length, piece_length
+          )));
         }
         if check_if_have_piece && !self.piece_completion_status[piece_idx] {
             return Err(Box::from(format!(
