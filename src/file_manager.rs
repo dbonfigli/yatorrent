@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
-use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::{cmp, fs};
 
@@ -15,6 +15,7 @@ pub struct FileManager {
     piece_to_files: Vec<Vec<(PathBuf, i64, i64)>>, // piece identified by position in array -> list of files the piece belong to, with start byte and end byte within that file. A piece can span many files
     pub piece_completion_status: Vec<bool>, // piece identified by position in array -> download completed / incomplete
     file_handles: FileHandles,
+    piece_length: i64,
 }
 
 struct FileHandles {
@@ -137,12 +138,13 @@ impl FileManager {
             piece_to_files,
             piece_completion_status,
             file_handles: FileHandles::new(),
+            piece_length,
         }
     }
 
     pub fn refresh_completed_pieces(&mut self) {
         log::info!("checking pieces already downloaded...");
-        for (idx, file_vec) in self.piece_to_files.iter().enumerate() {
+        for idx in 0..self.piece_hashes.len() {
             // print progress
             if idx % (self.piece_to_files.len() / 10) == 0 {
                 log::info!(
@@ -150,50 +152,17 @@ impl FileManager {
                     f64::round((idx as f64 * 100.0) / self.piece_to_files.len() as f64)
                 );
             }
-            self.piece_completion_status[idx] = false;
-            let mut could_not_read_piece = false;
-            // read the data of the piece from the files
-            let mut piece_data: Vec<u8> = Vec::new();
-            for (piece_fragment_file_path, start, end) in file_vec {
-                let mut opened_cur_file =
-                    self.file_handles.get_file(piece_fragment_file_path, false);
-
-                match opened_cur_file {
-                    Err(ref e) => {
-                        // log::error!(
-                        //     "error opening file, path {:#?}: {}",
-                        //     piece_fragment_file_path,
-                        //     e
-                        // );
-                        could_not_read_piece = true;
-                        break;
-                    }
-                    Ok(ref mut f) => {
-                        if let Err(_) = f.seek(SeekFrom::Start(*start as u64)) {
-                            //log::error!("error seeking file");
-                            could_not_read_piece = true;
-                            break;
-                        }
-
-                        let mut buffer: Vec<u8> = vec![0; (end - start).try_into().unwrap()];
-                        if let Err(_) = f.read_exact(&mut buffer) {
-                            //log::error!("error reading file");
-                            could_not_read_piece = true;
-                            break;
-                        }
-
-                        piece_data.append(&mut buffer);
+            match self.read_piece_block_with_check(idx, 0, self.piece_length, false) {
+                Err(e) => {
+                    log::info!("error {}", e);
+                    self.piece_completion_status[idx] = false;
+                }
+                Ok(buf) => {
+                    let piece_sha: [u8; 20] = Sha1::digest(&buf).as_slice().try_into().unwrap();
+                    if self.piece_hashes[idx] == piece_sha {
+                        self.piece_completion_status[idx] = true;
                     }
                 }
-            }
-
-            if could_not_read_piece {
-                continue;
-            }
-
-            let piece_sha: [u8; 20] = Sha1::digest(&piece_data).as_slice().try_into().unwrap();
-            if self.piece_hashes[idx] == piece_sha {
-                self.piece_completion_status[idx] = true;
             }
         }
 
@@ -247,7 +216,29 @@ impl FileManager {
         }
     }
 
-    pub fn read_piece(&mut self, piece_idx: usize) -> Result<Vec<u8>, Box<dyn Error>> {
+    fn read_piece_block(
+        &mut self,
+        piece_idx: usize,
+        block_begin: i64,
+        block_length: i64,
+    ) -> Result<Vec<u8>, Box<dyn Error>> {
+        return self.read_piece_block_with_check(piece_idx, block_begin, block_length, true);
+    }
+
+    fn read_piece_block_with_check(
+        &mut self,
+        piece_idx: usize,
+        block_begin: i64,
+        block_length: i64,
+        check_if_have_piece: bool,
+    ) -> Result<Vec<u8>, Box<dyn Error>> {
+        if self.piece_length < block_begin + block_length {
+            return Err(Box::from(format!(
+                "requested to read piece idx {} out of range: block_begin {} + block_length {} > piece_length {}",
+                piece_idx,
+                block_begin, block_length, self.piece_length
+            )));
+        }
         if piece_idx >= self.piece_to_files.len() {
             return Err(Box::from(format!(
                 "requested to read piece idx {} that is not in range (total pieces: {})",
@@ -255,21 +246,49 @@ impl FileManager {
                 self.piece_to_files.len()
             )));
         }
-        if !self.piece_completion_status[piece_idx] {
+        if check_if_have_piece && !self.piece_completion_status[piece_idx] {
             return Err(Box::from(format!(
                 "requested to read piece idx {} that we don't have",
                 piece_idx
             )));
         }
-        let mut piece_buf: Vec<u8> = Vec::new();
+        let mut block_buf: Vec<u8> = Vec::new();
+        let mut current_piece_offset = 0;
+        let mut block_bytes_still_to_read = block_length;
         for (file_path, start, end) in self.piece_to_files[piece_idx].iter() {
+            let mut file_offset = *start;
+            if current_piece_offset != block_begin {
+                let piece_fragment_size_in_file = end - start;
+                if block_begin - current_piece_offset - piece_fragment_size_in_file > 0 {
+                    // the current chunk of data in the file is not enough to reach the begin of the block we want to read
+                    // move forward to the next file
+                    current_piece_offset += piece_fragment_size_in_file;
+                    continue;
+                } else {
+                    file_offset = start + (block_begin - current_piece_offset);
+                    current_piece_offset = block_begin;
+                }
+            }
+
+            let bytes_to_read;
+            if block_bytes_still_to_read == 0 {
+                break;
+            } else if end - file_offset > block_bytes_still_to_read {
+                bytes_to_read = block_bytes_still_to_read;
+                block_bytes_still_to_read = 0;
+            } else {
+                bytes_to_read = end - file_offset;
+                block_bytes_still_to_read -= end - file_offset;
+            }
+
             let mut opened_file = self.file_handles.get_file(file_path, false)?;
-            opened_file.seek(SeekFrom::Start(*start as u64))?;
-            let mut file_buf: Vec<u8> = vec![0; (end - start).try_into().unwrap()];
+            opened_file.seek(SeekFrom::Start(file_offset as u64))?;
+            let mut file_buf: Vec<u8> = vec![0; bytes_to_read.try_into().unwrap()];
             opened_file.read_exact(&mut file_buf)?;
-            piece_buf.append(&mut file_buf);
+            block_buf.append(&mut file_buf);
         }
-        Ok(piece_buf)
+
+        Ok(block_buf)
     }
 
     pub fn write_piece(&mut self, piece_idx: usize, data: Vec<u8>) -> Result<(), Box<dyn Error>> {
