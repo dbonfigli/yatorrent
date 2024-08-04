@@ -1,15 +1,18 @@
 use core::str;
+use std::sync::Arc;
 use std::time::Duration;
 use std::{error::Error, iter, path::Path};
 
 use rand::Rng;
+use tokio::join;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
 use tokio::time::timeout;
 
 use crate::{
     file_manager::FileManager,
     metainfo::{pretty_info_hash, Metainfo},
-    tracker::TrackerClient,
+    tracker::{Event, Response, TrackerClient},
     wire_protocol::{Message, Protocol},
 };
 
@@ -37,12 +40,12 @@ impl Peer {
     }
 }
 
-struct TorrentManager {
+pub struct TorrentManager {
     file_manager: FileManager,
     tracker_client: TrackerClient,
     info_hash: [u8; 20],
     own_peer_id: String, //our own peer id
-    peers: Vec<Peer>,
+    peers: Arc<Mutex<Vec<Peer>>>,
     incoming_connection_listener: TcpListener,
 }
 
@@ -63,7 +66,7 @@ impl TorrentManager {
         metainfo: Metainfo,
     ) -> Result<Self, Box<dyn Error>> {
         let incoming_connection_listener =
-            TcpListener::bind(format!(":{}", listening_port)).await?;
+            TcpListener::bind(format!("0.0.0.0:{}", listening_port)).await?;
         let own_peer_id = generate_peer_id();
         Ok(TorrentManager {
             file_manager: FileManager::new(
@@ -79,29 +82,91 @@ impl TorrentManager {
             ),
             info_hash: metainfo.info_hash,
             own_peer_id,
-            peers: Vec::new(),
+            peers: Arc::new(Mutex::new(Vec::new())),
             incoming_connection_listener,
         })
     }
 
-    pub async fn initiate_peer(&mut self, host: String, port: u32) -> Result<(), Box<dyn Error>> {
+    pub async fn start(&mut self) {
+        self.file_manager.refresh_completed_pieces();
+        self.file_manager.refresh_completed_files();
+        self.file_manager.log_file_completion_stats();
+        match self
+            .tracker_client
+            .request(
+                self.info_hash,
+                0,
+                0,
+                self.file_manager.bytes_left(),
+                Event::Started,
+            )
+            .await
+        {
+            Err(e) => {
+                log::error!("could not read first request from tracker: {}", e);
+            }
+            Ok(Response::Failure(msg)) => {
+                log::error!("tracker responded with failure: {}", msg);
+            }
+            Ok(Response::Ok(ok_response)) => {
+                if let Some(msg) = ok_response.warning_message.clone() {
+                    log::warn!("tracker send a warning: {}", msg);
+                }
+                // todo: read interval and start tracker requests in loop
+                // read peers and connect to peers
+                // let mut futures = Vec::new();
+                // for i in 0..std::cmp::min(10, ok_response.peers.len()) {
+                //     futures.push(
+                //         self.initiate_peer(
+                //             ok_response.peers[i].ip.clone(),
+                //             ok_response.peers[i].port,
+                //         ),
+                //     );
+                // }
+                // join!(futures[0], futures[1]);
+
+                // let f1 = self
+                //     .initiate_peer(ok_response.peers[0].ip.clone(), ok_response.peers[0].port)
+                //     .await;
+                // let f2 = self
+                //     .initiate_peer(ok_response.peers[1].ip.clone(), ok_response.peers[1].port)
+                //     .await;
+                // println!("{:?} {:?}", f1, f2);
+
+                log::info!(
+                    "tracker request succeeded, tracker response:\n{:?}",
+                    ok_response
+                );
+
+                join!(
+                    self.initiate_peer(ok_response.peers[0].ip.clone(), ok_response.peers[0].port),
+                    self.initiate_peer(ok_response.peers[1].ip.clone(), ok_response.peers[1].port),
+                    self.initiate_peer(ok_response.peers[2].ip.clone(), ok_response.peers[2].port),
+                    self.initiate_peer(ok_response.peers[3].ip.clone(), ok_response.peers[3].port)
+                );
+            }
+        }
+        // start accepting connections from peers
+    }
+
+    pub async fn initiate_peer(&self, host: String, port: u32) -> Result<(), Box<dyn Error>> {
         let dest = format!("{}:{}", host, port);
-        log::info!("connecting to peer: {}", dest);
+        log::debug!("connecting to peer: {}", dest);
         let stream = timeout(DEFAULT_TIMEOUT, TcpStream::connect(dest)).await??;
         timeout(DEFAULT_TIMEOUT, self.handshake(stream)).await?
     }
 
-    pub async fn accept_peer(&mut self) -> Result<(), Box<dyn Error>> {
-        log::info!("waiting for incoming peer connections...");
+    pub async fn accept_peer(&self) -> Result<(), Box<dyn Error>> {
+        log::debug!("waiting for incoming peer connections...");
         let (stream, _) = self.incoming_connection_listener.accept().await?; // never timeout here, wait forever if needed
         timeout(DEFAULT_TIMEOUT, self.handshake(stream)).await?
     }
 
-    async fn handshake(&mut self, mut stream: TcpStream) -> Result<(), Box<dyn Error>> {
+    async fn handshake(&self, mut stream: TcpStream) -> Result<(), Box<dyn Error>> {
         let (peer_protocol, _reserved, peer_info_hash, peer_id) = stream
             .handshake(self.info_hash, self.own_peer_id.as_bytes().try_into()?)
             .await?;
-        log::info!(
+        log::debug!(
             "received handshake info from {}: peer protocol: {}, info_hash: {}, peer_id: {}",
             stream.peer_addr().unwrap(),
             peer_protocol,
@@ -119,9 +184,12 @@ impl TorrentManager {
                 self.file_manager.piece_completion_status.clone(),
             ))
             .await?;
+        log::debug!("bitfield sent to peer {}", stream.peer_addr().unwrap());
 
         // handshake completed successfully
         self.peers
+            .lock()
+            .await
             .push(Peer::new(stream, self.file_manager.num_pieces()));
         Ok(())
     }

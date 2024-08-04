@@ -335,6 +335,19 @@ impl FileManager {
     pub fn num_pieces(&self) -> usize {
         self.piece_hashes.len()
     }
+
+    pub fn bytes_left(&self) -> i64 {
+        let mut total = 0;
+        let mut total_completed = 0;
+        for idx in 0..self.piece_completion_status.len() {
+            let piece_len = self.piece_length(idx);
+            total += piece_len;
+            if self.piece_completion_status[idx] {
+                total_completed += piece_len;
+            }
+        }
+        total - total_completed
+    }
 }
 
 #[cfg(test)]
