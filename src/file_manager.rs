@@ -68,7 +68,7 @@ impl FileManager {
             total_file_size += size;
         }
         if total_file_size > piece_length * piece_hashes.len() as i64 {
-            log::warn!("the total file size of all files exceed the #pieces * piece_length we have, this is strange, the exceeded files will not be downloaded");
+            log::warn!("the total file size of all files exceed the #pieces * piece_length we have, the .torrent file could be malformed, the exceeding files will not be downloaded");
         }
 
         // generate file list
@@ -98,7 +98,7 @@ impl FileManager {
                         // this was the last piece, it is normal that the piece does not span the full piece_length size for the last file
                         break;
                     } else {
-                        panic!("there are no more files, but there are more pieces still to be matched to files, it seem piece_length * #pieces > sum of all the file sizes, this should never happen")
+                        panic!("there are no more files, but there are more pieces still to be matched to files, it seem piece_length * #pieces > sum of all the file sizes, this should never happen, the .torrent file is malformed")
                     }
                 }
 
@@ -153,15 +153,12 @@ impl FileManager {
                 );
             }
             match self.read_piece_block_with_check(idx, 0, self.piece_length, false) {
-                Err(e) => {
-                    log::info!("error {}", e);
+                Err(_) => {
                     self.piece_completion_status[idx] = false;
                 }
                 Ok(buf) => {
                     let piece_sha: [u8; 20] = Sha1::digest(&buf).as_slice().try_into().unwrap();
-                    if self.piece_hashes[idx] == piece_sha {
-                        self.piece_completion_status[idx] = true;
-                    }
+                    self.piece_completion_status[idx] = self.piece_hashes[idx] == piece_sha;
                 }
             }
         }
@@ -178,7 +175,7 @@ impl FileManager {
         );
     }
 
-    // this must be run only if piece_completion_status is refreshed
+    // this depends on an up-to-date piece_completion_status
     pub fn refresh_completed_files(&mut self) {
         for i in 0..self.file_list.len() {
             self.file_list[i].2 = true;
@@ -194,7 +191,9 @@ impl FileManager {
                     self.file_list[cur_file_idx].2 & self.piece_completion_status[idx];
             }
         }
+    }
 
+    pub fn log_file_completion_stats(&self) {
         let total_completed = self
             .file_list
             .iter()
