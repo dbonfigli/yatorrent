@@ -112,6 +112,7 @@ impl TrackerClient {
                 ("left", left.to_string()),
                 ("compact", COMPACT.to_string()),
                 ("event", event.to_string()),
+                ("numwant", "50".to_string()),
             ],
         )?;
 
