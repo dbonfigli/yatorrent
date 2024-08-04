@@ -1,6 +1,5 @@
 use crate::bencoding::Value;
-use rand::Rng;
-use std::{error::Error, fmt, io::Read, iter, str};
+use std::{error::Error, fmt, io::Read, str};
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct Peer {
@@ -72,24 +71,16 @@ const COMPACT: i32 = 1;
 pub struct TrackerClient {
     pub peer_id: String,
     tracker_id: Option<String>,
-    listenting_port: i32,
+    listening_port: i32,
     tracker_url: String,
 }
 
-fn generate_peer_id() -> String {
-    const CHARSET: &[u8] = b"0123456789";
-    let mut rng = rand::thread_rng();
-    let one_char = || CHARSET[rng.gen_range(0..CHARSET.len())] as char;
-    let random_string: String = iter::repeat_with(one_char).take(12).collect();
-    format!("-YT0001-{random_string}")
-}
-
 impl TrackerClient {
-    pub fn new(tracker_url: String, listenting_port: i32) -> Self {
+    pub fn new(peer_id: String, tracker_url: String, listening_port: i32) -> Self {
         TrackerClient {
-            peer_id: generate_peer_id(),
+            peer_id: peer_id,
             tracker_id: Option::None,
-            listenting_port,
+            listening_port,
             tracker_url,
         }
     }
@@ -106,7 +97,7 @@ impl TrackerClient {
             self.tracker_url.as_str(),
             &[
                 ("peer_id", self.peer_id.clone()),
-                ("port", self.listenting_port.to_string()),
+                ("port", self.listening_port.to_string()),
                 ("uploaded", uploaded.to_string()),
                 ("downloaded", downloaded.to_string()),
                 ("left", left.to_string()),

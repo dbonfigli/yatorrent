@@ -331,6 +331,10 @@ impl FileManager {
         self.refresh_completed_files(); //todo: optimize this
         Ok(())
     }
+
+    pub fn num_pieces(&self) -> usize {
+        self.piece_hashes.len()
+    }
 }
 
 #[cfg(test)]
