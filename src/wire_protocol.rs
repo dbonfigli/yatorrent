@@ -21,9 +21,9 @@ pub trait Protocol {
         &mut self,
         info_hash: [u8; 20],
         peer_id: [u8; 20],
-    ) -> Result<(String, [u8; 8], [u8; 20], [u8; 20]), Box<dyn Error>>; // pstr, reserved, info_hash, peer_id
-    async fn send(&mut self, message: Message) -> Result<(), Box<dyn Error>>;
-    async fn receive(&mut self) -> Result<Message, Box<dyn Error>>;
+    ) -> Result<(String, [u8; 8], [u8; 20], [u8; 20]), Box<dyn Error + Send + Sync>>; // pstr, reserved, info_hash, peer_id
+    async fn send(&mut self, message: Message) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn receive(&mut self) -> Result<Message, Box<dyn Error + Send + Sync>>;
 }
 
 #[derive(Display, Debug)]

@@ -13,6 +13,8 @@ pub struct FileManager {
     file_list: Vec<(PathBuf, i64, bool)>, // name with path, size, download completed / incomplete
     piece_hashes: Vec<[u8; 20]>,          // piece identified by position in array -> hash
     piece_to_files: Vec<Vec<(PathBuf, i64, i64)>>, // piece identified by position in array -> list of files the piece belong to, with start byte and end byte within that file. A piece can span many files
+
+    // mutable fields
     pub piece_completion_status: Vec<bool>, // piece identified by position in array -> download completed / incomplete
     file_handles: FileHandles,
 }

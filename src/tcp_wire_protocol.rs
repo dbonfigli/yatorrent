@@ -14,7 +14,7 @@ impl Protocol for TcpStream {
         &mut self,
         info_hash: [u8; 20],
         peer_id: [u8; 20],
-    ) -> Result<(String, [u8; 8], [u8; 20], [u8; 20]), Box<dyn Error>> {
+    ) -> Result<(String, [u8; 8], [u8; 20], [u8; 20]), Box<dyn Error + Send + Sync>> {
         let peer_addr = self.peer_addr()?;
         log::debug!("peer {}: performing handshake", &peer_addr);
 
@@ -84,7 +84,7 @@ impl Protocol for TcpStream {
         return read_result;
     }
 
-    async fn send(&mut self, message: Message) -> Result<(), Box<dyn Error>> {
+    async fn send(&mut self, message: Message) -> Result<(), Box<dyn Error + Send + Sync>> {
         match message {
             Message::KeepAlive => {
                 let buf: [u8; 4] = [0; 4];
@@ -205,7 +205,7 @@ impl Protocol for TcpStream {
         }
     }
 
-    async fn receive(&mut self) -> Result<Message, Box<dyn Error>> {
+    async fn receive(&mut self) -> Result<Message, Box<dyn Error + Send + Sync>> {
         // get size of  message
         let mut size_message_buf: [u8; 4] = [0; 4];
         if let Err(e) = self.read_exact(&mut size_message_buf).await {

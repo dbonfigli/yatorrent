@@ -1,12 +1,14 @@
 use core::str;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{error::Error, iter, path::Path};
 
 use rand::Rng;
-use tokio::join;
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::Sender;
 use tokio::time::timeout;
 
 use crate::{
@@ -26,6 +28,7 @@ struct Peer {
 }
 
 static DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+static MAX_CONNECTIONS: usize = 55;
 
 impl Peer {
     pub fn new(network_client: TcpStream, num_pieces: usize) -> Self {
@@ -44,20 +47,10 @@ pub struct TorrentManager {
     file_manager: FileManager,
     tracker_client: TrackerClient,
     info_hash: [u8; 20],
-    own_peer_id: String, //our own peer id
-    peers: Arc<Mutex<Vec<Peer>>>,
-    incoming_connection_listener: TcpListener,
+    own_peer_id: String,
+    listening_port: i32,
+    peers: Vec<Peer>,
 }
-
-// start accepting peer connections in a loop
-// start loop to send tracker request in a loop - and update info like possible peer list
-// start management of connections we initiate:
-// - manage choke and interest
-// - keep track of send/recv info to be used to be sent to tracker
-// - send / recv data (16KiB max each req)
-
-// we initiate new connections if they are < 30
-// we refuse new connections if we have > 55
 
 impl TorrentManager {
     pub async fn new(
@@ -65,8 +58,6 @@ impl TorrentManager {
         listening_port: i32,
         metainfo: Metainfo,
     ) -> Result<Self, Box<dyn Error>> {
-        let incoming_connection_listener =
-            TcpListener::bind(format!("0.0.0.0:{}", listening_port)).await?;
         let own_peer_id = generate_peer_id();
         Ok(TorrentManager {
             file_manager: FileManager::new(
@@ -82,8 +73,8 @@ impl TorrentManager {
             ),
             info_hash: metainfo.info_hash,
             own_peer_id,
-            peers: Arc::new(Mutex::new(Vec::new())),
-            incoming_connection_listener,
+            listening_port,
+            peers: Vec::new(),
         })
     }
 
@@ -112,86 +103,49 @@ impl TorrentManager {
                 if let Some(msg) = ok_response.warning_message.clone() {
                     log::warn!("tracker send a warning: {}", msg);
                 }
-                // todo: read interval and start tracker requests in loop
-                // read peers and connect to peers
-                // let mut futures = Vec::new();
-                // for i in 0..std::cmp::min(10, ok_response.peers.len()) {
-                //     futures.push(
-                //         self.initiate_peer(
-                //             ok_response.peers[i].ip.clone(),
-                //             ok_response.peers[i].port,
-                //         ),
-                //     );
-                // }
-                // join!(futures[0], futures[1]);
-
-                // let f1 = self
-                //     .initiate_peer(ok_response.peers[0].ip.clone(), ok_response.peers[0].port)
-                //     .await;
-                // let f2 = self
-                //     .initiate_peer(ok_response.peers[1].ip.clone(), ok_response.peers[1].port)
-                //     .await;
-                // println!("{:?} {:?}", f1, f2);
 
                 log::info!(
                     "tracker request succeeded, tracker response:\n{:?}",
                     ok_response
                 );
 
-                join!(
-                    self.initiate_peer(ok_response.peers[0].ip.clone(), ok_response.peers[0].port),
-                    self.initiate_peer(ok_response.peers[1].ip.clone(), ok_response.peers[1].port),
-                    self.initiate_peer(ok_response.peers[2].ip.clone(), ok_response.peers[2].port),
-                    self.initiate_peer(ok_response.peers[3].ip.clone(), ok_response.peers[3].port)
-                );
+                let (ok_to_accept_connection_tx, mut ok_to_accept_connection_rx) =
+                    mpsc::channel(10);
+                let (piece_completion_status_channel_tx, mut piece_completion_status_channel_rx) =
+                    mpsc::channel(10);
+                let (new_peer_channel_tx, mut new_peer_channel_rx) = mpsc::channel(100);
+                accept_new_peers(
+                    self.listening_port.clone(),
+                    self.info_hash.clone(),
+                    self.own_peer_id.clone(),
+                    self.file_manager.piece_completion_status.clone(),
+                    ok_to_accept_connection_rx,
+                    piece_completion_status_channel_rx,
+                    new_peer_channel_tx,
+                )
+                .await;
             }
         }
-        // start accepting connections from peers
     }
 
-    pub async fn initiate_peer(&self, host: String, port: u32) -> Result<(), Box<dyn Error>> {
+    pub async fn initiate_peer(
+        &self,
+        host: String,
+        port: u32,
+    ) -> Result<TcpStream, Box<dyn Error + Send + Sync>> {
         let dest = format!("{}:{}", host, port);
         log::debug!("connecting to peer: {}", dest);
         let stream = timeout(DEFAULT_TIMEOUT, TcpStream::connect(dest)).await??;
-        timeout(DEFAULT_TIMEOUT, self.handshake(stream)).await?
-    }
-
-    pub async fn accept_peer(&self) -> Result<(), Box<dyn Error>> {
-        log::debug!("waiting for incoming peer connections...");
-        let (stream, _) = self.incoming_connection_listener.accept().await?; // never timeout here, wait forever if needed
-        timeout(DEFAULT_TIMEOUT, self.handshake(stream)).await?
-    }
-
-    async fn handshake(&self, mut stream: TcpStream) -> Result<(), Box<dyn Error>> {
-        let (peer_protocol, _reserved, peer_info_hash, peer_id) = stream
-            .handshake(self.info_hash, self.own_peer_id.as_bytes().try_into()?)
-            .await?;
-        log::debug!(
-            "received handshake info from {}: peer protocol: {}, info_hash: {}, peer_id: {}",
-            stream.peer_addr().unwrap(),
-            peer_protocol,
-            pretty_info_hash(peer_info_hash),
-            str::from_utf8(&peer_id)?,
-        );
-        if peer_info_hash != self.info_hash {
-            log::warn!("info hash received during handshake does not match to the one we want (own: {}, theirs: {}), aborting connection", pretty_info_hash(self.info_hash), pretty_info_hash(peer_info_hash));
-            return Err(Box::from("own and their infohash did not match"));
-        }
-
-        // send bitfield
-        stream
-            .send(Message::Bitfield(
+        timeout(
+            DEFAULT_TIMEOUT,
+            handshake(
+                stream,
+                self.info_hash.clone(),
+                self.own_peer_id.clone(),
                 self.file_manager.piece_completion_status.clone(),
-            ))
-            .await?;
-        log::debug!("bitfield sent to peer {}", stream.peer_addr().unwrap());
-
-        // handshake completed successfully
-        self.peers
-            .lock()
-            .await
-            .push(Peer::new(stream, self.file_manager.num_pieces()));
-        Ok(())
+            ),
+        )
+        .await?
     }
 }
 
@@ -201,4 +155,111 @@ pub fn generate_peer_id() -> String {
     let one_char = || CHARSET[rng.gen_range(0..CHARSET.len())] as char;
     let random_string: String = iter::repeat_with(one_char).take(12).collect();
     format!("-YT0001-{random_string}")
+}
+
+async fn handshake(
+    mut stream: TcpStream,
+    info_hash: [u8; 20],
+    own_peer_id: String,
+    piece_completion_status: Vec<bool>,
+) -> Result<TcpStream, Box<dyn Error + Send + Sync>> {
+    let (peer_protocol, _reserved, peer_info_hash, peer_id) = stream
+        .handshake(info_hash, own_peer_id.as_bytes().try_into()?)
+        .await?;
+    log::debug!(
+        "received handshake info from {}: peer protocol: {}, info_hash: {}, peer_id: {}",
+        stream.peer_addr().unwrap(),
+        peer_protocol,
+        pretty_info_hash(peer_info_hash),
+        str::from_utf8(&peer_id)?,
+    );
+    if peer_info_hash != info_hash {
+        log::warn!("info hash received during handshake does not match to the one we want (own: {}, theirs: {}), aborting connection", pretty_info_hash(info_hash), pretty_info_hash(peer_info_hash));
+        return Err(Box::from("own and their infohash did not match"));
+    }
+
+    // send bitfield
+    stream
+        .send(Message::Bitfield(piece_completion_status))
+        .await?;
+    log::debug!("bitfield sent to peer {}", stream.peer_addr().unwrap());
+
+    // handshake completed successfully
+    Ok(stream)
+}
+
+async fn accept_new_peers(
+    listening_port: i32,
+    info_hash: [u8; 20],
+    own_peer_id: String,
+    piece_completion_status: Vec<bool>,
+    mut ok_to_accept_connection_rx: Receiver<bool>,
+    mut piece_completion_status_rx: Receiver<Vec<bool>>,
+    new_peer_tx: Sender<TcpStream>,
+) {
+    let ok_to_accept_connection_for_rcv: Arc<Mutex<bool>> = Arc::new(Mutex::new(true)); // accept new connections at start
+    let ok_to_accept_connection = ok_to_accept_connection_for_rcv.clone();
+    tokio::spawn(async move {
+        while let Some(msg) = ok_to_accept_connection_rx.recv().await {
+            log::debug!(
+                "got message to accept/refuse new incoming connections: {}",
+                msg
+            );
+            *ok_to_accept_connection_for_rcv.lock().unwrap() = msg;
+        }
+    });
+
+    let piece_completion_status_for_rcv: Arc<Mutex<Vec<bool>>> =
+        Arc::new(Mutex::new(piece_completion_status));
+    let piece_completion_status = piece_completion_status_for_rcv.clone();
+    tokio::spawn(async move {
+        while let Some(msg) = piece_completion_status_rx.recv().await {
+            log::debug!("got message to update piece_completion_status");
+            *piece_completion_status_for_rcv.lock().unwrap() = msg;
+        }
+    });
+
+    let incoming_connection_listener = TcpListener::bind(format!("0.0.0.0:{}", listening_port))
+        .await
+        .unwrap();
+
+    _ = tokio::spawn(async move {
+        loop {
+            log::debug!("waiting for incoming peer connections...");
+            let (mut stream, _) = incoming_connection_listener.accept().await.unwrap(); // never timeout here, wait forever if needed
+            if !*ok_to_accept_connection.lock().unwrap() {
+                log::debug!(
+                    "reached limit of incoming connections, shutting down new connection from: {}",
+                    stream.peer_addr().unwrap()
+                );
+                _ = stream.shutdown().await;
+                continue;
+            }
+
+            let piece_completion_status_for_spawn = piece_completion_status.clone();
+            let own_peer_id_for_spawn = own_peer_id.clone();
+            let new_peer_tx_for_spawn = new_peer_tx.clone();
+            tokio::spawn(async move {
+                let pcs = piece_completion_status_for_spawn.lock().unwrap().clone();
+                let remote_addr = stream.peer_addr().unwrap();
+                match timeout(
+                    DEFAULT_TIMEOUT,
+                    handshake(stream, info_hash, own_peer_id_for_spawn, pcs),
+                )
+                .await
+                {
+                    Err(_elapsed) => {
+                        log::debug!("handshake timeout with peer {}", remote_addr);
+                    }
+                    Ok(Err(e)) => {
+                        log::debug!("handshake failed with peer {}: {}", remote_addr, e);
+                    }
+                    Ok(Ok(tcp_stream)) => {
+                        new_peer_tx_for_spawn.send(tcp_stream).await.unwrap();
+                    }
+                }
+            });
+        }
+    })
+    .await; //remove this
 }
