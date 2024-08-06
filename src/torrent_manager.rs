@@ -49,7 +49,7 @@ pub struct TorrentManager {
     info_hash: [u8; 20],
     own_peer_id: String,
     listening_port: i32,
-    peers: Vec<Peer>,
+    peers: Arc<Mutex<Vec<Peer>>>,
 }
 
 impl TorrentManager {
@@ -74,7 +74,7 @@ impl TorrentManager {
             info_hash: metainfo.info_hash,
             own_peer_id,
             listening_port,
-            peers: Vec::new(),
+            peers: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -113,7 +113,70 @@ impl TorrentManager {
                     mpsc::channel(10);
                 let (piece_completion_status_channel_tx, mut piece_completion_status_channel_rx) =
                     mpsc::channel(10);
-                let (new_peer_channel_tx, mut new_peer_channel_rx) = mpsc::channel(100);
+                let (new_peer_channel_tx, mut new_peer_channel_rx) =
+                    mpsc::channel::<TcpStream>(100);
+
+                let peers = self.peers.clone();
+                let num_pieces = self.file_manager.num_pieces();
+                tokio::spawn(async move {
+                    while let Some(msg) = new_peer_channel_rx.recv().await {
+                        log::debug!("got message with new peer: {}", msg.peer_addr().unwrap());
+                        let mut peers = peers.lock().unwrap();
+                        peers.push(Peer {
+                            am_choking: true,
+                            am_interested: false,
+                            peer_choking: true,
+                            peer_interested: false,
+                            haves: vec![false; num_pieces],
+                            network_client: msg,
+                        });
+                        log::debug!("total current peers: {}", peers.len());
+                    }
+                });
+
+                // connect to several peers
+                let peers_from_tracker = ok_response.peers.clone();
+                let info_hash = self.info_hash.clone();
+                let own_peer_id = self.own_peer_id.clone();
+                let piece_completion_status = self.file_manager.piece_completion_status.clone();
+                let new_peer_channel_tx_for_connecting = new_peer_channel_tx.clone();
+                tokio::spawn(async move {
+                    for p in peers_from_tracker.iter() {
+                        let info_hash = info_hash.clone();
+                        let own_peer_id = own_peer_id.clone();
+                        let piece_completion_status = piece_completion_status.clone();
+                        let new_peer_channel_tx_for_connecting =
+                            new_peer_channel_tx_for_connecting.clone();
+                        let p = p.clone();
+                        tokio::spawn(async move {
+                            match initiate_peer(
+                                p.ip.clone(),
+                                p.port,
+                                info_hash,
+                                own_peer_id.clone(),
+                                piece_completion_status.clone(),
+                            )
+                            .await
+                            {
+                                Err(e) => {
+                                    log::debug!(
+                                        "failed to connect to peer {}:{}: {}",
+                                        p.ip,
+                                        p.port,
+                                        e
+                                    );
+                                }
+                                Ok(tcp_stream) => {
+                                    new_peer_channel_tx_for_connecting
+                                        .send(tcp_stream)
+                                        .await
+                                        .unwrap();
+                                }
+                            }
+                        });
+                    }
+                });
+
                 accept_new_peers(
                     self.listening_port.clone(),
                     self.info_hash.clone(),
@@ -126,26 +189,6 @@ impl TorrentManager {
                 .await;
             }
         }
-    }
-
-    pub async fn initiate_peer(
-        &self,
-        host: String,
-        port: u32,
-    ) -> Result<TcpStream, Box<dyn Error + Send + Sync>> {
-        let dest = format!("{}:{}", host, port);
-        log::debug!("connecting to peer: {}", dest);
-        let stream = timeout(DEFAULT_TIMEOUT, TcpStream::connect(dest)).await??;
-        timeout(
-            DEFAULT_TIMEOUT,
-            handshake(
-                stream,
-                self.info_hash.clone(),
-                self.own_peer_id.clone(),
-                self.file_manager.piece_completion_status.clone(),
-            ),
-        )
-        .await?
     }
 }
 
@@ -262,4 +305,26 @@ async fn accept_new_peers(
         }
     })
     .await; //remove this
+}
+
+async fn initiate_peer(
+    host: String,
+    port: u32,
+    info_hash: [u8; 20],
+    own_peer_id: String,
+    piece_completion_status: Vec<bool>,
+) -> Result<TcpStream, Box<dyn Error + Send + Sync>> {
+    let dest = format!("{}:{}", host, port);
+    log::debug!("connecting to peer: {}", dest);
+    let stream = timeout(DEFAULT_TIMEOUT, TcpStream::connect(dest)).await??;
+    timeout(
+        DEFAULT_TIMEOUT,
+        handshake(
+            stream,
+            info_hash.clone(),
+            own_peer_id.clone(),
+            piece_completion_status.clone(),
+        ),
+    )
+    .await?
 }
