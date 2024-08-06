@@ -142,42 +142,27 @@ impl TorrentManager {
                 let new_peer_channel_tx_for_connecting = new_peer_channel_tx.clone();
                 tokio::spawn(async move {
                     for p in peers_from_tracker.iter() {
-                        let info_hash = info_hash.clone();
                         let own_peer_id = own_peer_id.clone();
                         let piece_completion_status = piece_completion_status.clone();
                         let new_peer_channel_tx_for_connecting =
                             new_peer_channel_tx_for_connecting.clone();
                         let p = p.clone();
                         tokio::spawn(async move {
-                            match initiate_peer(
+                            initiate_peer(
                                 p.ip.clone(),
                                 p.port,
                                 info_hash,
                                 own_peer_id.clone(),
                                 piece_completion_status.clone(),
+                                new_peer_channel_tx_for_connecting,
                             )
-                            .await
-                            {
-                                Err(e) => {
-                                    log::debug!(
-                                        "failed to connect to peer {}:{}: {}",
-                                        p.ip,
-                                        p.port,
-                                        e
-                                    );
-                                }
-                                Ok(tcp_stream) => {
-                                    new_peer_channel_tx_for_connecting
-                                        .send(tcp_stream)
-                                        .await
-                                        .unwrap();
-                                }
-                            }
+                            .await;
                         });
                     }
                 });
 
-                accept_new_peers(
+                // this will block forever
+                accept_new_peers_forever(
                     self.listening_port.clone(),
                     self.info_hash.clone(),
                     self.own_peer_id.clone(),
@@ -231,7 +216,8 @@ async fn handshake(
     Ok(stream)
 }
 
-async fn accept_new_peers(
+// this will never return
+async fn accept_new_peers_forever(
     listening_port: i32,
     info_hash: [u8; 20],
     own_peer_id: String,
@@ -266,45 +252,42 @@ async fn accept_new_peers(
         .await
         .unwrap();
 
-    _ = tokio::spawn(async move {
-        loop {
-            log::debug!("waiting for incoming peer connections...");
-            let (mut stream, _) = incoming_connection_listener.accept().await.unwrap(); // never timeout here, wait forever if needed
-            if !*ok_to_accept_connection.lock().unwrap() {
-                log::debug!(
-                    "reached limit of incoming connections, shutting down new connection from: {}",
-                    stream.peer_addr().unwrap()
-                );
-                _ = stream.shutdown().await;
-                continue;
-            }
-
-            let piece_completion_status_for_spawn = piece_completion_status.clone();
-            let own_peer_id_for_spawn = own_peer_id.clone();
-            let new_peer_tx_for_spawn = new_peer_tx.clone();
-            tokio::spawn(async move {
-                let pcs = piece_completion_status_for_spawn.lock().unwrap().clone();
-                let remote_addr = stream.peer_addr().unwrap();
-                match timeout(
-                    DEFAULT_TIMEOUT,
-                    handshake(stream, info_hash, own_peer_id_for_spawn, pcs),
-                )
-                .await
-                {
-                    Err(_elapsed) => {
-                        log::debug!("handshake timeout with peer {}", remote_addr);
-                    }
-                    Ok(Err(e)) => {
-                        log::debug!("handshake failed with peer {}: {}", remote_addr, e);
-                    }
-                    Ok(Ok(tcp_stream)) => {
-                        new_peer_tx_for_spawn.send(tcp_stream).await.unwrap();
-                    }
-                }
-            });
+    loop {
+        log::debug!("waiting for incoming peer connections...");
+        let (mut stream, _) = incoming_connection_listener.accept().await.unwrap(); // never timeout here, wait forever if needed
+        if !*ok_to_accept_connection.lock().unwrap() {
+            log::debug!(
+                "reached limit of incoming connections, shutting down new connection from: {}",
+                stream.peer_addr().unwrap()
+            );
+            _ = stream.shutdown().await;
+            continue;
         }
-    })
-    .await; //remove this
+
+        let piece_completion_status_for_spawn = piece_completion_status.clone();
+        let own_peer_id_for_spawn = own_peer_id.clone();
+        let new_peer_tx_for_spawn = new_peer_tx.clone();
+        tokio::spawn(async move {
+            let pcs = piece_completion_status_for_spawn.lock().unwrap().clone();
+            let remote_addr = stream.peer_addr().unwrap();
+            match timeout(
+                DEFAULT_TIMEOUT,
+                handshake(stream, info_hash, own_peer_id_for_spawn, pcs),
+            )
+            .await
+            {
+                Err(_elapsed) => {
+                    log::debug!("handshake timeout with peer {}", remote_addr);
+                }
+                Ok(Err(e)) => {
+                    log::debug!("handshake failed with peer {}: {}", remote_addr, e);
+                }
+                Ok(Ok(tcp_stream)) => {
+                    new_peer_tx_for_spawn.send(tcp_stream).await.unwrap();
+                }
+            }
+        });
+    }
 }
 
 async fn initiate_peer(
@@ -313,18 +296,39 @@ async fn initiate_peer(
     info_hash: [u8; 20],
     own_peer_id: String,
     piece_completion_status: Vec<bool>,
-) -> Result<TcpStream, Box<dyn Error + Send + Sync>> {
+    new_peer_tx: Sender<TcpStream>,
+) {
     let dest = format!("{}:{}", host, port);
-    log::debug!("connecting to peer: {}", dest);
-    let stream = timeout(DEFAULT_TIMEOUT, TcpStream::connect(dest)).await??;
-    timeout(
-        DEFAULT_TIMEOUT,
-        handshake(
-            stream,
-            info_hash.clone(),
-            own_peer_id.clone(),
-            piece_completion_status.clone(),
-        ),
-    )
-    .await?
+    log::debug!("initiating connection to peer: {}", dest);
+    match timeout(DEFAULT_TIMEOUT, TcpStream::connect(dest.clone())).await {
+        Err(_elapsed) => {
+            log::debug!("timed out connecting to peer {}", dest);
+        }
+        Ok(Err(e)) => {
+            log::debug!("error initiating connection to peer {}: {}", dest, e);
+        }
+        Ok(Ok(tcp_stream)) => {
+            match timeout(
+                DEFAULT_TIMEOUT,
+                handshake(
+                    tcp_stream,
+                    info_hash.clone(),
+                    own_peer_id.clone(),
+                    piece_completion_status.clone(),
+                ),
+            )
+            .await
+            {
+                Err(_elapsed) => {
+                    log::debug!("timed out completing handshake with peer {}", dest);
+                }
+                Ok(Err(e)) => {
+                    log::debug!("error out completing handshake with peer {}", e);
+                }
+                Ok(Ok(tcp_stream)) => {
+                    new_peer_tx.send(tcp_stream).await.unwrap();
+                }
+            }
+        }
+    }
 }
