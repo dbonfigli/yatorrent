@@ -63,7 +63,7 @@ impl TorrentManager {
             file_manager: FileManager::new(
                 base_path,
                 metainfo.get_files(),
-                metainfo.piece_length,
+                metainfo.piece_length as u64,
                 metainfo.pieces,
             ),
             tracker_client: TrackerClient::new(

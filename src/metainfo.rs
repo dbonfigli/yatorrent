@@ -7,7 +7,7 @@ use Result;
 #[derive(PartialEq, Debug)]
 pub struct Metainfo {
     pub announce: String,
-    pub piece_length: i64,     // number of bytes in each piece (integer)
+    pub piece_length: u64,     // number of bytes in each piece (integer)
     pub pieces: Vec<[u8; 20]>, // 20-byte SHA1 of each piece
     pub info_hash: [u8; 20], // 20-byte SHA1 hash of the value of the info key from the Metainfo file
     pub file: MetainfoFile,
@@ -22,7 +22,7 @@ pub enum MetainfoFile {
 #[derive(PartialEq, Debug)]
 pub struct MetainfoSingleFile {
     pub name: String, // the filename. This is purely advisory. (string)
-    pub length: i64,  // length of the file in bytes. (integer)
+    pub length: u64,  // length of the file in bytes. (integer)
 }
 
 #[derive(PartialEq, Debug)]
@@ -33,7 +33,7 @@ pub struct MetainfoMultiFile {
 
 #[derive(PartialEq, Debug)]
 pub struct MultifileFile {
-    pub length: i64,       // length of the file in bytes. (integer)
+    pub length: u64,       // length of the file in bytes. (integer)
     pub path: Vec<String>, // a list containing one or more string elements that together represent the path and filename. Each element in the list corresponds to either a directory name or (in the case of the final element) the filename. For example, a the file "dir1/dir2/file.ext" would consist of three string elements: "dir1", "dir2", and "file.ext". This is encoded as a bencoded list of strings such as l4:dir14:dir28:file.exte
 }
 
@@ -99,7 +99,7 @@ impl Metainfo {
             _ => return Err("The .torrent file does not contain a valid \"info.name\""),
         };
 
-        // piece lenght
+        // piece length
         let piece_length_i64_value = match info_dict.get(&b"piece length".to_vec()) {
             Some(Value::Int(a)) => a,
             _ => return Err("The .torrent file does not contain a valid \"info.piece length\""),
@@ -128,9 +128,12 @@ impl Metainfo {
         // file / files
         let metainfo_file;
         if let Some(Value::Int(a)) = info_dict.get(&b"length".to_vec()) {
+            if *a < 0 {
+                return Err("The .torrent file \"info.length\" kv cannot be < 0");
+            }
             metainfo_file = MetainfoFile::SingleFile(MetainfoSingleFile {
                 name: name_string,
-                length: *a,
+                length: *a as u64,
             });
         } else if let Some(Value::List(files_list)) = info_dict.get(&b"files".to_vec()) {
             let mut files = Vec::new();
@@ -172,7 +175,7 @@ impl Metainfo {
                 }
 
                 files.push(MultifileFile {
-                    length: *entry_length,
+                    length: *entry_length as u64,
                     path: entry_path_list,
                 })
             }
@@ -186,14 +189,14 @@ impl Metainfo {
 
         Ok(Metainfo {
             announce: announce_string,
-            piece_length: *piece_length_i64_value,
+            piece_length: *piece_length_i64_value as u64,
             pieces: pieces_vec,
             info_hash: info_hash,
             file: metainfo_file,
         })
     }
 
-    pub fn get_files(&self) -> Vec<(String, i64)> {
+    pub fn get_files(&self) -> Vec<(String, u64)> {
         match &self.file {
             MetainfoFile::SingleFile(m) => {
                 vec![(m.name.clone(), m.length)]

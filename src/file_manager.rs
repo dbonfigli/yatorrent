@@ -10,9 +10,9 @@ use sha1::{Digest, Sha1};
 use size::Size;
 
 pub struct FileManager {
-    file_list: Vec<(PathBuf, i64, bool)>, // name with path, size, download completed / incomplete
+    file_list: Vec<(PathBuf, u64, bool)>, // name with path, size, download completed / incomplete
     piece_hashes: Vec<[u8; 20]>,          // piece identified by position in array -> hash
-    piece_to_files: Vec<Vec<(PathBuf, i64, i64)>>, // piece identified by position in array -> list of files the piece belong to, with start byte and end byte within that file. A piece can span many files
+    piece_to_files: Vec<Vec<(PathBuf, u64, u64)>>, // piece identified by position in array -> list of files the piece belong to, with start byte and end byte within that file. A piece can span many files
 
     // mutable fields
     pub piece_completion_status: Vec<bool>, // piece identified by position in array -> download completed / incomplete
@@ -60,8 +60,8 @@ impl FileHandles {
 impl FileManager {
     pub fn new(
         base_path: &Path,
-        file_list: Vec<(String, i64)>,
-        piece_length: i64,
+        file_list: Vec<(String, u64)>,
+        piece_length: u64,
         piece_hashes: Vec<[u8; 20]>,
     ) -> FileManager {
         // warn if files do not match pieces
@@ -69,7 +69,7 @@ impl FileManager {
         for (_, size) in file_list.iter() {
             total_file_size += size;
         }
-        if total_file_size > piece_length * piece_hashes.len() as i64 {
+        if total_file_size > piece_length * piece_hashes.len() as u64 {
             log::warn!("the total file size of all files exceed the #pieces * piece_length we have, the .torrent file could be malformed, the exceeding files will not be downloaded");
         }
 
@@ -220,7 +220,7 @@ impl FileManager {
     }
 
     // the last piece could have a size less than the others
-    pub fn piece_length(&self, piece_idx: usize) -> i64 {
+    pub fn piece_length(&self, piece_idx: usize) -> u64 {
         let mut total_size = 0;
         for (_, start, end) in self.piece_to_files[piece_idx].iter() {
             total_size += end - start;
@@ -231,8 +231,8 @@ impl FileManager {
     pub fn read_piece_block(
         &mut self,
         piece_idx: usize,
-        block_begin: i64,
-        block_length: i64,
+        block_begin: u64,
+        block_length: u64,
     ) -> Result<Vec<u8>, Box<dyn Error>> {
         return self.read_piece_block_with_have_piece_check(
             piece_idx,
@@ -245,8 +245,8 @@ impl FileManager {
     fn read_piece_block_with_have_piece_check(
         &mut self,
         piece_idx: usize,
-        block_begin: i64,
-        block_length: i64,
+        block_begin: u64,
+        block_length: u64,
         check_if_have_piece: bool,
     ) -> Result<Vec<u8>, Box<dyn Error>> {
         if piece_idx >= self.piece_to_files.len() {
@@ -277,7 +277,7 @@ impl FileManager {
             let mut file_offset = *start;
             if current_piece_offset != block_begin {
                 let piece_fragment_size_in_file = end - start;
-                if block_begin - current_piece_offset - piece_fragment_size_in_file > 0 {
+                if piece_fragment_size_in_file < block_begin - current_piece_offset {
                     // the current chunk of data in the file is not enough to reach the begin of the block we want to read
                     // move forward to the next file
                     current_piece_offset += piece_fragment_size_in_file;
@@ -300,8 +300,8 @@ impl FileManager {
             }
 
             let mut opened_file = self.file_handles.get_file(file_path, false)?;
-            opened_file.seek(SeekFrom::Start(file_offset as u64))?;
-            let mut file_buf: Vec<u8> = vec![0; bytes_to_read.try_into().unwrap()];
+            opened_file.seek(SeekFrom::Start(file_offset))?;
+            let mut file_buf: Vec<u8> = vec![0; bytes_to_read as usize];
             opened_file.read_exact(&mut file_buf)?;
             block_buf.append(&mut file_buf);
         }
@@ -325,7 +325,7 @@ impl FileManager {
         }
 
         let mut data_start = 0;
-        let mut data_len = data.len();
+        let mut data_len = data.len() as u64;
         let mut piece_begin: u64 = 0;
 
         // check and adjust the write to write if we have already written something from this block
@@ -334,18 +334,18 @@ impl FileManager {
                 return Err(Box::from("cannot write block: preceding data missing"));
             }
             data_start = *already_downloaded_bytes - block_begin;
-            if data_start >= data.len() as u64 {
+            if data_start >= data_len {
                 log::debug!("we already have written all the data in this block");
                 return Ok(());
             }
-            data_len -= data_start as usize;
+            data_len -= data_start;
             piece_begin = *already_downloaded_bytes;
         } else if block_begin != 0 {
             return Err(Box::from("cannot write block: preceding data missing"));
         }
 
         let piece_len = self.piece_length(piece_idx);
-        if piece_begin + data_len as u64 > piece_len as u64 {
+        if piece_begin + data_len > piece_len {
             return Err(Box::from(
                 "cannot write block: data would overflow the piece",
             ));
@@ -353,14 +353,14 @@ impl FileManager {
 
         // finally write this block
         let mut data_cursor = data_start;
-        let mut data_still_to_be_written = data_len as u64;
+        let mut data_still_to_be_written = data_len;
         let mut piece_cursor_to_begin = 0;
         for (file_path, file_start, file_end) in self.piece_to_files[piece_idx].iter() {
-            if data_still_to_be_written <= 0 {
+            if data_still_to_be_written == 0 {
                 break;
             }
-            let mut file_start = *file_start as u64;
-            let file_end = *file_end as u64;
+            let mut file_start = *file_start;
+            let file_end = *file_end;
             if piece_begin - piece_cursor_to_begin < file_end - file_start {
                 file_start += piece_begin - piece_cursor_to_begin;
                 piece_cursor_to_begin = piece_begin;
@@ -368,16 +368,16 @@ impl FileManager {
                 piece_cursor_to_begin += file_end - file_start;
                 continue;
             }
-            let data_to_write = cmp::min(file_end - file_start, data_still_to_be_written as u64);
+            let data_to_write = cmp::min(file_end - file_start, data_still_to_be_written);
             let mut opened_file = self.file_handles.get_file(file_path, true)?;
-            opened_file.seek(SeekFrom::Start(file_start as u64))?;
+            opened_file.seek(SeekFrom::Start(file_start))?;
             opened_file.write_all(&data[data_cursor as usize..data_to_write as usize])?;
             data_cursor += data_to_write;
-            data_still_to_be_written -= data_to_write as u64;
+            data_still_to_be_written -= data_to_write;
         }
 
         // check if piece is completed
-        if piece_begin as usize + data_len == data_len {
+        if piece_begin + data_len == data_len {
             self.incomplete_pieces.remove(&piece_idx);
 
             // final sha check
@@ -388,14 +388,14 @@ impl FileManager {
                 .try_into()
                 .unwrap();
             if piece_sha != self.piece_hashes[piece_idx] {
-                return Err(Box::from(format!("the sha of the data je just wrote for piece {} do not match the sha we expect, marking this piece as missing", piece_idx)));
+                return Err(Box::from(format!("the sha of the data we just wrote for piece {} do not match the sha we expect, marking this piece as missing", piece_idx)));
             } else {
                 self.piece_completion_status[piece_idx] = true;
                 self.refresh_completed_files(); //todo: optimize this
             }
         } else {
             self.incomplete_pieces
-                .insert(piece_idx, data_start + data_len as u64);
+                .insert(piece_idx, data_start + data_len);
         }
 
         Ok(())
@@ -415,10 +415,10 @@ impl FileManager {
               format!("the sha of the data we want to write for piece {} do not match the sha we expect, write aborted", piece_idx)));
         }
 
-        let mut written: i64 = 0;
+        let mut written: u64 = 0;
         for (file_path, start, end) in self.piece_to_files[piece_idx].iter() {
             let mut opened_file = self.file_handles.get_file(file_path, true)?;
-            opened_file.seek(SeekFrom::Start(*start as u64))?;
+            opened_file.seek(SeekFrom::Start(*start))?;
             opened_file.write_all(&data[written as usize..(end - start) as usize])?;
             written += end - start;
         }
@@ -432,7 +432,7 @@ impl FileManager {
         self.piece_hashes.len()
     }
 
-    pub fn bytes_left(&self) -> i64 {
+    pub fn bytes_left(&self) -> u64 {
         let mut total = 0;
         let mut total_completed = 0;
         for idx in 0..self.piece_completion_status.len() {

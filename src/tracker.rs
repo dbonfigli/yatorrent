@@ -88,9 +88,9 @@ impl TrackerClient {
     pub async fn request(
         &mut self,
         info_hash: [u8; 20],
-        uploaded: i64,
-        downloaded: i64,
-        left: i64,
+        uploaded: u64,
+        downloaded: u64,
+        left: u64,
         event: Event,
     ) -> Result<Response, Box<dyn Error>> {
         let mut url = reqwest::Url::parse_with_params(
