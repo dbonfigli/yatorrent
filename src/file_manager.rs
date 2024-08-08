@@ -17,6 +17,7 @@ pub struct FileManager {
     // mutable fields
     pub piece_completion_status: Vec<bool>, // piece identified by position in array -> download completed / incomplete
     file_handles: FileHandles,
+    incomplete_pieces: HashMap<usize, u64>, // piece id -> downloaded bytes
 }
 
 struct FileHandles {
@@ -140,6 +141,7 @@ impl FileManager {
             piece_to_files,
             piece_completion_status,
             file_handles: FileHandles::new(),
+            incomplete_pieces: HashMap::new(),
         }
     }
 
@@ -305,6 +307,98 @@ impl FileManager {
         }
 
         Ok(block_buf)
+    }
+
+    pub fn write_piece_block(
+        &mut self,
+        piece_idx: usize,
+        data: Vec<u8>,
+        block_begin: u64, // position in the piece where to start writing data
+    ) -> Result<(), Box<dyn Error>> {
+        // avoid useless writes if we already have the piece
+        if self.piece_completion_status[piece_idx] {
+            log::debug!(
+                "we already have the piece {}, will avoid to write it again",
+                piece_idx
+            );
+            return Ok(());
+        }
+
+        let mut data_start = 0;
+        let mut data_len = data.len();
+        let mut piece_begin: u64 = 0;
+
+        // check and adjust the write to write if we have already written something from this block
+        if let Some(already_downloaded_bytes) = self.incomplete_pieces.get(&piece_idx) {
+            if block_begin > *already_downloaded_bytes {
+                return Err(Box::from("cannot write block: preceding data missing"));
+            }
+            data_start = *already_downloaded_bytes - block_begin;
+            if data_start >= data.len() as u64 {
+                log::debug!("we already have written all the data in this block");
+                return Ok(());
+            }
+            data_len -= data_start as usize;
+            piece_begin = *already_downloaded_bytes;
+        } else if block_begin != 0 {
+            return Err(Box::from("cannot write block: preceding data missing"));
+        }
+
+        let piece_len = self.piece_length(piece_idx);
+        if piece_begin + data_len as u64 > piece_len as u64 {
+            return Err(Box::from(
+                "cannot write block: data would overflow the piece",
+            ));
+        }
+
+        // finally write this block
+        let mut data_cursor = data_start;
+        let mut data_still_to_be_written = data_len as u64;
+        let mut piece_cursor_to_begin = 0;
+        for (file_path, file_start, file_end) in self.piece_to_files[piece_idx].iter() {
+            if data_still_to_be_written <= 0 {
+                break;
+            }
+            let mut file_start = *file_start as u64;
+            let file_end = *file_end as u64;
+            if piece_begin - piece_cursor_to_begin < file_end - file_start {
+                file_start += piece_begin - piece_cursor_to_begin;
+                piece_cursor_to_begin = piece_begin;
+            } else {
+                piece_cursor_to_begin += file_end - file_start;
+                continue;
+            }
+            let data_to_write = cmp::min(file_end - file_start, data_still_to_be_written as u64);
+            let mut opened_file = self.file_handles.get_file(file_path, true)?;
+            opened_file.seek(SeekFrom::Start(file_start as u64))?;
+            opened_file.write_all(&data[data_cursor as usize..data_to_write as usize])?;
+            data_cursor += data_to_write;
+            data_still_to_be_written -= data_to_write as u64;
+        }
+
+        // check if piece is completed
+        if piece_begin as usize + data_len == data_len {
+            self.incomplete_pieces.remove(&piece_idx);
+
+            // final sha check
+            let read_piece_data =
+                self.read_piece_block_with_have_piece_check(piece_idx, 0, piece_len, false)?;
+            let piece_sha: [u8; 20] = Sha1::digest(&read_piece_data)
+                .as_slice()
+                .try_into()
+                .unwrap();
+            if piece_sha != self.piece_hashes[piece_idx] {
+                return Err(Box::from(format!("the sha of the data je just wrote for piece {} do not match the sha we expect, marking this piece as missing", piece_idx)));
+            } else {
+                self.piece_completion_status[piece_idx] = true;
+                self.refresh_completed_files(); //todo: optimize this
+            }
+        } else {
+            self.incomplete_pieces
+                .insert(piece_idx, data_start + data_len as u64);
+        }
+
+        Ok(())
     }
 
     pub fn write_piece(&mut self, piece_idx: usize, data: Vec<u8>) -> Result<(), Box<dyn Error>> {
