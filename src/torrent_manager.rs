@@ -94,7 +94,7 @@ impl TorrentManager {
             .await
         {
             Err(e) => {
-                log::error!("could not read first request from tracker: {}", e);
+                log::error!("could not perform first request to tracker: {}", e);
             }
             Ok(Response::Failure(msg)) => {
                 log::error!("tracker responded with failure: {}", msg);
@@ -116,23 +116,10 @@ impl TorrentManager {
                 let (new_peer_channel_tx, mut new_peer_channel_rx) =
                     mpsc::channel::<TcpStream>(100);
 
+                // new peers handler
                 let peers = self.peers.clone();
                 let num_pieces = self.file_manager.num_pieces();
-                tokio::spawn(async move {
-                    while let Some(msg) = new_peer_channel_rx.recv().await {
-                        log::debug!("got message with new peer: {}", msg.peer_addr().unwrap());
-                        let mut peers = peers.lock().unwrap();
-                        peers.push(Peer {
-                            am_choking: true,
-                            am_interested: false,
-                            peer_choking: true,
-                            peer_interested: false,
-                            haves: vec![false; num_pieces],
-                            network_client: msg,
-                        });
-                        log::debug!("total current peers: {}", peers.len());
-                    }
-                });
+                tokio::spawn(run_new_peer_handler(new_peer_channel_rx, peers, num_pieces));
 
                 // connect to several peers
                 let peers_from_tracker = ok_response.peers.clone();
@@ -142,13 +129,14 @@ impl TorrentManager {
                 let new_peer_channel_tx_for_connecting = new_peer_channel_tx.clone();
                 tokio::spawn(async move {
                     for p in peers_from_tracker.iter() {
+                        // todo: reduce this to something like max ~30
                         let own_peer_id = own_peer_id.clone();
                         let piece_completion_status = piece_completion_status.clone();
                         let new_peer_channel_tx_for_connecting =
                             new_peer_channel_tx_for_connecting.clone();
                         let p = p.clone();
                         tokio::spawn(async move {
-                            initiate_peer(
+                            connect_to_new_peer(
                                 p.ip.clone(),
                                 p.port,
                                 info_hash,
@@ -162,7 +150,7 @@ impl TorrentManager {
                 });
 
                 // this will block forever
-                accept_new_peers_forever(
+                run_new_peers_accepter(
                     self.listening_port.clone(),
                     self.info_hash.clone(),
                     self.own_peer_id.clone(),
@@ -174,6 +162,38 @@ impl TorrentManager {
                 .await;
             }
         }
+    }
+}
+
+async fn run_new_peer_handler(
+    mut new_peer_channel_rx: Receiver<TcpStream>,
+    peers: Arc<Mutex<Vec<Peer>>>,
+    torrent_num_pieces: usize,
+) {
+    while let Some(msg) = new_peer_channel_rx.recv().await {
+        log::debug!("got message with new peer: {}", msg.peer_addr().unwrap());
+        let mut peers = peers.lock().unwrap();
+        peers.push(Peer {
+            am_choking: true,
+            am_interested: false,
+            peer_choking: true,
+            peer_interested: false,
+            haves: vec![false; torrent_num_pieces],
+            network_client: msg,
+        });
+        log::debug!("total current peers: {}", peers.len());
+        // tokio::spawn(async move {
+        //     loop {
+        //         match msg.receive().await {
+        //             Ok(message) => {
+        //                 // Handle the received message
+        //             }
+        //             Err(err) => {
+        //                 // Handle the error
+        //             }
+        //         }
+        //     }
+        // });
     }
 }
 
@@ -217,7 +237,7 @@ async fn handshake(
 }
 
 // this will never return
-async fn accept_new_peers_forever(
+async fn run_new_peers_accepter(
     listening_port: i32,
     info_hash: [u8; 20],
     own_peer_id: String,
@@ -290,7 +310,7 @@ async fn accept_new_peers_forever(
     }
 }
 
-async fn initiate_peer(
+async fn connect_to_new_peer(
     host: String,
     port: u32,
     info_hash: [u8; 20],
