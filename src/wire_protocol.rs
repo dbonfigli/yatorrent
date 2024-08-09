@@ -75,6 +75,7 @@ impl fmt::Display for Message {
 
 #[trait_variant::make(Protocol: Send)]
 pub trait LocalProtocol {
+    #[allow(dead_code)]
     async fn handshake(
         &mut self,
         info_hash: [u8; 20],
@@ -84,11 +85,13 @@ pub trait LocalProtocol {
 
 #[trait_variant::make(ProtocolReadHalf: Send)]
 pub trait LocalProtocolReadHalf {
+    #[allow(dead_code)]
     async fn receive(&mut self) -> Result<Message, Box<dyn Error + Send + Sync>>;
 }
 
 #[trait_variant::make(ProtocolWriteHalf: Send)]
 pub trait LocalProtocolWriteHalf {
+    #[allow(dead_code)]
     async fn send(&mut self, message: Message) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 
