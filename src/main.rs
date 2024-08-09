@@ -2,19 +2,15 @@ use std::env::current_dir;
 use std::error::Error;
 use std::path::Path;
 use std::process::exit;
-use std::{env, fs, str};
+use std::{env, fs};
 
-use file_manager::FileManager;
-use metainfo::pretty_info_hash;
-use tokio::net::TcpStream;
-use tracker::TrackerClient;
-use tracker::{Event, Response};
-use wire_protocol::Protocol;
+use torrent_manager::TorrentManager;
 
 mod bencoding;
 mod file_manager;
 mod metainfo;
 mod tcp_wire_protocol;
+mod torrent_manager;
 mod tracker;
 mod wire_protocol;
 
@@ -48,61 +44,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     match metainfo {
         Ok(m) => {
             log::info!("torrent file metainfo:\n{}", m);
-
-            let mut manager = FileManager::new(base_path, m.get_files(), m.piece_length, m.pieces);
-
-            manager.refresh_completed_pieces();
-            manager.refresh_completed_files();
-
-            //log::info!("refreshed: {:?}", manager.piece_completed);
-
-            // let mut tracker_client: TrackerClient = TrackerClient::new(m.announce, 1234);
-            // let result = tracker_client
-            //     .request(m.info_hash, 0, 0, 100, Event::Started)
-            //     .await;
-            // match result {
-            //     Ok(response) => {
-            //         log::info!("tracker request suceeded, tracker response:\n{}", response);
-
-            //         match response {
-            //             Response::Ok(ok_response) => {
-            //                 if ok_response.peers.len() > 0 {
-            //                     let dest = format!(
-            //                         "{}:{}",
-            //                         ok_response.peers[0].ip, ok_response.peers[0].port
-            //                     );
-            //                     log::info!("connecting to: {}", dest);
-            //                     let mut stream = TcpStream::connect(dest).await?;
-            //                     let (peer_protocol, _, info_hash, peer_id) = stream
-            //                         .handshake(
-            //                             m.info_hash,
-            //                             tracker_client.peer_id.as_bytes().try_into()?,
-            //                         )
-            //                         .await?;
-            //                     log::info!(
-            //                         "recevied handshake info: peer protocol: {}, info_hash: {}, peer_id: {}",
-            //                         peer_protocol,
-            //                         pretty_info_hash(info_hash),
-            //                         str::from_utf8(&peer_id)?
-            //                     );
-            //                     let rec = stream.receive().await?;
-            //                     log::info!("rec: {:#?}", rec);
-            //                     let rec = stream.receive().await?;
-            //                     log::info!("rec: {:#?}", rec);
-            //                     let rec = stream.receive().await?;
-            //                     log::info!("rec: {:#?}", rec);
-            //                 }
-            //             }
-            //             Response::Failure(err_message) => {}
-            //         }
-
-            //         exit(0);
-            //     }
-            //     Err(err) => {
-            //         log::info!("tracker request failed: {:?}", err);
-            //         exit(1);
-            //     }
-            // }
+            let mut torrent_manager = TorrentManager::new(base_path, 8000, m).await?;
+            torrent_manager.start().await;
             exit(0);
         }
         Err(e) => {
