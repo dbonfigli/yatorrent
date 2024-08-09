@@ -9,6 +9,7 @@ use torrent_manager::TorrentManager;
 mod bencoding;
 mod file_manager;
 mod metainfo;
+mod peer;
 mod tcp_wire_protocol;
 mod torrent_manager;
 mod tracker;
