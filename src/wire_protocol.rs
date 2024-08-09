@@ -1,5 +1,5 @@
 use parse_display::Display;
-use std::error::Error;
+use std::{error::Error, fmt};
 
 #[derive(Debug)]
 pub enum Message {
@@ -10,10 +10,67 @@ pub enum Message {
     NotInterested,
     Have(u32),                // piece index
     Bitfield(Vec<bool>),      // the high bit in the first byte corresponds to piece index 0
-    Request(u32, u32, u32),   // index, begin, lenght
+    Request(u32, u32, u32),   // index, begin, length
     Piece(u32, u32, Vec<u8>), // index, begin, block of data
-    Cancel(u32, u32, u32),    // index, begin, lenght
+    Cancel(u32, u32, u32),    // index, begin, length
     Port(u16),                // port number
+}
+
+impl fmt::Display for Message {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Message::KeepAlive => {
+                write!(f, "keep-alive")
+            }
+            Message::Choke => {
+                write!(f, "choke")
+            }
+            Message::Unchoke => {
+                write!(f, "unchoke")
+            }
+            Message::Interested => {
+                write!(f, "interested")
+            }
+            Message::NotInterested => {
+                write!(f, "not interested")
+            }
+            Message::Have(piece_idx) => {
+                write!(f, "have piece id {}", piece_idx)
+            }
+            Message::Bitfield(bitfield) => {
+                let total_have = bitfield
+                    .iter()
+                    .fold(0, |acc, v| if *v { acc + 1 } else { acc });
+                write!(f, "bitfield have {} total: {}", total_have, bitfield.len())
+            }
+            Message::Request(piece_idx, begin, end) => {
+                write!(
+                    f,
+                    "request: piece idx: {}, begin: {}, end: {}",
+                    piece_idx, begin, end
+                )
+            }
+            Message::Piece(piece_idx, begin, data) => {
+                write!(
+                    f,
+                    "piece: piece idx: {}, begin: {}, data len: {}",
+                    piece_idx,
+                    begin,
+                    data.len()
+                )
+            }
+            Message::Cancel(piece_idx, begin, end) => {
+                write!(
+                    f,
+                    "cancel: piece idx: {}, begin: {}, end: {}",
+                    piece_idx, begin, end
+                )
+            }
+            Message::Port(p) => {
+                write!(f, "port {}", p)
+            }
+        }
+    }
 }
 
 #[trait_variant::make(Protocol: Send)]

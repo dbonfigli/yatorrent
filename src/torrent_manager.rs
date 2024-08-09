@@ -241,7 +241,7 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
                     .unwrap();
             }
             Ok(Ok(proto_msg)) => {
-                log::debug!("received from {}: {:#?}", peer_addr, proto_msg);
+                log::debug!("received from {}: {}", peer_addr, proto_msg);
                 peer_to_manager_tx
                     .send(PeerToManagerMsg::Receive(proto_msg))
                     .await
