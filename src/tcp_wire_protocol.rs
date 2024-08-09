@@ -2,12 +2,12 @@ use core::str;
 use std::error::Error;
 
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf},
     join,
     net::TcpStream,
 };
 
-use crate::wire_protocol::{Message, Protocol, ProtocolError};
+use crate::wire_protocol::{Message, Protocol, ProtocolError, ProtocolReadHalf, ProtocolWriteHalf};
 
 impl Protocol for TcpStream {
     async fn handshake(
@@ -83,7 +83,9 @@ impl Protocol for TcpStream {
         }
         return read_result;
     }
+}
 
+impl ProtocolWriteHalf for WriteHalf<TcpStream> {
     async fn send(&mut self, message: Message) -> Result<(), Box<dyn Error + Send + Sync>> {
         match message {
             Message::KeepAlive => {
@@ -204,7 +206,9 @@ impl Protocol for TcpStream {
             }
         }
     }
+}
 
+impl ProtocolReadHalf for ReadHalf<TcpStream> {
     async fn receive(&mut self) -> Result<Message, Box<dyn Error + Send + Sync>> {
         // get size of  message
         let mut size_message_buf: [u8; 4] = [0; 4];

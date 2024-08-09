@@ -16,14 +16,23 @@ pub enum Message {
     Port(u16),                // port number
 }
 
-pub trait Protocol {
+#[trait_variant::make(Protocol: Send)]
+pub trait LocalProtocol {
     async fn handshake(
         &mut self,
         info_hash: [u8; 20],
         peer_id: [u8; 20],
     ) -> Result<(String, [u8; 8], [u8; 20], [u8; 20]), Box<dyn Error + Send + Sync>>; // pstr, reserved, info_hash, peer_id
-    async fn send(&mut self, message: Message) -> Result<(), Box<dyn Error + Send + Sync>>;
+}
+
+#[trait_variant::make(ProtocolReadHalf: Send)]
+pub trait LocalProtocolReadHalf {
     async fn receive(&mut self) -> Result<Message, Box<dyn Error + Send + Sync>>;
+}
+
+#[trait_variant::make(ProtocolWriteHalf: Send)]
+pub trait LocalProtocolWriteHalf {
+    async fn send(&mut self, message: Message) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 
 #[derive(Display, Debug)]

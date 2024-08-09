@@ -11,6 +11,7 @@ use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
 use tokio::time::timeout;
 
+use crate::wire_protocol::{ProtocolReadHalf, ProtocolWriteHalf};
 use crate::{
     file_manager::FileManager,
     metainfo::{pretty_info_hash, Metainfo},
@@ -18,29 +19,44 @@ use crate::{
     wire_protocol::{Message, Protocol},
 };
 
+static DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+static MAX_CONNECTIONS: usize = 55;
+
 struct Peer {
     am_choking: bool,
     am_interested: bool,
     peer_choking: bool,
     peer_interested: bool,
-    network_client: TcpStream,
     haves: Vec<bool>,
+    manager_to_peer_tx: Sender<ManagerToPeerMsg>,
+    peer_to_manager_rx: Receiver<PeerToManagerMsg>,
 }
 
-static DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
-static MAX_CONNECTIONS: usize = 55;
-
 impl Peer {
-    pub fn new(network_client: TcpStream, num_pieces: usize) -> Self {
+    pub fn new(
+        num_pieces: usize,
+        manager_to_peer_tx: Sender<ManagerToPeerMsg>,
+        peer_to_manager_rx: Receiver<PeerToManagerMsg>,
+    ) -> Self {
         return Peer {
             am_choking: true,
             am_interested: false,
             peer_choking: true,
             peer_interested: false,
-            network_client,
             haves: vec![false; num_pieces],
+            manager_to_peer_tx,
+            peer_to_manager_rx,
         };
     }
+}
+
+enum ManagerToPeerMsg {
+    Send(Message),
+}
+
+enum PeerToManagerMsg {
+    Error,
+    Receive(Message),
 }
 
 pub struct TorrentManager {
@@ -109,12 +125,10 @@ impl TorrentManager {
                     ok_response
                 );
 
-                let (ok_to_accept_connection_tx, mut ok_to_accept_connection_rx) =
+                let (ok_to_accept_connection_tx, ok_to_accept_connection_rx) = mpsc::channel(10);
+                let (piece_completion_status_channel_tx, piece_completion_status_channel_rx) =
                     mpsc::channel(10);
-                let (piece_completion_status_channel_tx, mut piece_completion_status_channel_rx) =
-                    mpsc::channel(10);
-                let (new_peer_channel_tx, mut new_peer_channel_rx) =
-                    mpsc::channel::<TcpStream>(100);
+                let (new_peer_channel_tx, new_peer_channel_rx) = mpsc::channel::<TcpStream>(100);
 
                 // new peers handler
                 let peers = self.peers.clone();
@@ -149,8 +163,8 @@ impl TorrentManager {
                     }
                 });
 
-                // this will block forever
-                run_new_peers_accepter(
+                // incoming peer handler: this will block forever
+                run_new_incoming_peers_handler(
                     self.listening_port.clone(),
                     self.info_hash.clone(),
                     self.own_peer_id.clone(),
@@ -171,7 +185,23 @@ async fn run_new_peer_handler(
     torrent_num_pieces: usize,
 ) {
     while let Some(msg) = new_peer_channel_rx.recv().await {
-        log::debug!("got message with new peer: {}", msg.peer_addr().unwrap());
+        let peer_addr = msg.peer_addr().unwrap().to_string();
+        log::debug!("got message with new peer: {}", peer_addr);
+        let (manager_to_peer_tx, manager_to_peer_rx) = mpsc::channel(10);
+        let (peer_to_manager_tx, peer_to_manager_rx) = mpsc::channel(10);
+        let peer_to_manager_tx_for_snd_message_handler = peer_to_manager_tx.clone();
+        let (read, write) = tokio::io::split(msg);
+        tokio::spawn(rcv_message_handler(
+            peer_addr.clone(),
+            peer_to_manager_tx,
+            read,
+        ));
+        tokio::spawn(snd_message_handler(
+            peer_addr.clone(),
+            manager_to_peer_rx,
+            peer_to_manager_tx_for_snd_message_handler,
+            write,
+        ));
         let mut peers = peers.lock().unwrap();
         peers.push(Peer {
             am_choking: true,
@@ -179,21 +209,76 @@ async fn run_new_peer_handler(
             peer_choking: true,
             peer_interested: false,
             haves: vec![false; torrent_num_pieces],
-            network_client: msg,
+            manager_to_peer_tx,
+            peer_to_manager_rx,
         });
         log::debug!("total current peers: {}", peers.len());
-        // tokio::spawn(async move {
-        //     loop {
-        //         match msg.receive().await {
-        //             Ok(message) => {
-        //                 // Handle the received message
-        //             }
-        //             Err(err) => {
-        //                 // Handle the error
-        //             }
-        //         }
-        //     }
-        // });
+    }
+}
+
+async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
+    peer_addr: String,
+    peer_to_manager_tx: Sender<PeerToManagerMsg>,
+    mut wire_proto: T,
+) {
+    loop {
+        match timeout(Duration::from_secs(180), wire_proto.receive()).await {
+            Err(_elapsed) => {
+                log::debug!(
+                    "did not receive anything (not even keep-alive messages) from peer in 3 minutes {}",
+                    peer_addr
+                );
+                peer_to_manager_tx
+                    .send(PeerToManagerMsg::Error)
+                    .await
+                    .unwrap();
+            }
+            Ok(Err(e)) => {
+                log::debug!("receive failed with peer {}: {}", peer_addr, e);
+                peer_to_manager_tx
+                    .send(PeerToManagerMsg::Error)
+                    .await
+                    .unwrap();
+            }
+            Ok(Ok(proto_msg)) => {
+                log::debug!("received from {}: {:#?}", peer_addr, proto_msg);
+                peer_to_manager_tx
+                    .send(PeerToManagerMsg::Receive(proto_msg))
+                    .await
+                    .unwrap();
+            }
+        }
+    }
+}
+
+async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
+    peer_addr: String,
+    mut manager_to_peer_rx: Receiver<ManagerToPeerMsg>,
+    peer_to_manager_tx: Sender<PeerToManagerMsg>,
+    mut wire_proto: T,
+) {
+    while let Some(manager_msg) = manager_to_peer_rx.recv().await {
+        match manager_msg {
+            ManagerToPeerMsg::Send(proto_msg) => {
+                match timeout(DEFAULT_TIMEOUT, wire_proto.send(proto_msg)).await {
+                    Err(_elapsed) => {
+                        log::debug!("timeout sending message to peer {}", peer_addr);
+                        peer_to_manager_tx
+                            .send(PeerToManagerMsg::Error)
+                            .await
+                            .unwrap();
+                    }
+                    Ok(Err(e)) => {
+                        log::debug!("sending failed with peer {}: {}", peer_addr, e);
+                        peer_to_manager_tx
+                            .send(PeerToManagerMsg::Error)
+                            .await
+                            .unwrap();
+                    }
+                    Ok(Ok(_)) => {}
+                }
+            }
+        }
     }
 }
 
@@ -227,17 +312,20 @@ async fn handshake(
     }
 
     // send bitfield
-    stream
+    let peer_addr = stream.peer_addr().unwrap();
+    let (read, mut write) = tokio::io::split(stream);
+    write
         .send(Message::Bitfield(piece_completion_status))
         .await?;
-    log::debug!("bitfield sent to peer {}", stream.peer_addr().unwrap());
+    log::debug!("bitfield sent to peer {}", peer_addr);
+    let stream = read.unsplit(write);
 
     // handshake completed successfully
     Ok(stream)
 }
 
 // this will never return
-async fn run_new_peers_accepter(
+async fn run_new_incoming_peers_handler(
     listening_port: i32,
     info_hash: [u8; 20],
     own_peer_id: String,
