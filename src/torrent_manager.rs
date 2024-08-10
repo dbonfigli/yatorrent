@@ -1,15 +1,22 @@
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 use std::{error::Error, iter, path::Path};
 
+use rand::seq::SliceRandom;
 use rand::Rng;
+use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::time;
 
-use crate::peer::{self, ManagerToPeerMsg, NewPeerMessage, PeerToManagerMsg};
+use crate::peer::{self, PeerAddr, ToManagerMsg, ToPeerMsg};
+use crate::tracker;
 use crate::{
     file_manager::FileManager,
     metainfo::Metainfo,
     tracker::{Event, Response, TrackerClient},
 };
+
+static MAX_PEERS: usize = 55;
 
 pub struct Peer {
     am_choking: bool,
@@ -17,24 +24,18 @@ pub struct Peer {
     peer_choking: bool,
     peer_interested: bool,
     haves: Vec<bool>,
-    manager_to_peer_tx: Sender<ManagerToPeerMsg>,
-    peer_to_manager_rx: Receiver<PeerToManagerMsg>,
+    to_peer_tx: Sender<ToPeerMsg>,
 }
 
 impl Peer {
-    pub fn new(
-        num_pieces: usize,
-        manager_to_peer_tx: Sender<ManagerToPeerMsg>,
-        peer_to_manager_rx: Receiver<PeerToManagerMsg>,
-    ) -> Self {
+    pub fn new(num_pieces: usize, to_peer_tx: Sender<ToPeerMsg>) -> Self {
         return Peer {
             am_choking: true,
             am_interested: false,
             peer_choking: true,
             peer_interested: false,
             haves: vec![false; num_pieces],
-            manager_to_peer_tx,
-            peer_to_manager_rx,
+            to_peer_tx,
         };
     }
 }
@@ -45,7 +46,9 @@ pub struct TorrentManager {
     info_hash: [u8; 20],
     own_peer_id: String,
     listening_port: i32,
-    peers: Arc<Mutex<Vec<Peer>>>,
+    peers: HashMap<PeerAddr, Peer>,
+    advertised_peers: Vec<tracker::Peer>,
+    bad_peers: HashSet<PeerAddr>,
 }
 
 impl TorrentManager {
@@ -70,7 +73,9 @@ impl TorrentManager {
             info_hash: metainfo.info_hash,
             own_peer_id,
             listening_port,
-            peers: Arc::new(Mutex::new(Vec::new())),
+            peers: HashMap::new(),
+            advertised_peers: Vec::new(),
+            bad_peers: HashSet::new(),
         })
     }
 
@@ -105,87 +110,113 @@ impl TorrentManager {
                     ok_response
                 );
 
+                self.advertised_peers = ok_response.peers.clone();
+
                 let (ok_to_accept_connection_tx, ok_to_accept_connection_rx) = mpsc::channel(10);
-                let (piece_completion_status_channel_tx, piece_completion_status_channel_rx) =
-                    mpsc::channel(10);
-                let (new_peer_channel_tx, new_peer_channel_rx) =
-                    mpsc::channel::<NewPeerMessage>(100);
+                let (piece_completion_status_tx, piece_completion_status_rx) = mpsc::channel(10);
+                let (to_manager_tx, to_manager_rx) = mpsc::channel::<ToManagerMsg>(1000);
 
-                // new peers handler
-                let peers = self.peers.clone();
-                let num_pieces = self.file_manager.num_pieces();
-                tokio::spawn(run_new_peer_handler(new_peer_channel_rx, peers, num_pieces));
+                start_tick_channel(to_manager_tx.clone()).await;
 
-                // connect to several peers
-                let peers_from_tracker = ok_response.peers.clone();
-                let info_hash = self.info_hash.clone();
-                let own_peer_id = self.own_peer_id.clone();
-                let piece_completion_status = self.file_manager.piece_completion_status.clone();
-                let new_peer_channel_tx_for_connecting = new_peer_channel_tx.clone();
-                tokio::spawn(async move {
-                    for p in peers_from_tracker.iter() {
-                        // todo: reduce this to something like max ~30
-                        let own_peer_id = own_peer_id.clone();
-                        let piece_completion_status = piece_completion_status.clone();
-                        let new_peer_channel_tx_for_connecting =
-                            new_peer_channel_tx_for_connecting.clone();
-                        let p = p.clone();
-                        tokio::spawn(async move {
-                            peer::connect_to_new_peer(
-                                p.ip.clone(),
-                                p.port,
-                                info_hash,
-                                own_peer_id.clone(),
-                                piece_completion_status.clone(),
-                                new_peer_channel_tx_for_connecting,
-                            )
-                            .await;
-                        });
-                    }
-                });
-
-                // incoming peer handler: this will block forever
                 peer::run_new_incoming_peers_handler(
                     self.listening_port.clone(),
                     self.info_hash.clone(),
                     self.own_peer_id.clone(),
                     self.file_manager.piece_completion_status.clone(),
                     ok_to_accept_connection_rx,
-                    piece_completion_status_channel_rx,
-                    new_peer_channel_tx,
+                    piece_completion_status_rx,
+                    to_manager_tx.clone(),
+                )
+                .await;
+
+                self.control_loop(
+                    ok_to_accept_connection_tx.clone(),
+                    piece_completion_status_tx.clone(),
+                    to_manager_tx,
+                    to_manager_rx,
                 )
                 .await;
             }
         }
     }
-}
 
-pub async fn run_new_peer_handler(
-    mut new_peer_channel_rx: Receiver<NewPeerMessage>,
-    peers: Arc<Mutex<Vec<Peer>>>,
-    torrent_num_pieces: usize,
-) {
-    while let Some(msg) = new_peer_channel_rx.recv().await {
-        let peer_addr = msg.peer_addr().unwrap().to_string();
+    async fn control_loop(
+        &mut self,
+        ok_to_accept_connection_tx: Sender<bool>,
+        piece_completion_status_channel_tx: Sender<Vec<bool>>,
+        to_manager_tx: Sender<ToManagerMsg>,
+        mut to_manager_rx: Receiver<ToManagerMsg>,
+    ) {
+        while let Some(msg) = to_manager_rx.recv().await {
+            match msg {
+                ToManagerMsg::Error(peer_addr) => {
+                    log::debug!("removing errored peer {}", peer_addr);
+                    self.peers.remove(&peer_addr);
+                    self.bad_peers.insert(peer_addr);
+                    log::debug!("total current peers: {}", self.peers.len());
+                }
+                ToManagerMsg::Receive(_) => {}
+                ToManagerMsg::Tick => {
+                    self.tick(to_manager_tx.clone()).await;
+                }
+                ToManagerMsg::NewPeerMessage(tcp_stream) => {
+                    self.new_peer(tcp_stream, to_manager_tx.clone()).await;
+                }
+            }
+        }
+    }
+
+    async fn tick(&mut self, to_manager_tx: Sender<ToManagerMsg>) {
+        let current_peers_n = self.peers.len();
+        if current_peers_n < MAX_PEERS {
+            let candidates_for_new_connections: Vec<&tracker::Peer> = self
+                .advertised_peers
+                .choose_multiple(&mut rand::thread_rng(), MAX_PEERS - current_peers_n)
+                .collect();
+            for p in candidates_for_new_connections.iter() {
+                tokio::spawn(peer::connect_to_new_peer(
+                    p.ip.clone(),
+                    p.port,
+                    self.info_hash,
+                    self.own_peer_id.clone(),
+                    self.file_manager.piece_completion_status.clone(),
+                    to_manager_tx.clone(),
+                ));
+            }
+        }
+    }
+
+    async fn new_peer(&mut self, tcp_stream: TcpStream, to_manager_tx: Sender<ToManagerMsg>) {
+        let peer_addr = tcp_stream.peer_addr().unwrap().to_string();
         log::debug!("got message with new peer: {}", peer_addr);
-        let (manager_to_peer_tx, manager_to_peer_rx) = mpsc::channel(10);
-        let (peer_to_manager_tx, peer_to_manager_rx) = mpsc::channel(10);
-        peer::start_peer_msg_handlers(msg, peer_to_manager_tx, manager_to_peer_rx).await;
-        let mut peers = peers.lock().unwrap();
-        peers.push(Peer {
-            am_choking: true,
-            am_interested: false,
-            peer_choking: true,
-            peer_interested: false,
-            haves: vec![false; torrent_num_pieces],
-            manager_to_peer_tx,
-            peer_to_manager_rx,
-        });
-        log::debug!("total current peers: {}", peers.len());
+        let (to_peer_tx, to_peer_rx) = mpsc::channel(10);
+        peer::start_peer_msg_handlers(tcp_stream, to_manager_tx.clone(), to_peer_rx).await;
+        self.peers.insert(
+            peer_addr,
+            Peer {
+                am_choking: true,
+                am_interested: false,
+                peer_choking: true,
+                peer_interested: false,
+                haves: vec![false; self.file_manager.num_pieces()],
+                to_peer_tx,
+            },
+        );
+        log::debug!("total current peers: {}", self.peers.len());
     }
 }
 
-pub fn generate_peer_id() -> String {
+async fn start_tick_channel(to_manager_tx: Sender<ToManagerMsg>) {
+    tokio::spawn(async move {
+        let mut interval = time::interval(Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            to_manager_tx.send(ToManagerMsg::Tick).await;
+        }
+    });
+}
+
+fn generate_peer_id() -> String {
     const CHARSET: &[u8] = b"0123456789";
     let mut rng = rand::thread_rng();
     let one_char = || CHARSET[rng.gen_range(0..CHARSET.len())] as char;
