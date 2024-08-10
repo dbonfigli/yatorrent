@@ -2,10 +2,9 @@ use std::sync::{Arc, Mutex};
 use std::{error::Error, iter, path::Path};
 
 use rand::Rng;
-use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
-use crate::peer::{self, ManagerToPeerMsg, PeerToManagerMsg};
+use crate::peer::{self, ManagerToPeerMsg, NewPeerMessage, PeerToManagerMsg};
 use crate::{
     file_manager::FileManager,
     metainfo::Metainfo,
@@ -109,7 +108,8 @@ impl TorrentManager {
                 let (ok_to_accept_connection_tx, ok_to_accept_connection_rx) = mpsc::channel(10);
                 let (piece_completion_status_channel_tx, piece_completion_status_channel_rx) =
                     mpsc::channel(10);
-                let (new_peer_channel_tx, new_peer_channel_rx) = mpsc::channel::<TcpStream>(100);
+                let (new_peer_channel_tx, new_peer_channel_rx) =
+                    mpsc::channel::<NewPeerMessage>(100);
 
                 // new peers handler
                 let peers = self.peers.clone();
@@ -161,7 +161,7 @@ impl TorrentManager {
 }
 
 pub async fn run_new_peer_handler(
-    mut new_peer_channel_rx: Receiver<TcpStream>,
+    mut new_peer_channel_rx: Receiver<NewPeerMessage>,
     peers: Arc<Mutex<Vec<Peer>>>,
     torrent_num_pieces: usize,
 ) {
