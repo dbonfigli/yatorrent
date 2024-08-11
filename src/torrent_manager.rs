@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use std::{error::Error, iter, path::Path};
 
@@ -51,14 +52,15 @@ impl Peer {
 pub struct TorrentManager {
     file_manager: FileManager,
     tracker_client: TrackerClient,
+    tracker_id: Arc<Mutex<Option<String>>>,
     info_hash: [u8; 20],
     own_peer_id: String,
     listening_port: i32,
     peers: HashMap<PeerAddr, Peer>,
-    advertised_peers: HashMap<PeerAddr, tracker::Peer>,
+    advertised_peers: Arc<Mutex<HashMap<PeerAddr, tracker::Peer>>>,
     bad_peers: HashSet<PeerAddr>,
-    last_tracker_request_time: SystemTime,
-    tracker_request_interval: Duration,
+    last_tracker_request_time: Arc<Mutex<SystemTime>>,
+    tracker_request_interval: Arc<Mutex<Duration>>,
     uploaded_bytes: u64,
     downloaded_bytes: u64,
 }
@@ -82,14 +84,15 @@ impl TorrentManager {
                 metainfo.announce,
                 listening_port,
             ),
+            tracker_id: Arc::new(Mutex::new(Option::None)),
             info_hash: metainfo.info_hash,
             own_peer_id,
             listening_port,
             peers: HashMap::new(),
-            advertised_peers: HashMap::new(),
+            advertised_peers: Arc::new(Mutex::new(HashMap::new())),
             bad_peers: HashSet::new(),
-            last_tracker_request_time: SystemTime::UNIX_EPOCH,
-            tracker_request_interval: Duration::from_secs(0),
+            last_tracker_request_time: Arc::new(Mutex::new(SystemTime::UNIX_EPOCH)),
+            tracker_request_interval: Arc::new(Mutex::new(Duration::from_secs(0))),
             uploaded_bytes: 0,
             downloaded_bytes: 0,
         })
@@ -344,8 +347,10 @@ impl TorrentManager {
         // connect to new peers
         let current_peers_n = self.peers.len();
         if current_peers_n < LOW_ENOUGH_PEERS {
-            let possible_peers = self
-                .advertised_peers
+            let possible_peers_mg = self.advertised_peers.lock().unwrap();
+            let possible_peers = possible_peers_mg.clone();
+            drop(possible_peers_mg);
+            let possible_peers = possible_peers
                 .iter()
                 .filter(|(k, _)| !self.peers.contains_key(*k))
                 .map(|(_, v)| v)
@@ -382,53 +387,58 @@ impl TorrentManager {
         }
 
         // send status to tracker
-        if let Ok(elapsed) = now.duration_since(self.last_tracker_request_time) {
-            if elapsed > self.tracker_request_interval {
-                let _ = self.tracker_request(Event::None).await;
+        let last_tracker_request_time_mg = self.last_tracker_request_time.lock().unwrap();
+        let last_tracker_request_time = last_tracker_request_time_mg.clone();
+        drop(last_tracker_request_time_mg);
+        if let Ok(elapsed) = now.duration_since(last_tracker_request_time) {
+            let tracker_request_interval_mg = self.tracker_request_interval.lock().unwrap();
+            let tracker_request_interval = tracker_request_interval_mg.clone();
+            drop(tracker_request_interval_mg);
+            if elapsed > tracker_request_interval {
+                self.tracker_request_async(Event::None).await;
             }
         }
+
+        log::info!("connected peers: {}", self.peers.len());
 
         // todo: send piece requests
     }
 
-    async fn tracker_request(&mut self, event: Event) -> Result<(), Box<dyn Error>> {
-        // todo: need timeout here?
-        match self
-            .tracker_client
-            .request(
-                self.info_hash,
-                self.uploaded_bytes,
-                self.downloaded_bytes,
-                self.file_manager.bytes_left(),
-                event,
-            )
-            .await
-        {
-            Err(e) => {
-                log::error!("could not perform request to tracker: {}", e);
-                return Err(e);
-            }
-            Ok(Response::Failure(msg)) => {
-                log::error!("tracker responded with failure: {}", msg);
-                return Err(Box::from(msg));
-            }
-            Ok(Response::Ok(ok_response)) => {
-                if let Some(msg) = ok_response.warning_message.clone() {
-                    log::warn!("tracker send a warning: {}", msg);
-                }
-                log::debug!(
-                    "tracker request succeeded, tracker response:\n{:?}",
-                    ok_response
-                );
-                ok_response.peers.iter().for_each(|p| {
-                    self.advertised_peers
-                        .insert(format!("{}:{}", p.ip, p.port), p.clone());
-                });
-                self.tracker_request_interval = Duration::from_secs(ok_response.interval as u64);
-                self.last_tracker_request_time = SystemTime::now();
-                Ok(())
-            }
-        }
+    async fn tracker_request(&mut self, event: Event) -> Result<(), Box<dyn Error + Sync + Send>> {
+        let tracker_id_mg = self.tracker_id.lock().unwrap();
+        self.tracker_client.tracker_id = tracker_id_mg.clone();
+        drop(tracker_id_mg);
+        tracker_request(
+            event,
+            self.file_manager.bytes_left(),
+            self.info_hash,
+            self.uploaded_bytes,
+            self.downloaded_bytes,
+            self.tracker_client.clone(),
+            self.advertised_peers.clone(),
+            self.tracker_request_interval.clone(),
+            self.last_tracker_request_time.clone(),
+            self.tracker_id.clone(),
+        )
+        .await
+    }
+
+    async fn tracker_request_async(&mut self, event: Event) {
+        let tracker_id_mg = self.tracker_id.lock().unwrap();
+        self.tracker_client.tracker_id = tracker_id_mg.clone();
+        drop(tracker_id_mg);
+        tokio::spawn(tracker_request(
+            event,
+            self.file_manager.bytes_left(),
+            self.info_hash,
+            self.uploaded_bytes,
+            self.downloaded_bytes,
+            self.tracker_client.clone(),
+            self.advertised_peers.clone(),
+            self.tracker_request_interval.clone(),
+            self.last_tracker_request_time.clone(),
+            self.tracker_id.clone(),
+        ));
     }
 
     async fn new_peer(
@@ -469,4 +479,69 @@ fn generate_peer_id() -> String {
     let one_char = || CHARSET[rng.gen_range(0..CHARSET.len())] as char;
     let random_string: String = iter::repeat_with(one_char).take(12).collect();
     format!("-YT0001-{random_string}")
+}
+
+async fn tracker_request(
+    event: Event,
+    bytes_left: u64,
+    info_hash: [u8; 20],
+    uploaded_bytes: u64,
+    downloaded_bytes: u64,
+    tracker_client: TrackerClient,
+    advertised_peers: Arc<Mutex<HashMap<PeerAddr, tracker::Peer>>>,
+    tracker_request_interval: Arc<Mutex<Duration>>,
+    last_tracker_request_time: Arc<Mutex<SystemTime>>,
+    tracker_id: Arc<Mutex<Option<String>>>,
+) -> Result<(), Box<dyn Error + Sync + Send>> {
+    // todo: need timeout here?
+    match tracker_client
+        .request(
+            info_hash,
+            uploaded_bytes,
+            downloaded_bytes,
+            bytes_left,
+            event,
+        )
+        .await
+    {
+        Err(e) => {
+            log::error!("could not perform request to tracker: {}", e);
+            return Err(Box::from(e.to_string()));
+        }
+        Ok(Response::Failure(msg)) => {
+            log::error!("tracker responded with failure: {}", msg);
+            return Err(Box::from(msg));
+        }
+        Ok(Response::Ok(ok_response)) => {
+            if let Some(msg) = ok_response.warning_message.clone() {
+                log::warn!("tracker send a warning: {}", msg);
+            }
+            log::debug!(
+                "tracker request succeeded, tracker response:\n{:?}",
+                ok_response
+            );
+
+            let mut advertised_peers = advertised_peers.lock().unwrap();
+            ok_response.peers.iter().for_each(|p| {
+                advertised_peers.insert(format!("{}:{}", p.ip, p.port), p.clone());
+            });
+            drop(advertised_peers);
+
+            let mut last_tracker_request_time = last_tracker_request_time.lock().unwrap();
+            *last_tracker_request_time = SystemTime::now();
+            drop(last_tracker_request_time);
+
+            let mut tracker_request_interval = tracker_request_interval.lock().unwrap();
+            *tracker_request_interval = Duration::from_secs(ok_response.interval as u64);
+            drop(tracker_request_interval);
+
+            if let Some(id) = ok_response.tracker_id {
+                let mut tracker_id = tracker_id.lock().unwrap();
+                *tracker_id = Some(id);
+                drop(tracker_id);
+            }
+
+            Ok(())
+        }
+    }
 }

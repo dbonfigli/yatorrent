@@ -59,7 +59,7 @@ impl ToString for Event {
         match self {
             Event::None => "",
             Event::Started => "started",
-            Event::Stopped => "stoppped",
+            Event::Stopped => "stopped",
             Event::Completed => "completed",
         }
         .to_string()
@@ -68,9 +68,10 @@ impl ToString for Event {
 
 const COMPACT: i32 = 1;
 
+#[derive(Clone)]
 pub struct TrackerClient {
-    pub peer_id: String,
-    tracker_id: Option<String>,
+    peer_id: String,
+    pub tracker_id: Option<String>,
     listening_port: i32,
     tracker_url: String,
 }
@@ -86,7 +87,7 @@ impl TrackerClient {
     }
 
     pub async fn request(
-        &mut self,
+        &self,
         info_hash: [u8; 20],
         uploaded: u64,
         downloaded: u64,
@@ -174,7 +175,6 @@ impl TrackerClient {
             },
             _ => Option::None,
         };
-        self.tracker_id = tracker_id.clone();
 
         // complete
         let complete = match response_map.get(&b"complete".to_vec()) {
