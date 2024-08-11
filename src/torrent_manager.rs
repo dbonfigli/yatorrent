@@ -346,14 +346,15 @@ impl TorrentManager {
         if current_peers_n < LOW_ENOUGH_PEERS {
             let possible_peers = self
                 .advertised_peers
-                .values()
+                .iter()
+                .filter(|(k, _)| !self.peers.contains_key(*k))
+                .map(|(_, v)| v)
                 .collect::<Vec<&tracker::Peer>>();
             let candidates_for_new_connections: Vec<&&tracker::Peer> = possible_peers
                 .choose_multiple(&mut rand::thread_rng(), LOW_ENOUGH_PEERS - current_peers_n)
                 .collect();
             // todo:
-            // * avoid selecting bad peers
-            // * avoid selecting peer we are already connected to
+            // * avoid selecting bad peers?
             for p in candidates_for_new_connections.iter() {
                 tokio::spawn(peer::connect_to_new_peer(
                     p.ip.clone(),

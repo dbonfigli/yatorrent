@@ -48,6 +48,7 @@ pub async fn connect_to_new_peer(
             log::debug!("error initiating connection to peer {}: {}", dest, e);
         }
         Ok(Ok(tcp_stream)) => {
+            let peer_addr = tcp_stream.peer_addr().unwrap().to_string();
             match timeout(
                 DEFAULT_TIMEOUT,
                 handshake(
@@ -61,9 +62,17 @@ pub async fn connect_to_new_peer(
             {
                 Err(_elapsed) => {
                     log::debug!("timed out completing handshake with peer {}", dest);
+                    to_manager_tx
+                        .send(ToManagerMsg::Error(peer_addr))
+                        .await
+                        .unwrap();
                 }
                 Ok(Err(e)) => {
                     log::debug!("error out completing handshake with peer {}", e);
+                    to_manager_tx
+                        .send(ToManagerMsg::Error(peer_addr))
+                        .await
+                        .unwrap();
                 }
                 Ok(Ok(tcp_stream)) => {
                     to_manager_tx
