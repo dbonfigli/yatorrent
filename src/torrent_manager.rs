@@ -55,8 +55,12 @@ pub struct TorrentManager {
     own_peer_id: String,
     listening_port: i32,
     peers: HashMap<PeerAddr, Peer>,
-    advertised_peers: Vec<tracker::Peer>,
+    advertised_peers: HashMap<PeerAddr, tracker::Peer>,
     bad_peers: HashSet<PeerAddr>,
+    last_tracker_request_time: SystemTime,
+    tracker_request_interval: Duration,
+    uploaded_bytes: u64,
+    downloaded_bytes: u64,
 }
 
 impl TorrentManager {
@@ -82,8 +86,12 @@ impl TorrentManager {
             own_peer_id,
             listening_port,
             peers: HashMap::new(),
-            advertised_peers: Vec::new(),
+            advertised_peers: HashMap::new(),
             bad_peers: HashSet::new(),
+            last_tracker_request_time: SystemTime::UNIX_EPOCH,
+            tracker_request_interval: Duration::from_secs(0),
+            uploaded_bytes: 0,
+            downloaded_bytes: 0,
         })
     }
 
@@ -91,35 +99,11 @@ impl TorrentManager {
         self.file_manager.refresh_completed_pieces();
         self.file_manager.refresh_completed_files();
         self.file_manager.log_file_completion_stats();
-        match self
-            .tracker_client
-            .request(
-                self.info_hash,
-                0,
-                0,
-                self.file_manager.bytes_left(),
-                Event::Started,
-            )
-            .await
-        {
+        match self.tracker_request(Event::Started).await {
             Err(e) => {
                 log::error!("could not perform first request to tracker: {}", e);
             }
-            Ok(Response::Failure(msg)) => {
-                log::error!("tracker responded with failure: {}", msg);
-            }
-            Ok(Response::Ok(ok_response)) => {
-                if let Some(msg) = ok_response.warning_message.clone() {
-                    log::warn!("tracker send a warning: {}", msg);
-                }
-
-                log::info!(
-                    "tracker request succeeded, tracker response:\n{:?}",
-                    ok_response
-                );
-
-                self.advertised_peers = ok_response.peers.clone();
-
+            Ok(()) => {
                 let (ok_to_accept_connection_tx, ok_to_accept_connection_rx) = mpsc::channel(10);
                 let (piece_completion_status_tx, piece_completion_status_rx) = mpsc::channel(10);
                 let (to_manager_tx, to_manager_rx) = mpsc::channel::<ToManagerMsg>(1000);
@@ -137,6 +121,7 @@ impl TorrentManager {
                 )
                 .await;
 
+                // block forever
                 self.control_loop(
                     ok_to_accept_connection_tx.clone(),
                     piece_completion_status_tx.clone(),
@@ -162,7 +147,8 @@ impl TorrentManager {
                         .await;
                 }
                 ToManagerMsg::Receive(peer_addr, msg) => {
-                    self.receive(peer_addr, msg).await;
+                    self.receive(peer_addr, msg, piece_completion_status_channel_tx.clone())
+                        .await;
                 }
                 ToManagerMsg::Tick => {
                     self.tick(to_manager_tx.clone()).await;
@@ -179,7 +165,12 @@ impl TorrentManager {
         }
     }
 
-    async fn receive(&mut self, peer_addr: String, msg: Message) {
+    async fn receive(
+        &mut self,
+        peer_addr: String,
+        msg: Message,
+        piece_completion_status_channel_tx: Sender<Vec<bool>>,
+    ) {
         log::debug!("received message from peer {}: {}", peer_addr, msg);
         let now = SystemTime::now();
         if let Some(peer) = self.peers.get_mut(&peer_addr) {
@@ -266,18 +257,31 @@ impl TorrentManager {
                         }
                     }
                 }
-                Message::Request(piece_dx, begin, end) => {}
+                Message::Request(piece_idx, begin, end) => {
+                    // todo
+                    // remember to update uploaded_bytes
+                }
                 Message::Piece(piece_idx, begin, data) => {
+                    let data_len = data.len() as u64;
                     match self.file_manager.write_piece_block(
                         piece_idx as usize,
                         data,
                         begin as u64,
                     ) {
-                        Ok(false) => {}
+                        Ok(false) => {
+                            self.downloaded_bytes += data_len;
+                        }
                         Ok(true) => {
+                            self.downloaded_bytes += data_len;
                             if self.file_manager.completed() {
                                 log::info!("torrent download complete");
+                                let _ = self.tracker_request(Event::Completed).await;
                             }
+
+                            piece_completion_status_channel_tx
+                                .send(self.file_manager.piece_completion_status.clone())
+                                .await
+                                .unwrap();
 
                             let now = SystemTime::now();
                             for (_, peer) in self.peers.iter_mut() {
@@ -316,7 +320,9 @@ impl TorrentManager {
                         }
                     }
                 }
-                Message::Cancel(piece_dx, begin, end) => {}
+                Message::Cancel(piece_idx, begin, end) => {
+                    // todo
+                }
                 Message::Port(_) => {
                     // feature not supported
                 }
@@ -338,10 +344,16 @@ impl TorrentManager {
         // connect to new peers
         let current_peers_n = self.peers.len();
         if current_peers_n < LOW_ENOUGH_PEERS {
-            let candidates_for_new_connections: Vec<&tracker::Peer> = self
+            let possible_peers = self
                 .advertised_peers
+                .values()
+                .collect::<Vec<&tracker::Peer>>();
+            let candidates_for_new_connections: Vec<&&tracker::Peer> = possible_peers
                 .choose_multiple(&mut rand::thread_rng(), LOW_ENOUGH_PEERS - current_peers_n)
                 .collect();
+            // todo:
+            // * avoid selecting bad peers
+            // * avoid selecting peer we are already connected to
             for p in candidates_for_new_connections.iter() {
                 tokio::spawn(peer::connect_to_new_peer(
                     p.ip.clone(),
@@ -365,6 +377,55 @@ impl TorrentManager {
                         .unwrap();
                     peer.last_sent = now;
                 }
+            }
+        }
+
+        // send status to tracker
+        if let Ok(elapsed) = now.duration_since(self.last_tracker_request_time) {
+            if elapsed > self.tracker_request_interval {
+                let _ = self.tracker_request(Event::None).await;
+            }
+        }
+
+        // todo: send piece requests
+    }
+
+    async fn tracker_request(&mut self, event: Event) -> Result<(), Box<dyn Error>> {
+        // todo: need timeout here?
+        match self
+            .tracker_client
+            .request(
+                self.info_hash,
+                self.uploaded_bytes,
+                self.downloaded_bytes,
+                self.file_manager.bytes_left(),
+                event,
+            )
+            .await
+        {
+            Err(e) => {
+                log::error!("could not perform request to tracker: {}", e);
+                return Err(e);
+            }
+            Ok(Response::Failure(msg)) => {
+                log::error!("tracker responded with failure: {}", msg);
+                return Err(Box::from(msg));
+            }
+            Ok(Response::Ok(ok_response)) => {
+                if let Some(msg) = ok_response.warning_message.clone() {
+                    log::warn!("tracker send a warning: {}", msg);
+                }
+                log::debug!(
+                    "tracker request succeeded, tracker response:\n{:?}",
+                    ok_response
+                );
+                ok_response.peers.iter().for_each(|p| {
+                    self.advertised_peers
+                        .insert(format!("{}:{}", p.ip, p.port), p.clone());
+                });
+                self.tracker_request_interval = Duration::from_secs(ok_response.interval as u64);
+                self.last_tracker_request_time = SystemTime::now();
+                Ok(())
             }
         }
     }
