@@ -314,14 +314,16 @@ impl FileManager {
         piece_idx: usize,
         data: Vec<u8>,
         block_begin: u64, // position in the piece where to start writing data
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<bool, Box<dyn Error>> {
+        // if ok, return if piece is completed / not completed
+
         // avoid useless writes if we already have the piece
         if self.piece_completion_status[piece_idx] {
             log::debug!(
                 "we already have the piece {}, will avoid to write it again",
                 piece_idx
             );
-            return Ok(());
+            return Ok(true);
         }
 
         let mut data_start = 0;
@@ -336,7 +338,7 @@ impl FileManager {
             data_start = *already_downloaded_bytes - block_begin;
             if data_start >= data_len {
                 log::debug!("we already have written all the data in this block");
-                return Ok(());
+                return Ok(false);
             }
             data_len -= data_start;
             piece_begin = *already_downloaded_bytes;
@@ -393,12 +395,12 @@ impl FileManager {
                 self.piece_completion_status[piece_idx] = true;
                 self.refresh_completed_files(); //todo: optimize this
             }
+            return Ok(true);
         } else {
             self.incomplete_pieces
                 .insert(piece_idx, data_start + data_len);
+            return Ok(false);
         }
-
-        Ok(())
     }
 
     pub fn write_piece(&mut self, piece_idx: usize, data: Vec<u8>) -> Result<(), Box<dyn Error>> {

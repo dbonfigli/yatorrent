@@ -33,11 +33,11 @@ pub struct Peer {
 }
 
 impl Peer {
-    pub fn new(num_pieces: usize, am_interested: bool, to_peer_tx: Sender<ToPeerMsg>) -> Self {
+    pub fn new(num_pieces: usize, to_peer_tx: Sender<ToPeerMsg>) -> Self {
         let now = SystemTime::now();
         return Peer {
             am_choking: true,
-            am_interested,
+            am_interested: false,
             peer_choking: true,
             peer_interested: false,
             haves: vec![false; num_pieces],
@@ -202,6 +202,18 @@ impl TorrentManager {
                     let pieces = peer.haves.len();
                     if (piece_idx as usize) < pieces {
                         peer.haves[piece_idx as usize] = true;
+
+                        // send interest if needed
+                        if !peer.am_interested
+                            && !self.file_manager.piece_completion_status[piece_idx as usize]
+                        {
+                            peer.am_interested = true;
+                            peer.last_sent = SystemTime::now();
+                            peer.to_peer_tx
+                                .send(ToPeerMsg::Send(Message::Interested))
+                                .await
+                                .unwrap();
+                        }
                     } else {
                         log::debug!(
                             "got message have {} from peer {} but the torrent have only {} pieces",
@@ -223,7 +235,25 @@ impl TorrentManager {
                         // todo: cut connection with this peer
                     } else {
                         if let Some(peer) = self.peers.get_mut(&peer_addr) {
+                            // bitfield is byte aligned, it could contain more bits than pieces in the torrent
                             peer.haves = bitfield[0..self.file_manager.num_pieces()].to_vec();
+
+                            // check if we need to send interest
+                            if !peer.am_interested {
+                                for piece_idx in 0..peer.haves.len() {
+                                    if !self.file_manager.piece_completion_status[piece_idx]
+                                        && peer.haves[piece_idx]
+                                    {
+                                        peer.am_interested = true;
+                                        peer.last_sent = SystemTime::now();
+                                        peer.to_peer_tx
+                                            .send(ToPeerMsg::Send(Message::Interested))
+                                            .await
+                                            .unwrap();
+                                        break;
+                                    }
+                                }
+                            }
 
                             log::debug!(
                                 "received bitfield from peer {}: it has {}/{} pieces",
@@ -236,9 +266,57 @@ impl TorrentManager {
                         }
                     }
                 }
-                Message::Request(_, _, _) => {}
-                Message::Piece(_, _, _) => {}
-                Message::Cancel(_, _, _) => {}
+                Message::Request(piece_dx, begin, end) => {}
+                Message::Piece(piece_idx, begin, data) => {
+                    match self.file_manager.write_piece_block(
+                        piece_idx as usize,
+                        data,
+                        begin as u64,
+                    ) {
+                        Ok(false) => {}
+                        Ok(true) => {
+                            if self.file_manager.completed() {
+                                log::info!("torrent download complete");
+                            }
+
+                            let now = SystemTime::now();
+                            for (_, peer) in self.peers.iter_mut() {
+                                // send have to interested peers
+                                if peer.peer_interested && !peer.haves[piece_idx as usize] {
+                                    peer.last_sent = now;
+                                    peer.to_peer_tx
+                                        .send(ToPeerMsg::Send(Message::Have(piece_idx)))
+                                        .await
+                                        .unwrap();
+                                }
+                                // send not interested if needed
+                                if peer.am_interested {
+                                    let mut am_still_interested = false;
+                                    for i in 0..peer.haves.len() {
+                                        if !self.file_manager.piece_completion_status
+                                            [piece_idx as usize]
+                                            && peer.haves[i]
+                                        {
+                                            am_still_interested = true;
+                                            break;
+                                        }
+                                    }
+                                    if !am_still_interested {
+                                        peer.last_sent = now;
+                                        peer.to_peer_tx
+                                            .send(ToPeerMsg::Send(Message::NotInterested))
+                                            .await
+                                            .unwrap();
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("cannot write block: {}", e);
+                        }
+                    }
+                }
+                Message::Cancel(piece_dx, begin, end) => {}
                 Message::Port(_) => {
                     // feature not supported
                 }
@@ -300,19 +378,11 @@ impl TorrentManager {
         let peer_addr = tcp_stream.peer_addr().unwrap().to_string();
         log::debug!("got message with new peer: {}", peer_addr);
         let (to_peer_tx, to_peer_rx) = mpsc::channel(10);
-        let to_peer_tx_for_interest = to_peer_tx.clone();
         peer::start_peer_msg_handlers(tcp_stream, to_manager_tx.clone(), to_peer_rx).await;
-        let am_interested = !self.file_manager.completed();
         self.peers.insert(
             peer_addr,
-            Peer::new(self.file_manager.num_pieces(), am_interested, to_peer_tx),
+            Peer::new(self.file_manager.num_pieces(), to_peer_tx),
         );
-        if am_interested {
-            to_peer_tx_for_interest
-                .send(ToPeerMsg::Send(Message::Interested))
-                .await
-                .unwrap();
-        }
         log::debug!("total current peers: {}", self.peers.len());
         if self.peers.len() > ENOUGH_PEERS {
             log::debug!("stop accepting new peers");
