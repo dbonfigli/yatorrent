@@ -251,6 +251,7 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
     while let Some(manager_msg) = to_peer_rx.recv().await {
         match manager_msg {
             ToPeerMsg::Send(proto_msg) => {
+                log::debug!("sending message {} to peer {}", proto_msg, peer_addr);
                 match timeout(DEFAULT_TIMEOUT, wire_proto.send(proto_msg)).await {
                     Err(_elapsed) => {
                         log::debug!("timeout sending message to peer {}", peer_addr);
