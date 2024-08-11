@@ -25,9 +25,9 @@ pub type PeerAddr = String;
 
 pub enum ToManagerMsg {
     Error(PeerAddr),
-    Receive(Message),
+    Receive(PeerAddr, Message),
     Tick,
-    NewPeerMessage(TcpStream),
+    NewPeer(TcpStream),
 }
 
 pub async fn connect_to_new_peer(
@@ -67,7 +67,7 @@ pub async fn connect_to_new_peer(
                 }
                 Ok(Ok(tcp_stream)) => {
                     to_manager_tx
-                        .send(ToManagerMsg::NewPeerMessage(tcp_stream))
+                        .send(ToManagerMsg::NewPeer(tcp_stream))
                         .await
                         .unwrap();
                 }
@@ -144,7 +144,7 @@ pub async fn run_new_incoming_peers_handler(
                     }
                     Ok(Ok(tcp_stream)) => {
                         new_peer_tx_for_spawn
-                            .send(ToManagerMsg::NewPeerMessage(tcp_stream))
+                            .send(ToManagerMsg::NewPeer(tcp_stream))
                             .await
                             .unwrap();
                     }
@@ -234,7 +234,7 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
             Ok(Ok(proto_msg)) => {
                 log::debug!("received from {}: {}", peer_addr, proto_msg);
                 to_manager_tx
-                    .send(ToManagerMsg::Receive(proto_msg))
+                    .send(ToManagerMsg::Receive(peer_addr.clone(), proto_msg))
                     .await
                     .unwrap();
             }

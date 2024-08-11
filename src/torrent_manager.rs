@@ -29,10 +29,12 @@ pub struct Peer {
     haves: Vec<bool>,
     to_peer_tx: Sender<ToPeerMsg>,
     last_sent: SystemTime,
+    last_received: SystemTime,
 }
 
 impl Peer {
     pub fn new(num_pieces: usize, to_peer_tx: Sender<ToPeerMsg>) -> Self {
+        let now = SystemTime::now();
         return Peer {
             am_choking: true,
             am_interested: false,
@@ -40,7 +42,8 @@ impl Peer {
             peer_interested: false,
             haves: vec![false; num_pieces],
             to_peer_tx,
-            last_sent: SystemTime::now(),
+            last_sent: now,
+            last_received: now,
         };
     }
 }
@@ -158,17 +161,69 @@ impl TorrentManager {
                     self.peer_error(peer_addr, ok_to_accept_connection_tx.clone())
                         .await;
                 }
-                ToManagerMsg::Receive(_) => {}
+                ToManagerMsg::Receive(peer_addr, msg) => {
+                    self.receive(peer_addr, msg).await;
+                }
                 ToManagerMsg::Tick => {
                     self.tick(to_manager_tx.clone()).await;
                 }
-                ToManagerMsg::NewPeerMessage(tcp_stream) => {
+                ToManagerMsg::NewPeer(tcp_stream) => {
                     self.new_peer(
                         tcp_stream,
                         to_manager_tx.clone(),
                         ok_to_accept_connection_tx.clone(),
                     )
                     .await;
+                }
+            }
+        }
+    }
+
+    async fn receive(&mut self, peer_addr: String, msg: Message) {
+        log::debug!("received message from peer {}: {}", peer_addr, msg);
+        let now = SystemTime::now();
+        if let Some(peer) = self.peers.get_mut(&peer_addr) {
+            peer.last_received = now;
+            match msg {
+                Message::KeepAlive => {}
+                Message::Choke => {
+                    peer.peer_choking = true;
+                }
+                Message::Unchoke => {
+                    peer.peer_choking = false;
+                }
+                Message::Interested => {
+                    peer.peer_interested = true;
+                }
+                Message::NotInterested => {
+                    peer.peer_interested = false;
+                }
+                Message::Have(piece_idx) => {
+                    let pieces = peer.haves.len();
+                    if (piece_idx as usize) < pieces {
+                        peer.haves[piece_idx as usize] = true;
+                    } else {
+                        log::debug!(
+                            "got message have {} from peer {} but the torrent have only {} pieces",
+                            piece_idx,
+                            peer_addr,
+                            pieces
+                        );
+                        // todo: close connection with this peer
+                    }
+                }
+                Message::Bitfield(_) => {
+                    log::debug!(
+                      "received bitfield after complete handshake from peer {}, this is forbidden",
+                      peer_addr,
+                  );
+                    // todo: close connection with this peer
+                }
+                Message::Request(_, _, _) => {}
+                Message::Piece(_, _, _) => {}
+                Message::Cancel(_, _, _) => {}
+                Message::Port(_) => {
+                    // feature not supported
                 }
             }
         }
