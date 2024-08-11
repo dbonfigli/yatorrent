@@ -444,6 +444,15 @@ impl FileManager {
         }
         total - total_completed
     }
+
+    pub fn completed(&self) -> bool {
+        for status in self.piece_completion_status.iter() {
+            if !status {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 #[cfg(test)]

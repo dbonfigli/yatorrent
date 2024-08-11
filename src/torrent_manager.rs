@@ -33,11 +33,11 @@ pub struct Peer {
 }
 
 impl Peer {
-    pub fn new(num_pieces: usize, to_peer_tx: Sender<ToPeerMsg>) -> Self {
+    pub fn new(num_pieces: usize, am_interested: bool, to_peer_tx: Sender<ToPeerMsg>) -> Self {
         let now = SystemTime::now();
         return Peer {
             am_choking: true,
-            am_interested: false,
+            am_interested,
             peer_choking: true,
             peer_interested: false,
             haves: vec![false; num_pieces],
@@ -212,12 +212,29 @@ impl TorrentManager {
                         // todo: close connection with this peer
                     }
                 }
-                Message::Bitfield(_) => {
-                    log::debug!(
-                      "received bitfield after complete handshake from peer {}, this is forbidden",
-                      peer_addr,
-                  );
-                    // todo: close connection with this peer
+                Message::Bitfield(bitfield) => {
+                    if bitfield.len() < self.file_manager.num_pieces() {
+                        log::debug!(
+                            "received wrongly sized bitfield from peer {}: received {} bits but expected {}",
+                            peer_addr,
+                            bitfield.len(),
+                            self.file_manager.num_pieces()
+                        );
+                        // todo: cut connection with this peer
+                    } else {
+                        if let Some(peer) = self.peers.get_mut(&peer_addr) {
+                            peer.haves = bitfield[0..self.file_manager.num_pieces()].to_vec();
+
+                            log::debug!(
+                                "received bitfield from peer {}: it has {}/{} pieces",
+                                peer_addr,
+                                peer.haves
+                                    .iter()
+                                    .fold(0, |acc, v| if *v { acc + 1 } else { acc }),
+                                peer.haves.len()
+                            );
+                        }
+                    }
                 }
                 Message::Request(_, _, _) => {}
                 Message::Piece(_, _, _) => {}
@@ -283,11 +300,19 @@ impl TorrentManager {
         let peer_addr = tcp_stream.peer_addr().unwrap().to_string();
         log::debug!("got message with new peer: {}", peer_addr);
         let (to_peer_tx, to_peer_rx) = mpsc::channel(10);
+        let to_peer_tx_for_interest = to_peer_tx.clone();
         peer::start_peer_msg_handlers(tcp_stream, to_manager_tx.clone(), to_peer_rx).await;
+        let am_interested = !self.file_manager.completed();
         self.peers.insert(
             peer_addr,
-            Peer::new(self.file_manager.num_pieces(), to_peer_tx),
+            Peer::new(self.file_manager.num_pieces(), am_interested, to_peer_tx),
         );
+        if am_interested {
+            to_peer_tx_for_interest
+                .send(ToPeerMsg::Send(Message::Interested))
+                .await
+                .unwrap();
+        }
         log::debug!("total current peers: {}", self.peers.len());
         if self.peers.len() > ENOUGH_PEERS {
             log::debug!("stop accepting new peers");

@@ -41,7 +41,12 @@ impl fmt::Display for Message {
                 let total_have = bitfield
                     .iter()
                     .fold(0, |acc, v| if *v { acc + 1 } else { acc });
-                write!(f, "bitfield have {} total: {}", total_have, bitfield.len())
+                write!(
+                    f,
+                    "bitfield have {} total: {} (bitfield comes in bytes, number of pieces could be less)",
+                    total_have,
+                    bitfield.len()
+                )
             }
             Message::Request(piece_idx, begin, end) => {
                 write!(
