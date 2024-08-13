@@ -322,7 +322,7 @@ impl FileManager {
 
         // avoid useless writes if we already have the piece
         if self.piece_completion_status[piece_idx] {
-            log::debug!(
+            log::trace!(
                 "we already have the piece {}, will avoid to write it again",
                 piece_idx
             );
@@ -340,7 +340,7 @@ impl FileManager {
             }
             data_start = *already_downloaded_bytes - block_begin;
             if data_start >= data_len {
-                log::debug!("we already have written all the data in this block");
+                log::trace!("we already have written all the data in this block");
                 return Ok(false);
             }
             data_len -= data_start;
@@ -406,32 +406,32 @@ impl FileManager {
         }
     }
 
-    pub fn write_piece(&mut self, piece_idx: usize, data: Vec<u8>) -> Result<(), Box<dyn Error>> {
-        if self.piece_completion_status[piece_idx] {
-            log::debug!(
-                "we already have the piece {}, will avoid to write it again",
-                piece_idx
-            );
-            return Ok(());
-        }
-        let piece_sha: [u8; 20] = Sha1::digest(&data).as_slice().try_into().unwrap();
-        if piece_sha != self.piece_hashes[piece_idx] {
-            return Err(Box::from(
-              format!("the sha of the data we want to write for piece {} do not match the sha we expect, write aborted", piece_idx)));
-        }
+    // pub fn write_piece(&mut self, piece_idx: usize, data: Vec<u8>) -> Result<(), Box<dyn Error>> {
+    //     if self.piece_completion_status[piece_idx] {
+    //         log::trace!(
+    //             "we already have the piece {}, will avoid to write it again",
+    //             piece_idx
+    //         );
+    //         return Ok(());
+    //     }
+    //     let piece_sha: [u8; 20] = Sha1::digest(&data).as_slice().try_into().unwrap();
+    //     if piece_sha != self.piece_hashes[piece_idx] {
+    //         return Err(Box::from(
+    //           format!("the sha of the data we want to write for piece {} do not match the sha we expect, write aborted", piece_idx)));
+    //     }
 
-        let mut written: u64 = 0;
-        for (file_path, start, end) in self.piece_to_files[piece_idx].iter() {
-            let mut opened_file = self.file_handles.get_file(file_path, true)?;
-            opened_file.seek(SeekFrom::Start(*start))?;
-            opened_file.write_all(&data[written as usize..(end - start) as usize])?;
-            written += end - start;
-        }
+    //     let mut written: u64 = 0;
+    //     for (file_path, start, end) in self.piece_to_files[piece_idx].iter() {
+    //         let mut opened_file = self.file_handles.get_file(file_path, true)?;
+    //         opened_file.seek(SeekFrom::Start(*start))?;
+    //         opened_file.write_all(&data[written as usize..(end - start) as usize])?;
+    //         written += end - start;
+    //     }
 
-        self.piece_completion_status[piece_idx] = true;
-        self.refresh_completed_files(); //todo: optimize this
-        Ok(())
-    }
+    //     self.piece_completion_status[piece_idx] = true;
+    //     self.refresh_completed_files(); //todo: optimize this
+    //     Ok(())
+    // }
 
     pub fn num_pieces(&self) -> usize {
         self.piece_hashes.len()

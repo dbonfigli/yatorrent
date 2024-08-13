@@ -216,7 +216,7 @@ impl TorrentManager {
                                 .unwrap(); // todo: we block if channel is full, not good
                         }
                     } else {
-                        log::debug!(
+                        log::warn!(
                             "got message have {} from peer {} but the torrent have only {} pieces",
                             piece_idx,
                             peer_addr,
@@ -227,13 +227,13 @@ impl TorrentManager {
                 }
                 Message::Bitfield(bitfield) => {
                     if bitfield.len() < self.file_manager.num_pieces() {
-                        log::debug!(
+                        log::warn!(
                             "received wrongly sized bitfield from peer {}: received {} bits but expected {}",
                             peer_addr,
                             bitfield.len(),
                             self.file_manager.num_pieces()
                         );
-                        // todo: cut connection with this peer
+                        // todo: close connection with this peer
                     } else {
                         if let Some(peer) = self.peers.get_mut(&peer_addr) {
                             // bitfield is byte aligned, it could contain more bits than pieces in the torrent
@@ -256,7 +256,7 @@ impl TorrentManager {
                                 }
                             }
 
-                            log::debug!(
+                            log::trace!(
                                 "received bitfield from peer {}: it has {}/{} pieces",
                                 peer_addr,
                                 peer.haves
@@ -366,7 +366,6 @@ impl TorrentManager {
         log::debug!("removing errored peer {}", peer_addr);
         self.peers.remove(&peer_addr);
         self.bad_peers.insert(peer_addr);
-        log::debug!("total current peers: {}", self.peers.len());
         if self.peers.len() < ENOUGH_PEERS {
             ok_to_accept_connection_tx.send(true).await.unwrap();
         }
@@ -438,7 +437,7 @@ impl TorrentManager {
             self.file_manager.num_pieces()
         );
 
-        // todo: send piece requests
+        // send piece requests
     }
 
     async fn tracker_request(&mut self, event: Event) -> Result<(), Box<dyn Error + Sync + Send>> {
@@ -503,9 +502,8 @@ impl TorrentManager {
                 to_peer_cancel_tx,
             ),
         );
-        log::debug!("total current peers: {}", self.peers.len());
         if self.peers.len() > ENOUGH_PEERS {
-            log::debug!("stop accepting new peers");
+            log::trace!("stop accepting new peers");
             ok_to_accept_connection_tx.send(false).await.unwrap();
         }
     }
@@ -564,7 +562,7 @@ async fn tracker_request(
             if let Some(msg) = ok_response.warning_message.clone() {
                 log::warn!("tracker send a warning: {}", msg);
             }
-            log::debug!(
+            log::trace!(
                 "tracker request succeeded, tracker response:\n{:?}",
                 ok_response
             );

@@ -44,13 +44,13 @@ pub async fn connect_to_new_peer(
     to_manager_tx: Sender<ToManagerMsg>,
 ) {
     let dest = format!("{}:{}", host, port);
-    log::debug!("initiating connection to peer: {}", dest);
+    log::trace!("initiating connection to peer: {}", dest);
     match timeout(DEFAULT_TIMEOUT, TcpStream::connect(dest.clone())).await {
         Err(_elapsed) => {
-            log::debug!("timed out connecting to peer {}", dest);
+            log::trace!("timed out connecting to peer {}", dest);
         }
         Ok(Err(e)) => {
-            log::debug!("error initiating connection to peer {}: {}", dest, e);
+            log::trace!("error initiating connection to peer {}: {}", dest, e);
         }
         Ok(Ok(tcp_stream)) => {
             let peer_addr = tcp_stream.peer_addr().unwrap().to_string();
@@ -66,14 +66,14 @@ pub async fn connect_to_new_peer(
             .await
             {
                 Err(_elapsed) => {
-                    log::debug!("timed out completing handshake with peer {}", dest);
+                    log::trace!("timed out completing handshake with peer {}", dest);
                     to_manager_tx
                         .send(ToManagerMsg::Error(peer_addr))
                         .await
                         .unwrap();
                 }
                 Ok(Err(e)) => {
-                    log::debug!("error out completing handshake with peer {}", e);
+                    log::trace!("error out completing handshake with peer {}", e);
                     to_manager_tx
                         .send(ToManagerMsg::Error(peer_addr))
                         .await
@@ -103,7 +103,7 @@ pub async fn run_new_incoming_peers_handler(
     let ok_to_accept_connection = ok_to_accept_connection_for_rcv.clone();
     tokio::spawn(async move {
         while let Some(msg) = ok_to_accept_connection_rx.recv().await {
-            log::debug!(
+            log::trace!(
                 "got message to accept/refuse new incoming connections: {}",
                 msg
             );
@@ -116,7 +116,7 @@ pub async fn run_new_incoming_peers_handler(
     let piece_completion_status = piece_completion_status_for_rcv.clone();
     tokio::spawn(async move {
         while let Some(msg) = piece_completion_status_rx.recv().await {
-            log::debug!("got message to update piece_completion_status");
+            log::trace!("got message to update piece_completion_status");
             *piece_completion_status_for_rcv.lock().unwrap() = msg;
         }
     });
@@ -127,10 +127,10 @@ pub async fn run_new_incoming_peers_handler(
 
     tokio::spawn(async move {
         loop {
-            log::debug!("waiting for incoming peer connections...");
+            log::trace!("waiting for incoming peer connections...");
             let (mut stream, _) = incoming_connection_listener.accept().await.unwrap(); // never timeout here, wait forever if needed
             if !*ok_to_accept_connection.lock().unwrap() {
-                log::debug!(
+                log::trace!(
                     "reached limit of incoming connections, shutting down new connection from: {}",
                     stream.peer_addr().unwrap()
                 );
@@ -151,10 +151,10 @@ pub async fn run_new_incoming_peers_handler(
                 .await
                 {
                     Err(_elapsed) => {
-                        log::debug!("handshake timeout with peer {}", remote_addr);
+                        log::trace!("handshake timeout with peer {}", remote_addr);
                     }
                     Ok(Err(e)) => {
-                        log::debug!("handshake failed with peer {}: {}", remote_addr, e);
+                        log::trace!("handshake failed with peer {}: {}", remote_addr, e);
                     }
                     Ok(Ok(tcp_stream)) => {
                         new_peer_tx_for_spawn
@@ -196,7 +196,7 @@ async fn handshake(
     let (peer_protocol, _reserved, peer_info_hash, peer_id) = stream
         .handshake(info_hash, own_peer_id.as_bytes().try_into()?)
         .await?;
-    log::debug!(
+    log::trace!(
         "received handshake info from {}: peer protocol: {}, info_hash: {}, peer_id: {}",
         stream.peer_addr().unwrap(),
         peer_protocol,
@@ -226,7 +226,9 @@ async fn handshake(
     write
         .send(Message::Bitfield(piece_completion_status))
         .await?;
-    log::debug!("bitfield sent to peer {}", peer_addr);
+    log::trace!("bitfield sent to peer {}", peer_addr);
+
+    write.send(Message::Unchoke).await?; // todo remove me
     let stream = read.unsplit(write);
 
     // handshake completed successfully
@@ -241,7 +243,7 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
     loop {
         match timeout(Duration::from_secs(180), wire_proto.receive()).await {
             Err(_elapsed) => {
-                log::debug!(
+                log::trace!(
                 "did not receive anything (not even keep-alive messages) from peer in 3 minutes {}",
                 peer_addr
             );
@@ -252,7 +254,7 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
                 break;
             }
             Ok(Err(e)) => {
-                log::debug!("receive failed with peer {}: {}", peer_addr, e);
+                log::trace!("receive failed with peer {}: {}", peer_addr, e);
                 to_manager_tx
                     .send(ToManagerMsg::Error(peer_addr))
                     .await
@@ -260,7 +262,7 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
                 break;
             }
             Ok(Ok(proto_msg)) => {
-                log::debug!("received from {}: {}", peer_addr, proto_msg);
+                log::trace!("received from {}: {}", peer_addr, proto_msg);
                 to_manager_tx
                     .send(ToManagerMsg::Receive(peer_addr.clone(), proto_msg))
                     .await
@@ -304,15 +306,15 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                     let piece_request = (*piece_idx, *begin, data.len() as u32);
                     if cancellations.contains_key(&piece_request) {
                         cancellations.remove(&piece_request);
-                        log::debug!("avoided sending canceled request to peer {} (block_idx: {} begin: {}, end: {})", peer_addr, piece_idx, begin, data.len());
+                        log::trace!("avoided sending canceled request to peer {} (block_idx: {} begin: {}, end: {})", peer_addr, piece_idx, begin, data.len());
                         continue;
                     }
                 }
 
-                log::debug!("sending message {} to peer {}", proto_msg, peer_addr);
+                log::trace!("sending message {} to peer {}", proto_msg, peer_addr);
                 match timeout(DEFAULT_TIMEOUT, wire_proto.send(proto_msg)).await {
                     Err(_elapsed) => {
-                        log::debug!("timeout sending message to peer {}", peer_addr);
+                        log::trace!("timeout sending message to peer {}", peer_addr);
                         to_manager_tx
                             .send(ToManagerMsg::Error(peer_addr))
                             .await
@@ -320,7 +322,7 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                         break;
                     }
                     Ok(Err(e)) => {
-                        log::debug!("sending failed with peer {}: {}", peer_addr, e);
+                        log::trace!("sending failed with peer {}: {}", peer_addr, e);
                         to_manager_tx
                             .send(ToManagerMsg::Error(peer_addr))
                             .await

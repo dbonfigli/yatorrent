@@ -16,14 +16,14 @@ impl Protocol for TcpStream {
         peer_id: [u8; 20],
     ) -> Result<(String, [u8; 8], [u8; 20], [u8; 20]), Box<dyn Error + Send + Sync>> {
         let peer_addr = self.peer_addr()?;
-        log::debug!("peer {}: performing handshake", &peer_addr);
+        log::trace!("peer {}: performing handshake", &peer_addr);
 
         let (mut read, mut write) = tokio::io::split(self);
 
         let (write_result, read_result) = join!(
             //send
             async {
-                log::debug!("peer {}: sending handshake", &peer_addr);
+                log::trace!("peer {}: sending handshake", &peer_addr);
                 let mut buf: [u8; 68] = [0; 68];
                 buf[0] = 19;
                 buf[1..20].copy_from_slice(b"BitTorrent protocol");
@@ -32,13 +32,13 @@ impl Protocol for TcpStream {
                 if let Err(e) = write.write_all(&buf).await {
                     return Err(e.into());
                 } else {
-                    log::debug!("peer {}: full handshake sent", &peer_addr);
+                    log::trace!("peer {}: full handshake sent", &peer_addr);
                     return Ok(());
                 }
             },
             // receive
             async {
-                log::debug!("peer {}: receiving handshake", &peer_addr);
+                log::trace!("peer {}: receiving handshake", &peer_addr);
 
                 let mut pstr_len_buf: [u8; 1] = [0; 1];
                 if let Err(e) = read.read_exact(&mut pstr_len_buf).await {
@@ -64,7 +64,7 @@ impl Protocol for TcpStream {
                     return Err(e.into());
                 }
 
-                log::debug!(
+                log::trace!(
                     "peer {}: first part of handshake received, receiving handshake peer id",
                     &peer_addr
                 );
@@ -73,7 +73,7 @@ impl Protocol for TcpStream {
                     return Err(e.into());
                 }
 
-                log::debug!("peer {}: full handshake received", &peer_addr);
+                log::trace!("peer {}: full handshake received", &peer_addr);
                 return Ok((pstr, reserved_buf, info_hash_buf, peer_id));
             }
         );
