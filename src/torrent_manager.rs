@@ -284,7 +284,7 @@ impl TorrentManager {
                                 .send(ToPeerMsg::Send(Message::Piece(piece_idx, begin, data)))
                                 .await
                                 .unwrap(); // todo: really naive, must avoid saturating upload
-                            self.uploaded_bytes += data_len; // (todo: we are not keeping track of cancelled pieces)
+                            self.uploaded_bytes += data_len; // todo: we are not keeping track of cancelled pieces
                         }
                     }
                 }
@@ -429,10 +429,13 @@ impl TorrentManager {
         }
 
         log::info!(
-            "connected peers: {}, uploaded: {}, downloaded: {}",
+            "connected peers: {}, uploaded: {}, downloaded: {}, left: {}, completed pieces: {}/{}",
             self.peers.len(),
             Size::from_bytes(self.uploaded_bytes),
-            Size::from_bytes(self.downloaded_bytes)
+            Size::from_bytes(self.downloaded_bytes),
+            Size::from_bytes(self.file_manager.bytes_left()),
+            self.file_manager.completed_pieces(),
+            self.file_manager.num_pieces()
         );
 
         // todo: send piece requests

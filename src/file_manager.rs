@@ -167,16 +167,19 @@ impl FileManager {
             }
         }
 
-        let total_completed =
-            self.piece_completion_status
-                .iter()
-                .fold(0, |acc, v| if *v { acc + 1 } else { acc });
+        let total_completed = self.completed_pieces();
         log::info!(
             "checking pieces already downloaded completed: {} out of {} ({}%) pieces already completed",
             total_completed,
             self.piece_completion_status.len(),
             total_completed * 100 / self.piece_completion_status.len()
         );
+    }
+
+    pub fn completed_pieces(&self) -> usize {
+        self.piece_completion_status
+            .iter()
+            .fold(0, |acc, v| if *v { acc + 1 } else { acc })
     }
 
     // this depends on an up-to-date piece_completion_status
