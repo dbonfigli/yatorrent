@@ -1,7 +1,8 @@
 use core::str;
+use std::collections::HashMap;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
@@ -16,6 +17,7 @@ use crate::{
 };
 
 static DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+static CANCELLATION_DURATION: Duration = Duration::from_secs(120);
 
 pub enum ToPeerMsg {
     Send(Message),
@@ -29,6 +31,8 @@ pub enum ToManagerMsg {
     Tick,
     NewPeer(TcpStream),
 }
+
+pub type ToPeerCancelMsg = (u32, u32, u32, SystemTime); // piece_idx, begin, lenght, cancel time
 
 pub async fn connect_to_new_peer(
     host: String,
@@ -167,6 +171,7 @@ pub async fn start_peer_msg_handlers(
     tcp_stream: TcpStream,
     to_manager_tx: Sender<ToManagerMsg>,
     to_peer_rx: Receiver<ToPeerMsg>,
+    to_peer_cancel_rx: Receiver<ToPeerCancelMsg>,
 ) {
     let peer_addr = tcp_stream.peer_addr().unwrap().to_string();
     let to_manager_tx_for_snd_message_handler = to_manager_tx.clone();
@@ -177,6 +182,7 @@ pub async fn start_peer_msg_handlers(
         to_peer_rx,
         to_manager_tx_for_snd_message_handler,
         write,
+        to_peer_cancel_rx,
     ));
 }
 
@@ -256,10 +262,40 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
     mut to_peer_rx: Receiver<ToPeerMsg>,
     to_manager_tx: Sender<ToManagerMsg>,
     mut wire_proto: T,
+    mut to_peer_cancel_rx: Receiver<ToPeerCancelMsg>,
 ) {
+    let mut cancellations = HashMap::<(u32, u32, u32), SystemTime>::new();
     while let Some(manager_msg) = to_peer_rx.recv().await {
         match manager_msg {
             ToPeerMsg::Send(proto_msg) => {
+                // avoid sending data if the request has already been canceled by the peer
+                if let Message::Piece(piece_idx, begin, data) = &proto_msg {
+                    // receive pending cancellations
+                    while let Ok((piece_idx, begin, lenght, cancel_time)) =
+                        to_peer_cancel_rx.try_recv()
+                    {
+                        cancellations.insert((piece_idx, begin, lenght), cancel_time);
+                    }
+                    // remove expired cancellations
+                    let cancellations_keys: Vec<(u32, u32, u32)> =
+                        cancellations.keys().map(|k| k.clone()).collect();
+                    for k in cancellations_keys {
+                        let expired_at = *cancellations.get(&k).expect("not possible");
+                        if let Ok(elapsed) = SystemTime::now().duration_since(expired_at) {
+                            if elapsed > CANCELLATION_DURATION {
+                                cancellations.remove(&k);
+                            }
+                        }
+                    }
+                    // avoid sending if there is a cancellation
+                    let piece_request = (*piece_idx, *begin, data.len() as u32);
+                    if cancellations.contains_key(&piece_request) {
+                        cancellations.remove(&piece_request);
+                        log::debug!("avoided sending canceled request to peer {} (block_idx: {} begin: {}, end: {})", peer_addr, piece_idx, begin, data.len());
+                        continue;
+                    }
+                }
+
                 log::debug!("sending message {} to peer {}", proto_msg, peer_addr);
                 match timeout(DEFAULT_TIMEOUT, wire_proto.send(proto_msg)).await {
                     Err(_elapsed) => {

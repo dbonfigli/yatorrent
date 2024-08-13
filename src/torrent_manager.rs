@@ -9,7 +9,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time;
 
-use crate::peer::{self, PeerAddr, ToManagerMsg, ToPeerMsg};
+use crate::peer::{self, PeerAddr, ToManagerMsg, ToPeerCancelMsg, ToPeerMsg};
 use crate::tracker;
 use crate::wire_protocol::Message;
 use crate::{
@@ -31,10 +31,15 @@ pub struct Peer {
     to_peer_tx: Sender<ToPeerMsg>,
     last_sent: SystemTime,
     last_received: SystemTime,
+    to_peer_cancel_tx: Sender<ToPeerCancelMsg>,
 }
 
 impl Peer {
-    pub fn new(num_pieces: usize, to_peer_tx: Sender<ToPeerMsg>) -> Self {
+    pub fn new(
+        num_pieces: usize,
+        to_peer_tx: Sender<ToPeerMsg>,
+        to_peer_cancel_tx: Sender<ToPeerCancelMsg>,
+    ) -> Self {
         let now = SystemTime::now();
         return Peer {
             am_choking: true,
@@ -45,6 +50,7 @@ impl Peer {
             to_peer_tx,
             last_sent: now,
             last_received: now,
+            to_peer_cancel_tx,
         };
     }
 }
@@ -260,9 +266,9 @@ impl TorrentManager {
                         }
                     }
                 }
-                Message::Request(piece_idx, begin, end) => {
+                Message::Request(piece_idx, begin, lenght) => {
                     // todo
-                    // remember to update uploaded_bytes
+                    // remember to update uploaded_bytes (todo: we are not keeping track of cancelled pieces)
                 }
                 Message::Piece(piece_idx, begin, data) => {
                     let data_len = data.len() as u64;
@@ -323,8 +329,13 @@ impl TorrentManager {
                         }
                     }
                 }
-                Message::Cancel(piece_idx, begin, end) => {
-                    // todo
+                Message::Cancel(piece_idx, begin, lenght) => {
+                    // we try to let the peer message handler know about the cancellation,
+                    // but it the buffer is full, we don't care, it means there were no outstunding messages to be sent
+                    // and so the cancellation would have not effect
+                    let _ = peer
+                        .to_peer_cancel_tx
+                        .try_send((piece_idx, begin, lenght, now));
                 }
                 Message::Port(_) => {
                     // feature not supported
@@ -449,11 +460,22 @@ impl TorrentManager {
     ) {
         let peer_addr = tcp_stream.peer_addr().unwrap().to_string();
         log::debug!("got message with new peer: {}", peer_addr);
-        let (to_peer_tx, to_peer_rx) = mpsc::channel(10);
-        peer::start_peer_msg_handlers(tcp_stream, to_manager_tx.clone(), to_peer_rx).await;
+        let (to_peer_tx, to_peer_rx) = mpsc::channel(1000);
+        let (to_peer_cancel_tx, to_peer_cancel_rx) = mpsc::channel(1000);
+        peer::start_peer_msg_handlers(
+            tcp_stream,
+            to_manager_tx.clone(),
+            to_peer_rx,
+            to_peer_cancel_rx,
+        )
+        .await;
         self.peers.insert(
             peer_addr,
-            Peer::new(self.file_manager.num_pieces(), to_peer_tx),
+            Peer::new(
+                self.file_manager.num_pieces(),
+                to_peer_tx,
+                to_peer_cancel_tx,
+            ),
         );
         log::debug!("total current peers: {}", self.peers.len());
         if self.peers.len() > ENOUGH_PEERS {
