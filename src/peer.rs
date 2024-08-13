@@ -1,4 +1,5 @@
 use core::str;
+use std::ascii;
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
@@ -200,7 +201,19 @@ async fn handshake(
         stream.peer_addr().unwrap(),
         peer_protocol,
         pretty_info_hash(peer_info_hash),
-        str::from_utf8(&peer_id)?,
+        str::from_utf8(&peer_id).unwrap_or(
+            format!(
+                "<non utf-8> {}",
+                str::from_utf8(
+                    &peer_id
+                        .iter()
+                        .flat_map(|b| ascii::escape_default(*b))
+                        .collect::<Vec<u8>>()
+                )
+                .unwrap_or("??")
+            )
+            .as_str()
+        ),
     );
     if peer_info_hash != info_hash {
         log::warn!("info hash received during handshake does not match to the one we want (own: {}, theirs: {}), aborting connection", pretty_info_hash(info_hash), pretty_info_hash(peer_info_hash));

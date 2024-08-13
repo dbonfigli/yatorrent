@@ -5,6 +5,7 @@ use std::{error::Error, iter, path::Path};
 
 use rand::seq::SliceRandom;
 use rand::Rng;
+use size::Size;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time;
@@ -212,7 +213,7 @@ impl TorrentManager {
                             peer.to_peer_tx
                                 .send(ToPeerMsg::Send(Message::Interested))
                                 .await
-                                .unwrap();
+                                .unwrap(); // todo: we block if channel is full, not good
                         }
                     } else {
                         log::debug!(
@@ -249,7 +250,7 @@ impl TorrentManager {
                                         peer.to_peer_tx
                                             .send(ToPeerMsg::Send(Message::Interested))
                                             .await
-                                            .unwrap();
+                                            .unwrap(); // todo: we block if channel is full, not good
                                         break;
                                     }
                                 }
@@ -267,8 +268,25 @@ impl TorrentManager {
                     }
                 }
                 Message::Request(piece_idx, begin, lenght) => {
-                    // todo
-                    // remember to update uploaded_bytes (todo: we are not keeping track of cancelled pieces)
+                    // todo: really naive, must avoid saturate bandwidth and reciprocate on upload / download
+                    match self.file_manager.read_piece_block(
+                        piece_idx as usize,
+                        begin as u64,
+                        lenght as u64,
+                    ) {
+                        Err(e) => {
+                            log::error!("error reading block: {}", e);
+                        }
+
+                        Ok(data) => {
+                            let data_len = data.len() as u64;
+                            peer.to_peer_tx
+                                .send(ToPeerMsg::Send(Message::Piece(piece_idx, begin, data)))
+                                .await
+                                .unwrap(); // todo: really naive, must avoid saturating upload
+                            self.uploaded_bytes += data_len; // (todo: we are not keeping track of cancelled pieces)
+                        }
+                    }
                 }
                 Message::Piece(piece_idx, begin, data) => {
                     let data_len = data.len() as u64;
@@ -300,7 +318,7 @@ impl TorrentManager {
                                     peer.to_peer_tx
                                         .send(ToPeerMsg::Send(Message::Have(piece_idx)))
                                         .await
-                                        .unwrap();
+                                        .unwrap(); // todo: we block if channel is full, not good
                                 }
                                 // send not interested if needed
                                 if peer.am_interested {
@@ -319,7 +337,7 @@ impl TorrentManager {
                                         peer.to_peer_tx
                                             .send(ToPeerMsg::Send(Message::NotInterested))
                                             .await
-                                            .unwrap();
+                                            .unwrap(); // todo: we block if channel is full, not good
                                     }
                                 }
                             }
@@ -391,7 +409,7 @@ impl TorrentManager {
                     peer.to_peer_tx
                         .send(ToPeerMsg::Send(Message::KeepAlive))
                         .await
-                        .unwrap();
+                        .unwrap(); // todo: we block if channel is full, not good
                     peer.last_sent = now;
                 }
             }
@@ -410,7 +428,12 @@ impl TorrentManager {
             }
         }
 
-        log::info!("connected peers: {}", self.peers.len());
+        log::info!(
+            "connected peers: {}, uploaded: {}, downloaded: {}",
+            self.peers.len(),
+            Size::from_bytes(self.uploaded_bytes),
+            Size::from_bytes(self.downloaded_bytes)
+        );
 
         // todo: send piece requests
     }
