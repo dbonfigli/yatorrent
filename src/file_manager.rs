@@ -9,6 +9,8 @@ use std::fs::File;
 use sha1::{Digest, Sha1};
 use size::Size;
 
+use crate::piece::Piece;
+
 pub struct FileManager {
     file_list: Vec<(PathBuf, u64, bool)>, // name with path, size, download completed / incomplete
     piece_hashes: Vec<[u8; 20]>,          // piece identified by position in array -> hash
@@ -17,7 +19,7 @@ pub struct FileManager {
     // mutable fields
     pub piece_completion_status: Vec<bool>, // piece identified by position in array -> download completed / incomplete
     file_handles: FileHandles,
-    incomplete_pieces: HashMap<usize, u64>, // piece id -> downloaded bytes
+    pub incomplete_pieces: HashMap<usize, Piece>, // piece id -> piece with downloaded fragments
 }
 
 struct FileHandles {
@@ -320,6 +322,14 @@ impl FileManager {
     ) -> Result<bool, Box<dyn Error>> {
         // if ok, return if piece is completed / not completed
 
+        if piece_idx >= self.num_pieces() {
+            return Err(Box::from(format!(
+                "cannot write block: piece idx {} would overflow total pieces ({})",
+                piece_idx,
+                self.num_pieces()
+            )));
+        }
+
         // avoid useless writes if we already have the piece
         if self.piece_completion_status[piece_idx] {
             log::trace!(
@@ -329,35 +339,26 @@ impl FileManager {
             return Ok(true);
         }
 
-        let mut data_start = 0;
-        let mut data_len = data.len() as u64;
-        let mut piece_begin: u64 = 0;
-
-        // check and adjust the write to write if we have already written something from this block
-        if let Some(already_downloaded_bytes) = self.incomplete_pieces.get(&piece_idx) {
-            if block_begin > *already_downloaded_bytes {
-                return Err(Box::from("cannot write block: preceding data missing"));
-            }
-            data_start = *already_downloaded_bytes - block_begin;
-            if data_start >= data_len {
-                log::trace!("we already have written all the data in this block");
-                return Ok(false);
-            }
-            data_len -= data_start;
-            piece_begin = *already_downloaded_bytes;
-        } else if block_begin != 0 {
-            return Err(Box::from("cannot write block: preceding data missing"));
-        }
-
         let piece_len = self.piece_length(piece_idx);
-        if piece_begin + data_len > piece_len {
+        let data_len = data.len() as u64;
+        if block_begin + data_len >= piece_len {
             return Err(Box::from(
                 "cannot write block: data would overflow the piece",
             ));
         }
 
+        if !self.incomplete_pieces.contains_key(&piece_idx) {
+            self.incomplete_pieces
+                .insert(piece_idx, Piece::new(piece_len));
+        }
+        let piece = self.incomplete_pieces.get_mut(&piece_idx).unwrap();
+        if piece.contains(block_begin, block_begin + data_len) {
+            log::trace!("we already have written all the data in this block");
+            return Ok(false);
+        }
+
         // finally write this block
-        let mut data_cursor = data_start;
+        let mut data_cursor = block_begin;
         let mut data_still_to_be_written = data_len;
         let mut piece_cursor_to_begin = 0;
         for (file_path, file_start, file_end) in self.piece_to_files[piece_idx].iter() {
@@ -366,9 +367,9 @@ impl FileManager {
             }
             let mut file_start = *file_start;
             let file_end = *file_end;
-            if piece_begin - piece_cursor_to_begin < file_end - file_start {
-                file_start += piece_begin - piece_cursor_to_begin;
-                piece_cursor_to_begin = piece_begin;
+            if block_begin - piece_cursor_to_begin < file_end - file_start {
+                file_start += block_begin - piece_cursor_to_begin;
+                piece_cursor_to_begin = block_begin;
             } else {
                 piece_cursor_to_begin += file_end - file_start;
                 continue;
@@ -381,8 +382,10 @@ impl FileManager {
             data_still_to_be_written -= data_to_write;
         }
 
+        piece.add_fragment(block_begin, block_begin + data_len);
+
         // check if piece is completed
-        if piece_begin + data_len == data_len {
+        if piece.complete() {
             self.incomplete_pieces.remove(&piece_idx);
 
             // final sha check
@@ -400,38 +403,9 @@ impl FileManager {
             }
             return Ok(true);
         } else {
-            self.incomplete_pieces
-                .insert(piece_idx, data_start + data_len);
             return Ok(false);
         }
     }
-
-    // pub fn write_piece(&mut self, piece_idx: usize, data: Vec<u8>) -> Result<(), Box<dyn Error>> {
-    //     if self.piece_completion_status[piece_idx] {
-    //         log::trace!(
-    //             "we already have the piece {}, will avoid to write it again",
-    //             piece_idx
-    //         );
-    //         return Ok(());
-    //     }
-    //     let piece_sha: [u8; 20] = Sha1::digest(&data).as_slice().try_into().unwrap();
-    //     if piece_sha != self.piece_hashes[piece_idx] {
-    //         return Err(Box::from(
-    //           format!("the sha of the data we want to write for piece {} do not match the sha we expect, write aborted", piece_idx)));
-    //     }
-
-    //     let mut written: u64 = 0;
-    //     for (file_path, start, end) in self.piece_to_files[piece_idx].iter() {
-    //         let mut opened_file = self.file_handles.get_file(file_path, true)?;
-    //         opened_file.seek(SeekFrom::Start(*start))?;
-    //         opened_file.write_all(&data[written as usize..(end - start) as usize])?;
-    //         written += end - start;
-    //     }
-
-    //     self.piece_completion_status[piece_idx] = true;
-    //     self.refresh_completed_files(); //todo: optimize this
-    //     Ok(())
-    // }
 
     pub fn num_pieces(&self) -> usize {
         self.piece_hashes.len()

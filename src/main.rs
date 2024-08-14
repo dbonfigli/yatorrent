@@ -10,6 +10,7 @@ mod bencoding;
 mod file_manager;
 mod metainfo;
 mod peer;
+mod piece;
 mod tcp_wire_protocol;
 mod torrent_manager;
 mod tracker;
