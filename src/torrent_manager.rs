@@ -11,6 +11,7 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time;
 
 use crate::peer::{self, PeerAddr, ToManagerMsg, ToPeerCancelMsg, ToPeerMsg};
+use crate::piece::Piece;
 use crate::tracker;
 use crate::wire_protocol::Message;
 use crate::{
@@ -20,8 +21,9 @@ use crate::{
 };
 
 static ENOUGH_PEERS: usize = 55;
-static LOW_ENOUGH_PEERS: usize = 55;
+static LOW_ENOUGH_PEERS: usize = 30;
 static KEEP_ALIVE_FREQ: Duration = Duration::from_secs(90);
+static MAX_OUTSTANDING_REQUESTS_PER_PEER: usize = 20;
 
 pub struct Peer {
     am_choking: bool,
@@ -33,6 +35,8 @@ pub struct Peer {
     last_sent: SystemTime,
     last_received: SystemTime,
     to_peer_cancel_tx: Sender<ToPeerCancelMsg>,
+    outstanding_block_requests: HashMap<(u32, u32, u32), SystemTime>,
+    requested_pieces: HashMap<usize, Piece>, // piece idx -> piece status with all the requested fragments
 }
 
 impl Peer {
@@ -52,6 +56,8 @@ impl Peer {
             last_sent: now,
             last_received: now,
             to_peer_cancel_tx,
+            outstanding_block_requests: HashMap::new(),
+            requested_pieces: HashMap::new(),
         };
     }
 }
@@ -70,6 +76,7 @@ pub struct TorrentManager {
     tracker_request_interval: Arc<Mutex<Duration>>,
     uploaded_bytes: u64,
     downloaded_bytes: u64,
+    outstanding_piece_assigments: HashMap<usize, String>, // piece idx -> peer_addr
 }
 
 impl TorrentManager {
@@ -102,6 +109,7 @@ impl TorrentManager {
             tracker_request_interval: Arc::new(Mutex::new(Duration::from_secs(0))),
             uploaded_bytes: 0,
             downloaded_bytes: 0,
+            outstanding_piece_assigments: HashMap::new(),
         })
     }
 
@@ -189,9 +197,20 @@ impl TorrentManager {
                 Message::KeepAlive => {}
                 Message::Choke => {
                     peer.peer_choking = true;
+
+                    // remove outstandig requests that will be discarded because the peer is choking
+                    for ((piece_idx, _, _), _) in peer.outstanding_block_requests.iter() {
+                        self.outstanding_piece_assigments
+                            .remove(&(*piece_idx as usize));
+                    }
+                    peer.outstanding_block_requests = HashMap::new();
+                    peer.requested_pieces = HashMap::new();
+
+                    self.assign_piece_reqs().await;
                 }
                 Message::Unchoke => {
                     peer.peer_choking = false;
+                    self.assign_piece_reqs().await;
                 }
                 Message::Interested => {
                     peer.peer_interested = true;
@@ -215,6 +234,8 @@ impl TorrentManager {
                                 .await
                                 .unwrap(); // todo: we block if channel is full, not good
                         }
+
+                        self.assign_piece_reqs().await;
                     } else {
                         log::warn!(
                             "got message have {} from peer {} but the torrent have only {} pieces",
@@ -266,6 +287,7 @@ impl TorrentManager {
                             );
                         }
                     }
+                    self.assign_piece_reqs().await;
                 }
                 Message::Request(piece_idx, begin, lenght) => {
                     // todo: really naive, must avoid saturate bandwidth and reciprocate on upload / download
@@ -295,11 +317,30 @@ impl TorrentManager {
                         data,
                         begin as u64,
                     ) {
-                        Ok(false) => {
+                        Ok(piece_completed) => {
                             self.downloaded_bytes += data_len;
-                        }
-                        Ok(true) => {
-                            self.downloaded_bytes += data_len;
+
+                            // remove outstanding request associated with this block
+                            peer.outstanding_block_requests.remove(&(
+                                piece_idx,
+                                begin,
+                                data_len as u32,
+                            ));
+                            if piece_completed {
+                                peer.requested_pieces.remove(&(piece_idx as usize));
+                            }
+
+                            self.assign_piece_reqs().await;
+
+                            if !piece_completed {
+                                return;
+                            }
+
+                            log::debug!("piece completed: {}", piece_idx);
+
+                            self.outstanding_piece_assigments
+                                .remove(&(piece_idx as usize));
+
                             if self.file_manager.completed() {
                                 log::info!("torrent download complete");
                                 let _ = self.tracker_request(Event::Completed).await;
@@ -364,7 +405,12 @@ impl TorrentManager {
 
     async fn peer_error(&mut self, peer_addr: String, ok_to_accept_connection_tx: Sender<bool>) {
         log::debug!("removing errored peer {}", peer_addr);
-        self.peers.remove(&peer_addr);
+        if let Some(removed_peer) = self.peers.remove(&peer_addr) {
+            for ((piece_idx, _, _), _) in removed_peer.outstanding_block_requests {
+                self.outstanding_piece_assigments
+                    .remove(&(piece_idx as usize));
+            }
+        }
         self.bad_peers.insert(peer_addr);
         if self.peers.len() < ENOUGH_PEERS {
             ok_to_accept_connection_tx.send(true).await.unwrap();
@@ -387,6 +433,7 @@ impl TorrentManager {
                 .choose_multiple(&mut rand::thread_rng(), LOW_ENOUGH_PEERS - current_peers_n)
                 .collect();
             // todo:
+            // * better algorithm to select new peers
             // * avoid selecting bad peers?
             for p in candidates_for_new_connections.iter() {
                 tokio::spawn(peer::connect_to_new_peer(
@@ -438,6 +485,11 @@ impl TorrentManager {
         );
 
         // send piece requests
+        self.assign_piece_reqs().await;
+    }
+
+    async fn assign_piece_reqs(&mut self) {
+
     }
 
     async fn tracker_request(&mut self, event: Event) -> Result<(), Box<dyn Error + Sync + Send>> {
