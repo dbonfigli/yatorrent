@@ -341,7 +341,7 @@ impl FileManager {
 
         let piece_len = self.piece_length(piece_idx);
         let data_len = data.len() as u64;
-        if block_begin + data_len >= piece_len {
+        if block_begin + data_len > piece_len {
             return Err(Box::from(
                 "cannot write block: data would overflow the piece",
             ));
@@ -382,7 +382,7 @@ impl FileManager {
             data_still_to_be_written -= data_to_write;
         }
 
-        piece.add_fragment(block_begin, block_begin + data_len);
+        piece.add_fragment(block_begin, block_begin + data_len - 1);
 
         // check if piece is completed
         if piece.complete() {
