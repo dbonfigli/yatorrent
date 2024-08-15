@@ -1,10 +1,11 @@
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use std::{error::Error, iter, path::Path};
 
 use rand::seq::SliceRandom;
-use rand::Rng;
+use rand::{thread_rng, Rng};
 use size::Size;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -23,7 +24,9 @@ use crate::{
 static ENOUGH_PEERS: usize = 55;
 static LOW_ENOUGH_PEERS: usize = 30;
 static KEEP_ALIVE_FREQ: Duration = Duration::from_secs(90);
-static MAX_OUTSTANDING_REQUESTS_PER_PEER: usize = 20;
+static MAX_OUTSTANDING_REQUESTS_PER_PEER: usize = 50;
+static MAX_OUTSTANDING_PIECES: usize = 50;
+static BLOCK_SIZE_B: u64 = 16384;
 
 pub struct Peer {
     am_choking: bool,
@@ -199,18 +202,18 @@ impl TorrentManager {
                     peer.peer_choking = true;
 
                     // remove outstandig requests that will be discarded because the peer is choking
-                    for ((piece_idx, _, _), _) in peer.outstanding_block_requests.iter() {
+                    for (piece_idx, _) in peer.requested_pieces.iter() {
                         self.outstanding_piece_assigments
                             .remove(&(*piece_idx as usize));
                     }
                     peer.outstanding_block_requests = HashMap::new();
                     peer.requested_pieces = HashMap::new();
 
-                    self.assign_piece_reqs().await;
+                    //self.assign_piece_reqs().await; // todo
                 }
                 Message::Unchoke => {
                     peer.peer_choking = false;
-                    self.assign_piece_reqs().await;
+                    //self.assign_piece_reqs().await; // todo
                 }
                 Message::Interested => {
                     peer.peer_interested = true;
@@ -235,7 +238,7 @@ impl TorrentManager {
                                 .unwrap(); // todo: we block if channel is full, not good
                         }
 
-                        self.assign_piece_reqs().await;
+                        //self.assign_piece_reqs().await; // todo
                     } else {
                         log::warn!(
                             "got message have {} from peer {} but the torrent have only {} pieces",
@@ -287,7 +290,7 @@ impl TorrentManager {
                             );
                         }
                     }
-                    self.assign_piece_reqs().await;
+                    //self.assign_piece_reqs().await; // todo
                 }
                 Message::Request(piece_idx, begin, lenght) => {
                     // todo: really naive, must avoid saturate bandwidth and reciprocate on upload / download
@@ -328,60 +331,52 @@ impl TorrentManager {
                             ));
                             if piece_completed {
                                 peer.requested_pieces.remove(&(piece_idx as usize));
-                            }
+                                self.outstanding_piece_assigments
+                                    .remove(&(piece_idx as usize));
 
-                            self.assign_piece_reqs().await;
-
-                            if !piece_completed {
-                                return;
-                            }
-
-                            log::debug!("piece completed: {}", piece_idx);
-
-                            self.outstanding_piece_assigments
-                                .remove(&(piece_idx as usize));
-
-                            if self.file_manager.completed() {
-                                log::info!("torrent download complete");
-                                let _ = self.tracker_request(Event::Completed).await;
-                            }
-
-                            piece_completion_status_channel_tx
-                                .send(self.file_manager.piece_completion_status.clone())
-                                .await
-                                .unwrap();
-
-                            let now = SystemTime::now();
-                            for (_, peer) in self.peers.iter_mut() {
-                                // send have to interested peers
-                                if peer.peer_interested && !peer.haves[piece_idx as usize] {
-                                    peer.last_sent = now;
-                                    peer.to_peer_tx
-                                        .send(ToPeerMsg::Send(Message::Have(piece_idx)))
-                                        .await
-                                        .unwrap(); // todo: we block if channel is full, not good
+                                if self.file_manager.completed() {
+                                    log::info!("torrent download complete");
+                                    let _ = self.tracker_request(Event::Completed).await;
                                 }
-                                // send not interested if needed
-                                if peer.am_interested {
-                                    let mut am_still_interested = false;
-                                    for i in 0..peer.haves.len() {
-                                        if !self.file_manager.piece_completion_status
-                                            [piece_idx as usize]
-                                            && peer.haves[i]
-                                        {
-                                            am_still_interested = true;
-                                            break;
-                                        }
-                                    }
-                                    if !am_still_interested {
+
+                                piece_completion_status_channel_tx
+                                    .send(self.file_manager.piece_completion_status.clone())
+                                    .await
+                                    .unwrap();
+
+                                let now = SystemTime::now();
+                                for (_, peer) in self.peers.iter_mut() {
+                                    // send have to interested peers
+                                    if peer.peer_interested && !peer.haves[piece_idx as usize] {
                                         peer.last_sent = now;
                                         peer.to_peer_tx
-                                            .send(ToPeerMsg::Send(Message::NotInterested))
+                                            .send(ToPeerMsg::Send(Message::Have(piece_idx)))
                                             .await
                                             .unwrap(); // todo: we block if channel is full, not good
                                     }
+                                    // send not interested if needed
+                                    if peer.am_interested {
+                                        let mut am_still_interested = false;
+                                        for i in 0..peer.haves.len() {
+                                            if !self.file_manager.piece_completion_status
+                                                [piece_idx as usize]
+                                                && peer.haves[i]
+                                            {
+                                                am_still_interested = true;
+                                                break;
+                                            }
+                                        }
+                                        if !am_still_interested {
+                                            peer.last_sent = now;
+                                            peer.to_peer_tx
+                                                .send(ToPeerMsg::Send(Message::NotInterested))
+                                                .await
+                                                .unwrap(); // todo: we block if channel is full, not good // todo: can fail if other side is closed
+                                        }
+                                    }
                                 }
                             }
+                            //self.assign_piece_reqs().await; // todo maybe this is needed to speed up things
                         }
                         Err(e) => {
                             log::error!("cannot write block: {}", e);
@@ -489,7 +484,46 @@ impl TorrentManager {
     }
 
     async fn assign_piece_reqs(&mut self) {
+        // send requests for new blocks for pieces currently downloading
+        for (piece_idx, peer_addr) in self.outstanding_piece_assigments.iter() {
+            if let Some(peer) = self.peers.get_mut(peer_addr) {
+                file_requests(peer, *piece_idx, None).await;
+            }
+        }
 
+        // assign incomplete pieces if not assigned yet
+        for (piece_idx, piece) in self.file_manager.incomplete_pieces.iter() {
+            if !self.outstanding_piece_assigments.contains_key(piece_idx) {
+                if let Some(peer_addr) = assign_piece(*piece_idx, &self.peers) {
+                    let peer = self.peers.get_mut(&peer_addr).unwrap();
+                    file_requests(peer, *piece_idx, Some(piece.clone())).await;
+                    self.outstanding_piece_assigments
+                        .insert(*piece_idx, peer_addr.clone());
+                }
+            }
+        }
+
+        // assign other pieces, in order
+        for piece_idx in 0..self.file_manager.num_pieces() {
+            if self.outstanding_piece_assigments.len() > MAX_OUTSTANDING_PIECES {
+                break;
+            }
+            if !self.file_manager.piece_completion_status[piece_idx]
+                && !self.outstanding_piece_assigments.contains_key(&piece_idx)
+            {
+                if let Some(peer_addr) = assign_piece(piece_idx, &self.peers) {
+                    let peer = self.peers.get_mut(&peer_addr).unwrap();
+                    file_requests(
+                        peer,
+                        piece_idx,
+                        Some(Piece::new(self.file_manager.piece_length(piece_idx))),
+                    )
+                    .await;
+                    self.outstanding_piece_assigments
+                        .insert(piece_idx, peer_addr.clone());
+                }
+            }
+        }
     }
 
     async fn tracker_request(&mut self, event: Event) -> Result<(), Box<dyn Error + Sync + Send>> {
@@ -535,7 +569,7 @@ impl TorrentManager {
         to_manager_tx: Sender<ToManagerMsg>,
         ok_to_accept_connection_tx: Sender<bool>,
     ) {
-        let peer_addr = tcp_stream.peer_addr().unwrap().to_string();
+        let peer_addr = tcp_stream.peer_addr().unwrap().to_string(); // todo can fail
         log::debug!("got message with new peer: {}", peer_addr);
         let (to_peer_tx, to_peer_rx) = mpsc::channel(1000);
         let (to_peer_cancel_tx, to_peer_cancel_rx) = mpsc::channel(1000);
@@ -563,7 +597,7 @@ impl TorrentManager {
 
 async fn start_tick(to_manager_tx: Sender<ToManagerMsg>) {
     tokio::spawn(async move {
-        let mut interval = time::interval(Duration::from_secs(5));
+        let mut interval = time::interval(Duration::from_secs(1));
         loop {
             interval.tick().await;
             to_manager_tx.send(ToManagerMsg::Tick).await.unwrap();
@@ -640,6 +674,79 @@ async fn tracker_request(
             }
 
             Ok(())
+        }
+    }
+}
+
+fn assign_piece(piece_idx: usize, peers: &HashMap<String, Peer>) -> Option<String> {
+    let mut possible_peers = peers
+        .iter()
+        .filter(|(_, peer)| {
+            !peer.peer_choking
+                && peer.haves[piece_idx]
+                && peer.outstanding_block_requests.len() < MAX_OUTSTANDING_REQUESTS_PER_PEER
+        })
+        .map(|(peer_addr, peer)| {
+            (
+                peer_addr,
+                peer,
+                peer.outstanding_block_requests
+                    .keys()
+                    .map(|(piece_idx, _, _)| *piece_idx)
+                    .collect::<HashSet<u32>>()
+                    .len(),
+                peer.outstanding_block_requests.len(),
+            )
+        })
+        .collect::<Vec<(&String, &Peer, usize, usize)>>();
+
+    possible_peers.shuffle(&mut thread_rng());
+
+    possible_peers.sort_by(|a, b| {
+        if a.2 < b.2 {
+            return Ordering::Less;
+        } else if a.2 > b.2 {
+            return Ordering::Greater;
+        } else if a.3 < b.3 {
+            return Ordering::Less;
+        } else if a.3 > b.3 {
+            return Ordering::Greater;
+        } else {
+            return Ordering::Equal;
+        }
+    });
+
+    if possible_peers.len() > 0 {
+        return Some(possible_peers[0].0.clone());
+    } else {
+        return None;
+    }
+}
+
+async fn file_requests(peer: &mut Peer, piece_idx: usize, incomplete_piece: Option<Piece>) {
+    let mut piece: Piece;
+    if peer.requested_pieces.contains_key(&piece_idx) {
+        piece = peer.requested_pieces.get(&piece_idx).unwrap().clone();
+    } else {
+        piece = incomplete_piece.unwrap(); // todo: re-check if this can never panic
+    }
+
+    peer.requested_pieces.insert(piece_idx, piece.clone());
+
+    while peer.outstanding_block_requests.len() < MAX_OUTSTANDING_REQUESTS_PER_PEER {
+        if let Some((begin, end)) = piece.get_next_fragment(BLOCK_SIZE_B) {
+            let request = (piece_idx as u32, begin as u32, (end - begin + 1) as u32);
+            peer.to_peer_tx
+                .send(ToPeerMsg::Send(Message::Request(
+                    request.0, request.1, request.2,
+                )))
+                .await
+                .unwrap();
+            peer.outstanding_block_requests
+                .insert(request, SystemTime::now());
+            piece.add_fragment(begin, end);
+        } else {
+            return;
         }
     }
 }
