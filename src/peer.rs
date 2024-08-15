@@ -2,13 +2,14 @@ use core::str;
 use std::ascii;
 use std::collections::HashMap;
 use std::error::Error;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
+use tokio::sync::Mutex;
 use tokio::time::timeout;
 
 use crate::wire_protocol::{ProtocolReadHalf, ProtocolWriteHalf};
@@ -116,7 +117,10 @@ pub async fn run_new_incoming_peers_handler(
                 "got message to accept/refuse new incoming connections: {}",
                 msg
             );
-            *ok_to_accept_connection_for_rcv.lock().unwrap() = msg;
+            let mut ok_to_accept_connection_for_rcv_lock =
+                ok_to_accept_connection_for_rcv.lock().await;
+            *ok_to_accept_connection_for_rcv_lock = msg;
+            drop(ok_to_accept_connection_for_rcv_lock);
         }
     });
 
@@ -126,7 +130,10 @@ pub async fn run_new_incoming_peers_handler(
     tokio::spawn(async move {
         while let Some(msg) = piece_completion_status_rx.recv().await {
             log::trace!("got message to update piece_completion_status");
-            *piece_completion_status_for_rcv.lock().unwrap() = msg;
+            let mut piece_completion_status_for_rcv_lock =
+                piece_completion_status_for_rcv.lock().await;
+            *piece_completion_status_for_rcv_lock = msg;
+            drop(piece_completion_status_for_rcv_lock);
         }
     });
 
@@ -138,7 +145,10 @@ pub async fn run_new_incoming_peers_handler(
         loop {
             log::trace!("waiting for incoming peer connections...");
             let (mut stream, _) = incoming_connection_listener.accept().await.unwrap(); // never timeout here, wait forever if needed
-            if !*ok_to_accept_connection.lock().unwrap() {
+            let ok_to_accept_connection_lock = ok_to_accept_connection.lock().await;
+            let ok_to_accept_connection = ok_to_accept_connection_lock.clone();
+            drop(ok_to_accept_connection_lock);
+            if !ok_to_accept_connection {
                 log::trace!(
                     "reached limit of incoming connections, shutting down new connection from: {}",
                     addr_or_unknown(&stream)
@@ -151,7 +161,9 @@ pub async fn run_new_incoming_peers_handler(
             let own_peer_id_for_spawn = own_peer_id.clone();
             let new_peer_tx_for_spawn = to_manager_tx.clone();
             tokio::spawn(async move {
-                let pcs = piece_completion_status_for_spawn.lock().unwrap().clone();
+                let pcs_lock = piece_completion_status_for_spawn.lock().await;
+                let pcs = pcs_lock.clone();
+                drop(pcs_lock);
                 let remote_addr = addr_or_unknown(&stream);
                 match timeout(
                     DEFAULT_TIMEOUT,
