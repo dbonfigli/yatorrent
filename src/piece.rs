@@ -117,6 +117,10 @@ impl Piece {
         } else if j == i {
             return None;
         } else if self.fragments[mid].0 > value {
+            // avoid subtract with overflow
+            if mid == 0 {
+                return None;
+            }
             return self.get_fragment_dx_containing_value_in_slice(value, i, mid - 1);
         } else {
             return self.get_fragment_dx_containing_value_in_slice(value, mid + 1, j);
@@ -148,6 +152,10 @@ impl Piece {
             }
             return j;
         } else if self.fragments[mid].0 > value {
+            // avoid subtract with overflow
+            if mid == 0 {
+                return 0;
+            }
             return self.get_closest_fragment_idx_containing_value_in_slice(value, i, mid - 1);
         } else {
             return self.get_closest_fragment_idx_containing_value_in_slice(value, mid + 1, j);
