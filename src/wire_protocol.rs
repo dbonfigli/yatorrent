@@ -48,11 +48,11 @@ impl fmt::Display for Message {
                     bitfield.len()
                 )
             }
-            Message::Request(piece_idx, begin, end) => {
+            Message::Request(piece_idx, begin, length) => {
                 write!(
                     f,
-                    "request: piece idx: {}, begin: {}, end: {}",
-                    piece_idx, begin, end
+                    "request: piece idx: {}, begin: {}, length: {}",
+                    piece_idx, begin, length
                 )
             }
             Message::Piece(piece_idx, begin, data) => {
@@ -64,11 +64,11 @@ impl fmt::Display for Message {
                     data.len()
                 )
             }
-            Message::Cancel(piece_idx, begin, end) => {
+            Message::Cancel(piece_idx, begin, length) => {
                 write!(
                     f,
-                    "cancel: piece idx: {}, begin: {}, end: {}",
-                    piece_idx, begin, end
+                    "cancel: piece idx: {}, begin: {}, length: {}",
+                    piece_idx, begin, length
                 )
             }
             Message::Port(p) => {
