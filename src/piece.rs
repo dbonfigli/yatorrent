@@ -31,6 +31,10 @@ impl Piece {
 
     pub fn add_fragment(&mut self, begin: u64, end: u64) {
         assert!(begin < end || end < self.length);
+        if self.fragments.len() == 0 {
+            self.fragments.push((begin, end));
+            return;
+        }
         let closest_idx = self.get_closest_fragment_idx_containing_value(begin);
         let mut idx = closest_idx + 1;
         if begin < self.fragments[closest_idx].0 {
