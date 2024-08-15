@@ -413,7 +413,7 @@ impl TorrentManager {
     async fn peer_error(&mut self, peer_addr: String, ok_to_accept_connection_tx: Sender<bool>) {
         log::debug!("removing errored peer {}", peer_addr);
         if let Some(removed_peer) = self.peers.remove(&peer_addr) {
-            for ((piece_idx, _, _), _) in removed_peer.outstanding_block_requests {
+            for (piece_idx, _) in removed_peer.requested_pieces {
                 self.outstanding_piece_assigments
                     .remove(&(piece_idx as usize));
             }
