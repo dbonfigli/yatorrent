@@ -105,25 +105,27 @@ impl Piece {
     }
 
     // find the index of the fragment (between fragment i and j positions) that contains the value
-    fn get_fragment_dx_containing_value_in_slice(
+    fn get_fragment_idx_containing_value_in_slice(
         &self,
         value: u64,
         i: usize,
         j: usize,
     ) -> Option<usize> {
-        let mid = i + (j - i) / 2;
-        if self.fragments[mid].0 <= value && value <= self.fragments[mid].1 {
-            return Some(mid);
-        } else if j == i {
-            return None;
-        } else if self.fragments[mid].0 > value {
-            // avoid subtract with overflow
-            if mid == 0 {
-                return None;
+        if j >= i {
+            let mid = i + (j - i) / 2;
+            if self.fragments[mid].0 <= value && value <= self.fragments[mid].1 {
+                return Some(mid);
+            } else if self.fragments[mid].0 > value {
+                // avoid subtract with overflow
+                if mid == 0 {
+                    return None;
+                }
+                return self.get_fragment_idx_containing_value_in_slice(value, i, mid - 1);
+            } else {
+                return self.get_fragment_idx_containing_value_in_slice(value, mid + 1, j);
             }
-            return self.get_fragment_dx_containing_value_in_slice(value, i, mid - 1);
         } else {
-            return self.get_fragment_dx_containing_value_in_slice(value, mid + 1, j);
+            return None;
         }
     }
 
@@ -131,7 +133,7 @@ impl Piece {
         if self.fragments.len() == 0 {
             return None;
         }
-        self.get_fragment_dx_containing_value_in_slice(value, 0, self.fragments.len() - 1)
+        self.get_fragment_idx_containing_value_in_slice(value, 0, self.fragments.len() - 1)
     }
 
     // closest lower
@@ -141,24 +143,26 @@ impl Piece {
         i: usize,
         j: usize,
     ) -> usize {
-        let mid = i + (j - i) / 2;
-        if self.fragments[mid].0 <= value && value <= self.fragments[mid].1 {
-            return mid;
-        } else if j == i {
+        if j >= i {
+            let mid = i + (j - i) / 2;
+            if self.fragments[mid].0 <= value && value <= self.fragments[mid].1 {
+                return mid;
+            } else if self.fragments[mid].0 > value {
+                // avoid subtract with overflow
+                if mid == 0 {
+                    return 0;
+                }
+                return self.get_closest_fragment_idx_containing_value_in_slice(value, i, mid - 1);
+            } else {
+                return self.get_closest_fragment_idx_containing_value_in_slice(value, mid + 1, j);
+            }
+        } else {
             if j == 0 {
                 return j;
             } else if value < self.fragments[j].0 {
                 return j - 1;
             }
             return j;
-        } else if self.fragments[mid].0 > value {
-            // avoid subtract with overflow
-            if mid == 0 {
-                return 0;
-            }
-            return self.get_closest_fragment_idx_containing_value_in_slice(value, i, mid - 1);
-        } else {
-            return self.get_closest_fragment_idx_containing_value_in_slice(value, mid + 1, j);
         }
     }
 
@@ -198,6 +202,30 @@ mod tests {
             fragments: vec![],
         };
         assert_eq!(piece.get_fragment_idx_containing_value(4), None);
+
+        let piece = Piece {
+            length: 20,
+            fragments: vec![(0, 3)],
+        };
+        assert_eq!(piece.get_fragment_idx_containing_value(4), None);
+
+        let piece = Piece {
+            length: 20,
+            fragments: vec![(0, 3)],
+        };
+        assert_eq!(piece.get_fragment_idx_containing_value(2), Some(0));
+
+        let piece = Piece {
+            length: 20,
+            fragments: vec![(0, 3)],
+        };
+        assert_eq!(piece.get_fragment_idx_containing_value(0), Some(0));
+
+        let piece = Piece {
+            length: 20,
+            fragments: vec![(0, 3)],
+        };
+        assert_eq!(piece.get_fragment_idx_containing_value(3), Some(0));
 
         let piece = Piece {
             length: 20,
