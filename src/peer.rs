@@ -53,7 +53,16 @@ pub async fn connect_to_new_peer(
             log::trace!("error initiating connection to peer {}: {}", dest, e);
         }
         Ok(Ok(tcp_stream)) => {
-            let peer_addr = tcp_stream.peer_addr().unwrap().to_string();
+            let peer_addr = match tcp_stream.peer_addr() {
+                Ok(s) => s.to_string(),
+                Err(e) => {
+                    log::trace!(
+                        "connecting to new peer failed because we could not get peer addr: {}",
+                        e
+                    );
+                    return;
+                }
+            };
             match timeout(
                 DEFAULT_TIMEOUT,
                 handshake(
@@ -132,7 +141,7 @@ pub async fn run_new_incoming_peers_handler(
             if !*ok_to_accept_connection.lock().unwrap() {
                 log::trace!(
                     "reached limit of incoming connections, shutting down new connection from: {}",
-                    stream.peer_addr().unwrap()
+                    addr_or_unknown(&stream)
                 );
                 _ = stream.shutdown().await;
                 continue;
@@ -143,7 +152,7 @@ pub async fn run_new_incoming_peers_handler(
             let new_peer_tx_for_spawn = to_manager_tx.clone();
             tokio::spawn(async move {
                 let pcs = piece_completion_status_for_spawn.lock().unwrap().clone();
-                let remote_addr = stream.peer_addr().unwrap();
+                let remote_addr = addr_or_unknown(&stream);
                 match timeout(
                     DEFAULT_TIMEOUT,
                     handshake(stream, info_hash, own_peer_id_for_spawn, pcs),
@@ -168,13 +177,20 @@ pub async fn run_new_incoming_peers_handler(
     });
 }
 
+fn addr_or_unknown(stream: &TcpStream) -> String {
+    match stream.peer_addr() {
+        Ok(s) => s.to_string(),
+        Err(_) => "<unknown>".to_string(),
+    }
+}
+
 pub async fn start_peer_msg_handlers(
+    peer_addr: String,
     tcp_stream: TcpStream,
     to_manager_tx: Sender<ToManagerMsg>,
     to_peer_rx: Receiver<ToPeerMsg>,
     to_peer_cancel_rx: Receiver<ToPeerCancelMsg>,
 ) {
-    let peer_addr = tcp_stream.peer_addr().unwrap().to_string();
     let to_manager_tx_for_snd_message_handler = to_manager_tx.clone();
     let (read, write) = tokio::io::split(tcp_stream);
     tokio::spawn(rcv_message_handler(peer_addr.clone(), to_manager_tx, read));
@@ -198,7 +214,7 @@ async fn handshake(
         .await?;
     log::trace!(
         "received handshake info from {}: peer protocol: {}, info_hash: {}, peer_id: {}",
-        stream.peer_addr().unwrap(),
+        addr_or_unknown(&stream),
         peer_protocol,
         pretty_info_hash(peer_info_hash),
         str::from_utf8(&peer_id).unwrap_or(
@@ -221,7 +237,7 @@ async fn handshake(
     }
 
     // send bitfield
-    let peer_addr = stream.peer_addr().unwrap();
+    let peer_addr = addr_or_unknown(&stream);
     let (read, mut write) = tokio::io::split(stream);
     write
         .send(Message::Bitfield(piece_completion_status))
