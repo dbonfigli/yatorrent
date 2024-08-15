@@ -358,7 +358,7 @@ impl FileManager {
         }
 
         // finally write this block
-        let mut data_cursor = block_begin;
+        let mut data_cursor = 0;
         let mut data_still_to_be_written = data_len;
         let mut piece_cursor_to_begin = 0;
         for (file_path, file_start, file_end) in self.piece_to_files[piece_idx].iter() {
