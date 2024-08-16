@@ -31,9 +31,11 @@ static TO_PEER_CHANNEL_CAPACITY: usize = 2000;
 static TO_PEER_CANCEL_CHANNEL_CAPACITY: usize = 1000;
 static TO_MANAGER_CHANNEL_CAPACITY: usize = 50000;
 static REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
+static MIN_CHOKE_TIME: Duration = Duration::from_secs(60);
 
 pub struct Peer {
     am_choking: bool,
+    am_choking_since: SystemTime,
     am_interested: bool,
     peer_choking: bool,
     peer_interested: bool,
@@ -51,10 +53,12 @@ impl Peer {
         num_pieces: usize,
         to_peer_tx: Sender<ToPeerMsg>,
         to_peer_cancel_tx: Sender<ToPeerCancelMsg>,
+        am_choking: bool,
     ) -> Self {
         let now = SystemTime::now();
         return Peer {
-            am_choking: true,
+            am_choking,
+            am_choking_since: SystemTime::UNIX_EPOCH,
             am_interested: false,
             peer_choking: true,
             peer_interested: false,
@@ -179,7 +183,7 @@ impl TorrentManager {
                             self.peer_error(peer_addr, ok_to_accept_connection_tx.clone()).await;
                         }
                         ToManagerMsg::Receive(peer_addr, msg) => {
-                            self.receive(peer_addr, msg, piece_completion_status_channel_tx.clone()).await;
+                            self.receive(peer_addr, msg, piece_completion_status_channel_tx.clone(), to_manager_tx.capacity()).await;
                         }
                         ToManagerMsg::NewPeer(tcp_stream) => {
                             self.new_peer(tcp_stream,to_manager_tx.clone(), ok_to_accept_connection_tx.clone()).await;
@@ -198,7 +202,8 @@ impl TorrentManager {
         &mut self,
         peer_addr: String,
         msg: Message,
-        piece_completion_status_channel_tx: Sender<Vec<bool>>,
+        piece_completion_status_tx: Sender<Vec<bool>>,
+        to_manager_channel_capacity: usize,
     ) {
         log::debug!("received message from peer {}: {}", peer_addr, msg);
         let now = SystemTime::now();
@@ -319,33 +324,43 @@ impl TorrentManager {
                     //self.assign_piece_reqs().await; // todo
                 }
                 Message::Request(piece_idx, begin, lenght) => {
-                    // todo: really naive, must avoid saturate bandwidth and reciprocate on upload / download
-                    match self.file_manager.read_piece_block(
-                        piece_idx as usize,
-                        begin as u64,
-                        lenght as u64,
-                    ) {
-                        Err(e) => {
-                            log::error!("error reading block: {}", e);
-                        }
+                    if !peer.am_choking {
+                        if should_choke(to_manager_channel_capacity) {
+                            let _ = peer.to_peer_tx.send(ToPeerMsg::Send(Message::Choke)).await;
+                            // ignore in case of error: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors and the peer is still lingering in self.peers because the control message about the error is not yet been handled
+                            peer.am_choking = true;
+                            peer.am_choking_since = SystemTime::now();
+                        } else {
+                            match self.file_manager.read_piece_block(
+                                piece_idx as usize,
+                                begin as u64,
+                                lenght as u64,
+                            ) {
+                                Err(e) => {
+                                    log::error!("error reading block: {}", e);
+                                }
 
-                        Ok(data) => {
-                            let data_len = data.len() as u64;
+                                Ok(data) => {
+                                    let data_len = data.len() as u64;
 
-                            if peer.to_peer_tx.capacity() <= 5 {
-                                log::warn!(
-                                    "before sending piece, to_peer_tx capacity: {}",
-                                    peer.to_peer_tx.capacity()
-                                );
+                                    if peer.to_peer_tx.capacity() <= 5 {
+                                        log::warn!(
+                                            "before sending piece, to_peer_tx capacity: {}",
+                                            peer.to_peer_tx.capacity()
+                                        );
+                                    }
+                                    let _ = peer
+                                        .to_peer_tx
+                                        .send(ToPeerMsg::Send(Message::Piece(
+                                            piece_idx, begin, data,
+                                        )))
+                                        .await; // ignore in case of error: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors and the peer is still lingering in self.peers because the control message about the error is not yet been handled
+
+                                    // todo: really naive, must avoid saturating upload
+
+                                    self.uploaded_bytes += data_len; // todo: we are not keeping track of cancelled pieces
+                                }
                             }
-                            let _ = peer
-                                .to_peer_tx
-                                .send(ToPeerMsg::Send(Message::Piece(piece_idx, begin, data)))
-                                .await; // ignore in case of error: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors and the peer is still lingering in self.peers because the control message about the error is not yet been handled
-
-                            // todo: really naive, must avoid saturating upload
-
-                            self.uploaded_bytes += data_len; // todo: we are not keeping track of cancelled pieces
                         }
                     }
                 }
@@ -374,13 +389,13 @@ impl TorrentManager {
                                     let _ = self.tracker_request(Event::Completed).await;
                                 }
 
-                                if piece_completion_status_channel_tx.capacity() <= 5 {
+                                if piece_completion_status_tx.capacity() <= 5 {
                                     log::warn!(
                                         "before sending piece_completion_status_channel_tx, piece_completion_status_channel_tx capacity: {}",
-                                        piece_completion_status_channel_tx.capacity()
+                                        piece_completion_status_tx.capacity()
                                     );
                                 }
-                                let _ = piece_completion_status_channel_tx
+                                let _ = piece_completion_status_tx
                                     .send(self.file_manager.piece_completion_status.clone())
                                     .await; // ignore in case of error: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors and the peer is still lingering in self.peers because the control message about the error is not yet been handled
 
@@ -559,6 +574,23 @@ impl TorrentManager {
             }
         }
 
+        // unchoke peers
+        let choking = should_choke(to_manager_tx.capacity());
+        if !choking {
+            let now = SystemTime::now();
+            for (_, peer) in self.peers.iter_mut() {
+                if peer.am_choking
+                    && now.duration_since(peer.am_choking_since).unwrap() > MIN_CHOKE_TIME
+                {
+                    peer.am_choking = false;
+                    let _ = peer
+                        .to_peer_tx
+                        .send(ToPeerMsg::Send(Message::Unchoke))
+                        .await;
+                }
+            }
+        }
+
         // remove requests that have not been fulfilled for some time,
         // most probably they have been silently dropped by the peer even if it is still alive and not choked
         self.remove_stale_requests();
@@ -700,6 +732,7 @@ impl TorrentManager {
                 self.file_manager.num_pieces(),
                 to_peer_tx,
                 to_peer_cancel_tx,
+                should_choke(to_manager_tx.capacity()),
             ),
         );
         if self.peers.len() > ENOUGH_PEERS {
@@ -795,6 +828,10 @@ async fn tracker_request(
             Ok(())
         }
     }
+}
+
+fn should_choke(to_manager_channel_pending_msgs: usize) -> bool {
+    to_manager_channel_pending_msgs > TO_MANAGER_CHANNEL_CAPACITY / 2
 }
 
 fn assign_piece(piece_idx: usize, peers: &HashMap<String, Peer>) -> Option<String> {

@@ -273,7 +273,6 @@ async fn handshake(
         .await?;
     log::trace!("bitfield sent to peer {}", peer_addr);
 
-    // write.send(Message::Unchoke).await?; // todo remove me
     let stream = read.unsplit(write);
 
     // handshake completed successfully
