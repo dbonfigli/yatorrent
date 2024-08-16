@@ -358,7 +358,7 @@ impl FileManager {
         }
 
         // finally write this block
-        let mut data_cursor = 0;
+        let mut data_cursor: u64 = 0;
         let mut data_still_to_be_written = data_len;
         let mut piece_cursor_to_begin = 0;
         for (file_path, file_start, file_end) in self.piece_to_files[piece_idx].iter() {
@@ -377,7 +377,8 @@ impl FileManager {
             let data_to_write = cmp::min(file_end - file_start, data_still_to_be_written);
             let mut opened_file = self.file_handles.get_file(file_path, true)?;
             opened_file.seek(SeekFrom::Start(file_start))?;
-            opened_file.write_all(&data[data_cursor as usize..data_to_write as usize])?;
+            opened_file
+                .write_all(&data[data_cursor as usize..(data_cursor + data_to_write) as usize])?;
             data_cursor += data_to_write;
             data_still_to_be_written -= data_to_write;
         }
