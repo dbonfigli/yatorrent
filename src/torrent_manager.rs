@@ -21,15 +21,15 @@ use crate::{
     tracker::{Event, Response, TrackerClient},
 };
 
-static ENOUGH_PEERS: usize = 95;
+static ENOUGH_PEERS: usize = 100;
 static LOW_ENOUGH_PEERS: usize = 80;
 static KEEP_ALIVE_FREQ: Duration = Duration::from_secs(90);
-static MAX_OUTSTANDING_REQUESTS_PER_PEER: usize = 100;
-static MAX_OUTSTANDING_PIECES: usize = 95;
+static MAX_OUTSTANDING_REQUESTS_PER_PEER: usize = 500;
+static MAX_OUTSTANDING_PIECES: usize = 100;
 static BLOCK_SIZE_B: u64 = 16384;
-static TO_PEER_CHANNEL_CAPACITY: usize = 1000;
+static TO_PEER_CHANNEL_CAPACITY: usize = 2000;
 static TO_PEER_CANCEL_CHANNEL_CAPACITY: usize = 1000;
-static TO_MANAGER_CHANNEL_CAPACITY: usize = 12000;
+static TO_MANAGER_CHANNEL_CAPACITY: usize = 50000;
 static REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 
 pub struct Peer {
@@ -205,6 +205,11 @@ impl TorrentManager {
             match msg {
                 Message::KeepAlive => {}
                 Message::Choke => {
+                    log::debug!(
+                        "received choked from peer {} with {} outstandig requests",
+                        peer_addr,
+                        peer.outstanding_block_requests.len()
+                    );
                     peer.peer_choking = true;
 
                     // remove outstandig requests that will be discarded because the peer is choking
@@ -358,9 +363,6 @@ impl TorrentManager {
                                 begin,
                                 data_len as u32,
                             ));
-                            if peer.outstanding_block_requests.len() == 0 {
-                                log::warn!("got piece {piece_idx} from peer {peer_addr} outstandig bloc requests: {}", peer.outstanding_block_requests.len());
-                            }
                             if piece_completed {
                                 peer.requested_pieces.remove(&(piece_idx as usize));
                                 self.outstanding_piece_assigments
