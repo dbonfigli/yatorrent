@@ -32,6 +32,7 @@ impl Value {
         Value::Error(ParseError { elem, index })
     }
 
+    #[cfg(test)]
     pub fn encode(&self) -> Vec<u8> {
         match self {
             Value::Error(_) => b"!!!error!!!".to_vec(),
@@ -47,6 +48,7 @@ impl Value {
     }
 }
 
+#[cfg(test)]
 fn encode_dict(d: &HashMap<Vec<u8>, Value>) -> Vec<u8> {
     let mut v = b"d".to_vec();
     d.into_iter().for_each(|entry| {
@@ -57,6 +59,7 @@ fn encode_dict(d: &HashMap<Vec<u8>, Value>) -> Vec<u8> {
     v
 }
 
+#[cfg(test)]
 fn encode_list(l: &Vec<Value>) -> Vec<u8> {
     let mut v = b"l".to_vec();
     l.into_iter().for_each(|val| v.append(&mut val.encode()));
@@ -64,6 +67,7 @@ fn encode_list(l: &Vec<Value>) -> Vec<u8> {
     v
 }
 
+#[cfg(test)]
 fn encode_int(i: &i64) -> Vec<u8> {
     let mut v = b"i".to_vec();
     v.append(&mut i.to_string().as_bytes().to_vec());
@@ -71,6 +75,7 @@ fn encode_int(i: &i64) -> Vec<u8> {
     v
 }
 
+#[cfg(test)]
 fn encode_str(s: &Vec<u8>) -> Vec<u8> {
     let mut v = s.len().to_string().as_bytes().to_vec();
     v.push(b':');
