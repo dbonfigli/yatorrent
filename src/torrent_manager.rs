@@ -237,6 +237,12 @@ impl TorrentManager {
                         {
                             peer.am_interested = true;
                             peer.last_sent = SystemTime::now();
+                            if peer.to_peer_tx.capacity() <= 5 {
+                                log::warn!(
+                                    "before sending interested, to_peer_tx capacity: {}",
+                                    peer.to_peer_tx.capacity()
+                                );
+                            }
                             let _ = peer
                                 .to_peer_tx
                                 .send(ToPeerMsg::Send(Message::Interested))
@@ -278,6 +284,9 @@ impl TorrentManager {
                                     {
                                         peer.am_interested = true;
                                         peer.last_sent = SystemTime::now();
+                                        if peer.to_peer_tx.capacity() <= 5 {
+                                            log::warn!("before sending interested, to_peer_tx capacity: {}", peer.to_peer_tx.capacity());
+                                        }
                                         let _ = peer
                                             .to_peer_tx
                                             .send(ToPeerMsg::Send(Message::Interested))
@@ -314,6 +323,13 @@ impl TorrentManager {
 
                         Ok(data) => {
                             let data_len = data.len() as u64;
+
+                            if peer.to_peer_tx.capacity() <= 5 {
+                                log::warn!(
+                                    "before sending piece, to_peer_tx capacity: {}",
+                                    peer.to_peer_tx.capacity()
+                                );
+                            }
                             let _ = peer
                                 .to_peer_tx
                                 .send(ToPeerMsg::Send(Message::Piece(piece_idx, begin, data)))
@@ -351,6 +367,12 @@ impl TorrentManager {
                                     let _ = self.tracker_request(Event::Completed).await;
                                 }
 
+                                if piece_completion_status_channel_tx.capacity() <= 5 {
+                                    log::warn!(
+                                        "before sending piece_completion_status_channel_tx, piece_completion_status_channel_tx capacity: {}",
+                                        piece_completion_status_channel_tx.capacity()
+                                    );
+                                }
                                 let _ = piece_completion_status_channel_tx
                                     .send(self.file_manager.piece_completion_status.clone())
                                     .await; // ignore in case of error: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors and the peer is still lingering in self.peers because the control message about the error is not yet been handled
@@ -361,6 +383,12 @@ impl TorrentManager {
                                 for (_, peer) in self.peers.iter_mut() {
                                     // send have to interested peers
                                     if peer.peer_interested && !peer.haves[piece_idx as usize] {
+                                        if peer.to_peer_tx.capacity() <= 5 {
+                                            log::warn!(
+                                                "before sending have, to_peer_tx capacity: {}",
+                                                peer.to_peer_tx.capacity()
+                                            );
+                                        }
                                         peer.last_sent = now;
                                         let _ = peer
                                             .to_peer_tx
@@ -383,6 +411,12 @@ impl TorrentManager {
                                         }
                                         if !am_still_interested {
                                             peer.last_sent = now;
+                                            if peer.to_peer_tx.capacity() <= 5 {
+                                                log::warn!(
+                                                    "before sending interested, peer.to_peer_tx capacity: {}",
+                                                    peer.to_peer_tx.capacity()
+                                                );
+                                            }
                                             let _ = peer
                                                 .to_peer_tx
                                                 .send(ToPeerMsg::Send(Message::NotInterested))
@@ -425,6 +459,12 @@ impl TorrentManager {
         }
         self.bad_peers.insert(peer_addr);
         if self.peers.len() < ENOUGH_PEERS {
+            if ok_to_accept_connection_tx.capacity() <= 5 {
+                log::warn!(
+                    "before sending ok_to_accept_connection_tx, ok_to_accept_connection_tx capacity: {}",
+                    ok_to_accept_connection_tx.capacity()
+                );
+            }
             ok_to_accept_connection_tx.send(true).await.unwrap();
         }
     }
@@ -464,6 +504,12 @@ impl TorrentManager {
         for (_, peer) in self.peers.iter_mut() {
             if let Ok(elapsed) = now.duration_since(peer.last_sent) {
                 if elapsed > KEEP_ALIVE_FREQ {
+                    if peer.to_peer_tx.capacity() <= 5 {
+                        log::warn!(
+                            "before sending keep-alive, to_peer_tx capacity: {}",
+                            peer.to_peer_tx.capacity()
+                        );
+                    }
                     let _ = peer
                         .to_peer_tx
                         .send(ToPeerMsg::Send(Message::KeepAlive))
@@ -625,6 +671,12 @@ impl TorrentManager {
         );
         if self.peers.len() > ENOUGH_PEERS {
             log::trace!("stop accepting new peers");
+            if ok_to_accept_connection_tx.capacity() <= 5 {
+                log::warn!(
+                    "before sending ok_to_accept_connection_tx, ok_to_accept_connection_tx capacity: {}",
+                    ok_to_accept_connection_tx.capacity()
+                );
+            }
             ok_to_accept_connection_tx.send(false).await.unwrap();
         }
     }
@@ -770,6 +822,12 @@ async fn file_requests(peer: &mut Peer, piece_idx: usize, incomplete_piece: Opti
     while peer.outstanding_block_requests.len() < MAX_OUTSTANDING_REQUESTS_PER_PEER {
         if let Some((begin, end)) = piece.get_next_fragment(BLOCK_SIZE_B) {
             let request = (piece_idx as u32, begin as u32, (end - begin + 1) as u32);
+            if peer.to_peer_tx.capacity() <= 5 {
+                log::warn!(
+                    "before seding request, to_peer_tx capacity: {}",
+                    peer.to_peer_tx.capacity()
+                );
+            }
             let _ = peer
                 .to_peer_tx
                 .send(ToPeerMsg::Send(Message::Request(
