@@ -163,7 +163,7 @@ impl FileManager {
                     self.piece_completion_status[idx] = false;
                 }
                 Ok(buf) => {
-                    let piece_sha: [u8; 20] = Sha1::digest(&buf).as_slice().try_into().unwrap();
+                    let piece_sha: [u8; 20] = Sha1::digest(&*buf).as_slice().try_into().unwrap();
                     self.piece_completion_status[idx] = self.piece_hashes[idx] == piece_sha;
                 }
             }
@@ -238,7 +238,7 @@ impl FileManager {
         piece_idx: usize,
         block_begin: u64,
         block_length: u64,
-    ) -> Result<Vec<u8>, Box<dyn Error>> {
+    ) -> Result<Box<Vec<u8>>, Box<dyn Error>> {
         return self.read_piece_block_with_have_piece_check(
             piece_idx,
             block_begin,
@@ -253,7 +253,7 @@ impl FileManager {
         block_begin: u64,
         block_length: u64,
         check_if_have_piece: bool,
-    ) -> Result<Vec<u8>, Box<dyn Error>> {
+    ) -> Result<Box<Vec<u8>>, Box<dyn Error>> {
         if piece_idx >= self.piece_to_files.len() {
             return Err(Box::from(format!(
                 "requested to read piece idx {} that is not in range (total pieces: {})",
@@ -275,7 +275,7 @@ impl FileManager {
                 piece_idx
             )));
         }
-        let mut block_buf: Vec<u8> = Vec::new();
+        let mut block_buf = Box::new(Vec::<u8>::new());
         let mut current_piece_offset = 0;
         let mut block_bytes_still_to_read = block_length;
         for (file_path, start, end) in self.piece_to_files[piece_idx].iter() {
@@ -307,7 +307,7 @@ impl FileManager {
             let mut opened_file = self.file_handles.get_file(file_path, false)?;
             opened_file.seek(SeekFrom::Start(file_offset))?;
             let mut file_buf: Vec<u8> = vec![0; bytes_to_read as usize];
-            opened_file.read_exact(&mut file_buf)?;
+            opened_file.read_exact(&mut file_buf)?; // todo: optimize this more
             block_buf.append(&mut file_buf);
         }
 
@@ -317,7 +317,7 @@ impl FileManager {
     pub fn write_piece_block(
         &mut self,
         piece_idx: usize,
-        data: Vec<u8>,
+        data: Box<Vec<u8>>,
         block_begin: u64, // position in the piece where to start writing data
     ) -> Result<bool, Box<dyn Error>> {
         // if ok, return if piece is completed / not completed
@@ -392,7 +392,7 @@ impl FileManager {
             // final sha check
             let read_piece_data =
                 self.read_piece_block_with_have_piece_check(piece_idx, 0, piece_len, false)?;
-            let piece_sha: [u8; 20] = Sha1::digest(&read_piece_data)
+            let piece_sha: [u8; 20] = Sha1::digest(&*read_piece_data)
                 .as_slice()
                 .try_into()
                 .unwrap();

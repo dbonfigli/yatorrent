@@ -69,7 +69,7 @@ pub async fn connect_to_new_peer(
                     tcp_stream,
                     info_hash.clone(),
                     own_peer_id.clone(),
-                    piece_completion_status.clone(),
+                    Box::from(piece_completion_status),
                 ),
             )
             .await
@@ -178,7 +178,7 @@ pub async fn run_new_incoming_peers_handler(
                 let remote_addr = addr_or_unknown(&stream);
                 match timeout(
                     DEFAULT_TIMEOUT,
-                    handshake(stream, info_hash, own_peer_id_for_spawn, pcs),
+                    handshake(stream, info_hash, own_peer_id_for_spawn, Box::from(pcs)),
                 )
                 .await
                 {
@@ -236,7 +236,7 @@ async fn handshake(
     mut stream: TcpStream,
     info_hash: [u8; 20],
     own_peer_id: String,
-    piece_completion_status: Vec<bool>,
+    piece_completion_status: Box<Vec<bool>>,
 ) -> Result<TcpStream, Box<dyn Error + Send + Sync>> {
     let (peer_protocol, _reserved, peer_info_hash, peer_id) = stream
         .handshake(info_hash, own_peer_id.as_bytes().try_into()?)
