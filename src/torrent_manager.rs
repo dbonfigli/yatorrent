@@ -84,6 +84,7 @@ pub struct TorrentManager {
     uploaded_bytes: u64,
     downloaded_bytes: u64,
     outstanding_piece_assigments: HashMap<usize, String>, // piece idx -> peer_addr
+    completed_sent_to_tracker: bool,
 }
 
 impl TorrentManager {
@@ -117,6 +118,7 @@ impl TorrentManager {
             uploaded_bytes: 0,
             downloaded_bytes: 0,
             outstanding_piece_assigments: HashMap::new(),
+            completed_sent_to_tracker: false,
         })
     }
 
@@ -479,8 +481,7 @@ impl TorrentManager {
         let advertised_peers_len = advertised_peers_lock.len();
         drop(advertised_peers_lock);
         log::info!(
-            "completed: {}, left: {}, pieces: {}/{} | up: {}, down: {} | peers known: {}, connected: {}, unchocked: {} | pending to_manager msgs: {}/{}",
-            self.file_manager.completed(),
+            "left: {}, pieces: {}/{} | up: {}, down: {} | peers known: {}, connected: {}, unchocked: {} | pending to_manager msgs: {}/{}",
             Size::from_bytes(self.file_manager.bytes_left()),
             self.file_manager.completed_pieces(),
             self.file_manager.num_pieces(),
@@ -554,7 +555,7 @@ impl TorrentManager {
             let tracker_request_interval = tracker_request_interval_mg.clone();
             drop(tracker_request_interval_mg);
             if elapsed > tracker_request_interval {
-                self.tracker_request_async(Event::None).await;
+                self.tracker_request_async().await;
             }
         }
 
@@ -643,7 +644,12 @@ impl TorrentManager {
         .await
     }
 
-    async fn tracker_request_async(&mut self, event: Event) {
+    async fn tracker_request_async(&mut self) {
+        let mut event = Event::None;
+        if !self.completed_sent_to_tracker && self.file_manager.completed() {
+            self.completed_sent_to_tracker = true;
+            event = Event::Completed
+        }
         let tracker_id_mg = self.tracker_id.lock().unwrap();
         self.tracker_client.tracker_id = tracker_id_mg.clone();
         drop(tracker_id_mg);
