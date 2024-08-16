@@ -6,7 +6,7 @@ use std::{error::Error, iter, path::Path};
 
 use rand::seq::SliceRandom;
 use rand::{thread_rng, Rng};
-use size::Size;
+use size::{Size, Style};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time;
@@ -85,8 +85,11 @@ pub struct TorrentManager {
     bad_peers: HashSet<PeerAddr>,
     last_tracker_request_time: Arc<Mutex<SystemTime>>,
     tracker_request_interval: Arc<Mutex<Duration>>,
+    last_bandwidth_poll: SystemTime,
     uploaded_bytes: u64,
     downloaded_bytes: u64,
+    uploaded_bytes_previous_poll: u64,
+    downloaded_bytes_previous_poll: u64,
     outstanding_piece_assigments: HashMap<usize, String>, // piece idx -> peer_addr
     completed_sent_to_tracker: bool,
 }
@@ -119,8 +122,11 @@ impl TorrentManager {
             bad_peers: HashSet::new(),
             last_tracker_request_time: Arc::new(Mutex::new(SystemTime::UNIX_EPOCH)),
             tracker_request_interval: Arc::new(Mutex::new(Duration::from_secs(0))),
+            last_bandwidth_poll: SystemTime::now(),
             uploaded_bytes: 0,
             downloaded_bytes: 0,
+            uploaded_bytes_previous_poll: 0,
+            downloaded_bytes_previous_poll: 0,
             outstanding_piece_assigments: HashMap::new(),
             completed_sent_to_tracker: false,
         })
@@ -492,23 +498,7 @@ impl TorrentManager {
     }
 
     async fn tick(&mut self, to_manager_tx: Sender<ToManagerMsg>) {
-        let advertised_peers_lock = self.advertised_peers.lock().unwrap();
-        let advertised_peers_len = advertised_peers_lock.len();
-        drop(advertised_peers_lock);
-        log::info!(
-            "left: {}, pieces: {}/{} | up: {}, down: {} | peers known: {}, connected: {}, unchocked: {} | pending to_manager msgs: {}/{}",
-            Size::from_bytes(self.file_manager.bytes_left()),
-            self.file_manager.completed_pieces(),
-            self.file_manager.num_pieces(),
-            Size::from_bytes(self.uploaded_bytes),
-            Size::from_bytes(self.downloaded_bytes),
-            advertised_peers_len,
-            self.peers.len(),
-            self.peers.iter()
-            .fold(0, |acc, (_,p)| if !p.peer_choking { acc + 1 } else { acc }),
-            TO_MANAGER_CHANNEL_CAPACITY - to_manager_tx.capacity(),
-            TO_MANAGER_CHANNEL_CAPACITY,
-        );
+        self.log_stats(to_manager_tx.capacity());
 
         // connect to new peers
         let current_peers_n = self.peers.len();
@@ -745,6 +735,41 @@ impl TorrentManager {
             }
             ok_to_accept_connection_tx.send(false).await.unwrap();
         }
+    }
+
+    fn log_stats(&mut self, to_manager_channel_capacity: usize) {
+        let advertised_peers_lock = self.advertised_peers.lock().unwrap();
+        let advertised_peers_len = advertised_peers_lock.len();
+        drop(advertised_peers_lock);
+        let now = SystemTime::now();
+        let elapsed_s = now
+            .duration_since(self.last_bandwidth_poll)
+            .unwrap()
+            .as_millis() as f64
+            / 1000f64;
+        let bandwidth_up =
+            (self.uploaded_bytes - self.uploaded_bytes_previous_poll) as f64 / elapsed_s;
+        let bandwidth_down =
+            (self.downloaded_bytes - self.downloaded_bytes_previous_poll) as f64 / elapsed_s;
+        self.uploaded_bytes_previous_poll = self.uploaded_bytes;
+        self.downloaded_bytes_previous_poll = self.downloaded_bytes;
+        self.last_bandwidth_poll = now;
+        log::info!(
+            "left: {}, pieces: {}/{} | U: {}/s - D: {}/s (tot. U: {} - D: {}) | peers known: {}, connected: {}, unchocked: {} | pending to_manager msgs: {}/{}",
+            Size::from_bytes(self.file_manager.bytes_left()),
+            self.file_manager.completed_pieces(),
+            self.file_manager.num_pieces(),
+            Size::from_bytes(bandwidth_up).format().with_style(Style::Abbreviated),
+            Size::from_bytes(bandwidth_down).format().with_style(Style::Abbreviated),
+            Size::from_bytes(self.uploaded_bytes).format().with_style(Style::Abbreviated),
+            Size::from_bytes(self.downloaded_bytes).format().with_style(Style::Abbreviated),
+            advertised_peers_len,
+            self.peers.len(),
+            self.peers.iter()
+            .fold(0, |acc, (_,p)| if !p.peer_choking { acc + 1 } else { acc }),
+            TO_MANAGER_CHANNEL_CAPACITY - to_manager_channel_capacity,
+            TO_MANAGER_CHANNEL_CAPACITY,
+        );
     }
 }
 
