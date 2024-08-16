@@ -30,7 +30,6 @@ pub type PeerAddr = String;
 pub enum ToManagerMsg {
     Error(PeerAddr),
     Receive(PeerAddr, Message),
-    Tick,
     NewPeer(TcpStream),
 }
 
@@ -159,7 +158,7 @@ pub async fn run_new_incoming_peers_handler(
 
             let piece_completion_status_for_spawn = piece_completion_status.clone();
             let own_peer_id_for_spawn = own_peer_id.clone();
-            let new_peer_tx_for_spawn = to_manager_tx.clone();
+            let to_manager_tx_for_spawn = to_manager_tx.clone();
             tokio::spawn(async move {
                 let pcs_lock = piece_completion_status_for_spawn.lock().await;
                 let pcs = pcs_lock.clone();
@@ -178,7 +177,7 @@ pub async fn run_new_incoming_peers_handler(
                         log::trace!("handshake failed with peer {}: {}", remote_addr, e);
                     }
                     Ok(Ok(tcp_stream)) => {
-                        new_peer_tx_for_spawn
+                        to_manager_tx_for_spawn
                             .send(ToManagerMsg::NewPeer(tcp_stream))
                             .await
                             .unwrap();
