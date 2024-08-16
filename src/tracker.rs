@@ -1,5 +1,7 @@
+use reqwest::ClientBuilder;
+
 use crate::bencoding::Value;
-use std::{error::Error, fmt, io::Read, str};
+use std::{error::Error, fmt, io::Read, str, time::Duration};
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct Peer {
@@ -117,7 +119,12 @@ impl TrackerClient {
 
         log::trace!("requesting url: {}", url);
 
-        let body: Vec<u8> = match reqwest::get(url)
+        let body: Vec<u8> = match ClientBuilder::new()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
+            .build()?
+            .get(url)
+            .send()
             .await?
             .error_for_status()?
             .bytes()
