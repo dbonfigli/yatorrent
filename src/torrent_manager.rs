@@ -32,6 +32,7 @@ static TO_PEER_CANCEL_CHANNEL_CAPACITY: usize = 1000;
 static TO_MANAGER_CHANNEL_CAPACITY: usize = 50000;
 static REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 static MIN_CHOKE_TIME: Duration = Duration::from_secs(60);
+static MIN_UNCHOKED_TO_TRY_DISCOVERING_NEW_PEERS: i32 = 3;
 
 pub struct Peer {
     am_choking: bool,
@@ -559,7 +560,16 @@ impl TorrentManager {
             let tracker_request_interval_mg = self.tracker_request_interval.lock().unwrap();
             let tracker_request_interval = tracker_request_interval_mg.clone();
             drop(tracker_request_interval_mg);
-            if elapsed > tracker_request_interval {
+            let unchoked = self
+                .peers
+                .iter()
+                .fold(0, |acc, (_, p)| if !p.peer_choking { acc + 1 } else { acc });
+            if elapsed > tracker_request_interval
+                // todo: with this we try to get more peers if the current ones we know are not good for downloading, this is not an encouraged strategy
+                || (elapsed > Duration::from_secs(60)
+                    && unchoked < MIN_UNCHOKED_TO_TRY_DISCOVERING_NEW_PEERS
+                    && !self.file_manager.completed())
+            {
                 self.tracker_request_async().await;
             }
         }
@@ -822,6 +832,7 @@ async fn tracker_request(
             return Err(Box::from(msg));
         }
         Ok(Response::Ok(ok_response)) => {
+            log::warn!("{:?}", ok_response);
             if let Some(msg) = ok_response.warning_message.clone() {
                 log::warn!("tracker send a warning: {}", msg);
             }
