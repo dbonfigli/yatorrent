@@ -817,8 +817,6 @@ async fn file_requests(peer: &mut Peer, piece_idx: usize, incomplete_piece: Opti
         piece = incomplete_piece.unwrap(); // todo: re-check if this can never panic
     }
 
-    peer.requested_pieces.insert(piece_idx, piece.clone());
-
     while peer.outstanding_block_requests.len() < MAX_OUTSTANDING_REQUESTS_PER_PEER {
         if let Some((begin, end)) = piece.get_next_fragment(BLOCK_SIZE_B) {
             let request = (piece_idx as u32, begin as u32, (end - begin + 1) as u32);
@@ -840,7 +838,9 @@ async fn file_requests(peer: &mut Peer, piece_idx: usize, incomplete_piece: Opti
                 .insert(request, SystemTime::now());
             piece.add_fragment(begin, end);
         } else {
-            return;
+            break;
         }
     }
+
+    peer.requested_pieces.insert(piece_idx, piece.clone());
 }
