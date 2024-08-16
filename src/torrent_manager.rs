@@ -476,8 +476,12 @@ impl TorrentManager {
     }
 
     async fn tick(&mut self, to_manager_tx: Sender<ToManagerMsg>) {
+        let advertised_peers_lock = self.advertised_peers.lock().unwrap();
+        let advertised_peers_len = advertised_peers_lock.len();
+        drop(advertised_peers_lock);
         log::info!(
-            "connected peers: {}, unchocked: {}, uploaded: {}, downloaded: {}, left: {}, completed pieces: {}/{}, to_manager pending msgs: {}/{}",
+            "known peers: {}, connected peers: {}, unchocked: {}, uploaded: {}, downloaded: {}, left: {}, completed pieces: {}/{}, to_manager pending msgs: {}/{}",
+            advertised_peers_len,
             self.peers.len(),
             self.peers.iter()
             .fold(0, |acc, (_,p)| if !p.peer_choking { acc + 1 } else { acc }),
