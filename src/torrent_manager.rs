@@ -489,7 +489,7 @@ impl TorrentManager {
         }
 
         log::info!(
-            "connected peers: {}, unchocked: {}, uploaded: {}, downloaded: {}, left: {}, completed pieces: {}/{}",
+            "connected peers: {}, unchocked: {}, uploaded: {}, downloaded: {}, left: {}, completed pieces: {}/{}, to_manager channel capacity: {}/{}",
             self.peers.len(),
             self.peers.iter()
             .fold(0, |acc, (_,p)| if !p.peer_choking { acc + 1 } else { acc }),
@@ -497,7 +497,9 @@ impl TorrentManager {
             Size::from_bytes(self.downloaded_bytes),
             Size::from_bytes(self.file_manager.bytes_left()),
             self.file_manager.completed_pieces(),
-            self.file_manager.num_pieces()
+            self.file_manager.num_pieces(),
+            to_manager_tx.capacity(),
+            TO_MANAGER_CHANNEL_CAPACITY
         );
 
         // send piece requests
