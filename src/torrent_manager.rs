@@ -30,6 +30,7 @@ static BLOCK_SIZE_B: u64 = 16384;
 static TO_PEER_CHANNEL_CAPACITY: usize = 1000;
 static TO_PEER_CANCEL_CHANNEL_CAPACITY: usize = 1000;
 static TO_MANAGER_CHANNEL_CAPACITY: usize = 12000;
+static REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 
 pub struct Peer {
     am_choking: bool,
@@ -357,6 +358,9 @@ impl TorrentManager {
                                 begin,
                                 data_len as u32,
                             ));
+                            if peer.outstanding_block_requests.len() == 0 {
+                                log::warn!("got piece {piece_idx} from peer {peer_addr} outstandig bloc requests: {}", peer.outstanding_block_requests.len());
+                            }
                             if piece_completed {
                                 peer.requested_pieces.remove(&(piece_idx as usize));
                                 self.outstanding_piece_assigments
@@ -470,6 +474,20 @@ impl TorrentManager {
     }
 
     async fn tick(&mut self, to_manager_tx: Sender<ToManagerMsg>) {
+        log::info!(
+            "connected peers: {}, unchocked: {}, uploaded: {}, downloaded: {}, left: {}, completed pieces: {}/{}, to_manager pending msgs: {}/{}",
+            self.peers.len(),
+            self.peers.iter()
+            .fold(0, |acc, (_,p)| if !p.peer_choking { acc + 1 } else { acc }),
+            Size::from_bytes(self.uploaded_bytes),
+            Size::from_bytes(self.downloaded_bytes),
+            Size::from_bytes(self.file_manager.bytes_left()),
+            self.file_manager.completed_pieces(),
+            self.file_manager.num_pieces(),
+            TO_MANAGER_CHANNEL_CAPACITY - to_manager_tx.capacity(),
+            TO_MANAGER_CHANNEL_CAPACITY
+        );
+
         // connect to new peers
         let current_peers_n = self.peers.len();
         if current_peers_n < LOW_ENOUGH_PEERS {
@@ -534,24 +552,27 @@ impl TorrentManager {
             }
         }
 
-        log::info!(
-            "connected peers: {}, unchocked: {}, uploaded: {}, downloaded: {}, left: {}, completed pieces: {}/{}, to_manager pending msgs: {}/{}",
-            self.peers.len(),
-            self.peers.iter()
-            .fold(0, |acc, (_,p)| if !p.peer_choking { acc + 1 } else { acc }),
-            Size::from_bytes(self.uploaded_bytes),
-            Size::from_bytes(self.downloaded_bytes),
-            Size::from_bytes(self.file_manager.bytes_left()),
-            self.file_manager.completed_pieces(),
-            self.file_manager.num_pieces(),
-            TO_MANAGER_CHANNEL_CAPACITY - to_manager_tx.capacity(),
-            TO_MANAGER_CHANNEL_CAPACITY
-        );
+        // remove requests that have not been fulfilled for some time,
+        // most probably they have been silently dropped by the peer even if it is still alive and not choked
+        self.remove_stale_requests();
 
         // send piece requests
         self.assign_piece_reqs().await;
+    }
 
-        // todo: remove and reassign stale block requests
+    fn remove_stale_requests(&mut self) {
+        let now = SystemTime::now();
+        for (peer_addr, peer) in self.peers.iter_mut() {
+            peer.outstanding_block_requests
+                .retain(|req, req_time| {
+                    if now.duration_since(*req_time).unwrap() < REQUEST_TIMEOUT {
+                        return true;
+                    } else {
+                        log::debug!("removed stale request to peer: {}: (piece idx: {}, block begin: {}, lenght: {})", peer_addr, req.0, req.1, req.2);
+                        return false;
+                    }
+                })
+        }
     }
 
     async fn assign_piece_reqs(&mut self) {
