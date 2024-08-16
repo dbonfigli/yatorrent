@@ -369,7 +369,6 @@ impl TorrentManager {
                                     .remove(&(piece_idx as usize));
 
                                 if self.file_manager.completed() {
-                                    log::info!("torrent download complete");
                                     let _ = self.tracker_request(Event::Completed).await;
                                 }
 
@@ -480,18 +479,19 @@ impl TorrentManager {
         let advertised_peers_len = advertised_peers_lock.len();
         drop(advertised_peers_lock);
         log::info!(
-            "known peers: {}, connected peers: {}, unchocked: {}, uploaded: {}, downloaded: {}, left: {}, completed pieces: {}/{}, to_manager pending msgs: {}/{}",
+            "completed: {}, left: {}, pieces: {}/{} | up: {}, down: {} | peers known: {}, connected: {}, unchocked: {} | pending to_manager msgs: {}/{}",
+            self.file_manager.completed(),
+            Size::from_bytes(self.file_manager.bytes_left()),
+            self.file_manager.completed_pieces(),
+            self.file_manager.num_pieces(),
+            Size::from_bytes(self.uploaded_bytes),
+            Size::from_bytes(self.downloaded_bytes),
             advertised_peers_len,
             self.peers.len(),
             self.peers.iter()
             .fold(0, |acc, (_,p)| if !p.peer_choking { acc + 1 } else { acc }),
-            Size::from_bytes(self.uploaded_bytes),
-            Size::from_bytes(self.downloaded_bytes),
-            Size::from_bytes(self.file_manager.bytes_left()),
-            self.file_manager.completed_pieces(),
-            self.file_manager.num_pieces(),
             TO_MANAGER_CHANNEL_CAPACITY - to_manager_tx.capacity(),
-            TO_MANAGER_CHANNEL_CAPACITY
+            TO_MANAGER_CHANNEL_CAPACITY,
         );
 
         // connect to new peers
