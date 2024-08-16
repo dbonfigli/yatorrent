@@ -169,7 +169,7 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
             }
             Message::Piece(index, begin, block) => {
                 let mut buf = vec![0; 13 + block.len()];
-                buf[0..4].copy_from_slice(&(9 + block.len()).to_be_bytes());
+                buf[0..4].copy_from_slice(&(9 + block.len() as u32).to_be_bytes());
                 buf[4] = 7;
                 buf[5..9].copy_from_slice(&index.to_be_bytes());
                 buf[9..13].copy_from_slice(&begin.to_be_bytes());
