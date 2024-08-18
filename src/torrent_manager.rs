@@ -105,13 +105,9 @@ pub struct TorrentManager {
 }
 
 impl TorrentManager {
-    pub async fn new(
-        base_path: &Path,
-        listening_port: i32,
-        metainfo: Metainfo,
-    ) -> Result<Self, Box<dyn Error>> {
+    pub fn new(base_path: &Path, listening_port: i32, metainfo: Metainfo) -> Self {
         let own_peer_id = generate_peer_id();
-        Ok(TorrentManager {
+        TorrentManager {
             file_manager: FileManager::new(
                 base_path,
                 metainfo.get_files(),
@@ -139,7 +135,7 @@ impl TorrentManager {
             downloaded_bytes_previous_poll: 0,
             outstanding_piece_assigments: HashMap::new(),
             completed_sent_to_tracker: false,
-        })
+        }
     }
 
     pub async fn start(&mut self) {
@@ -242,11 +238,11 @@ impl TorrentManager {
                     peer.outstanding_block_requests = HashMap::new();
                     peer.requested_pieces = HashMap::new();
 
-                    //self.assign_piece_reqs().await; // todo
+                    // todo: maybe re-compute assignations immediately here instead of waiting tick
                 }
                 Message::Unchoke => {
                     peer.peer_choking = false;
-                    //self.assign_piece_reqs().await; // todo
+                    // todo: maybe re-compute assignations immediately here instead of waiting tick
                 }
                 Message::Interested => {
                     peer.peer_interested = true;
@@ -273,7 +269,7 @@ impl TorrentManager {
                             peer_addr,
                             pieces
                         );
-                        // todo: close connection with this peer
+                        // todo: close connection with this bad peer
                     }
                 }
                 Message::Bitfield(bitfield) => {
@@ -284,7 +280,7 @@ impl TorrentManager {
                             bitfield.len(),
                             self.file_manager.num_pieces()
                         );
-                        // todo: close connection with this peer
+                        // todo: close connection with this bad peer
                     } else {
                         if let Some(peer) = self.peers.get_mut(&peer_addr) {
                             // bitfield is byte aligned, it could contain more bits than pieces in the torrent
@@ -313,7 +309,7 @@ impl TorrentManager {
                             );
                         }
                     }
-                    //self.assign_piece_reqs().await; // todo
+                    // todo: maybe re-compute assignations immediately here instead of waiting tick
                 }
                 Message::Request(piece_idx, begin, lenght) => {
                     if !peer.am_choking {
@@ -338,7 +334,7 @@ impl TorrentManager {
                                     )))
                                     .await;
 
-                                    // todo: really naive, must avoid saturating upload
+                                    // todo: this is really naive, must avoid saturating upload
 
                                     self.uploaded_bytes += data_len; // todo: we are not keeping track of cancelled pieces
                                 }
@@ -399,7 +395,7 @@ impl TorrentManager {
                                     }
                                 }
                             }
-                            //self.assign_piece_reqs().await; // todo maybe this is needed to speed up things
+                            // todo: maybe re-compute assignations immediately here instead of waiting tick
                         }
                         Err(e) => {
                             log::error!("cannot write block: {}", e);

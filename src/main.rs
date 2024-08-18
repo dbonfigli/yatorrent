@@ -52,8 +52,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     match metainfo {
         Ok(m) => {
             log::info!("torrent file metainfo:\n{}", m);
-            let mut torrent_manager = TorrentManager::new(base_path, port, m).await?;
-            torrent_manager.start().await;
+            TorrentManager::new(base_path, port, m).start().await;
             exit(0);
         }
         Err(e) => {

@@ -309,8 +309,8 @@ impl FileManager {
             let mut opened_file = self.file_handles.get_file(file_path, false)?;
             opened_file.seek(SeekFrom::Start(file_offset))?;
             let mut file_buf: Vec<u8> = vec![0; bytes_to_read as usize];
-            opened_file.read_exact(&mut file_buf)?; // todo: optimize this more
-            block_buf.append(&mut file_buf);
+            opened_file.read_exact(&mut file_buf)?;
+            block_buf.append(&mut file_buf); // todo: optimize this more: avoid appending, create a buf large enough from the start
         }
 
         Ok(block_buf)
