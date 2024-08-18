@@ -44,7 +44,6 @@ pub struct Peer {
     haves: Vec<bool>,
     to_peer_tx: Sender<ToPeerMsg>,
     last_sent: SystemTime,
-    last_received: SystemTime,
     to_peer_cancel_tx: Sender<ToPeerCancelMsg>,
     outstanding_block_requests: HashMap<(u32, u32, u32), SystemTime>,
     requested_pieces: HashMap<usize, Piece>, // piece idx -> piece status with all the requested fragments
@@ -67,7 +66,6 @@ impl Peer {
             haves: vec![false; num_pieces],
             to_peer_tx,
             last_sent: now,
-            last_received: now,
             to_peer_cancel_tx,
             outstanding_block_requests: HashMap::new(),
             requested_pieces: HashMap::new(),
@@ -226,7 +224,6 @@ impl TorrentManager {
         log::trace!("received message from peer {}: {}", peer_addr, msg);
         let now = SystemTime::now();
         if let Some(peer) = self.peers.get_mut(&peer_addr) {
-            peer.last_received = now;
             match msg {
                 Message::KeepAlive => {}
                 Message::Choke => {
