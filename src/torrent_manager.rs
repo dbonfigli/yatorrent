@@ -75,6 +75,9 @@ impl Peer {
     }
 
     async fn send(&mut self, msg: ToPeerMsg) {
+        if self.to_peer_tx.capacity() <= 5 {
+            log::warn!("low to_peer_tx capacity: {}", self.to_peer_tx.capacity());
+        }
         self.last_sent = SystemTime::now();
         let _ = self.to_peer_tx.send(msg).await;
         // ignore errors: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors
@@ -151,7 +154,7 @@ impl TorrentManager {
             }
             Ok(()) => {
                 let (ok_to_accept_connection_tx, ok_to_accept_connection_rx) = mpsc::channel(10);
-                let (piece_completion_status_tx, piece_completion_status_rx) = mpsc::channel(10);
+                let (piece_completion_status_tx, piece_completion_status_rx) = mpsc::channel(100);
                 let (to_manager_tx, to_manager_rx) =
                     mpsc::channel::<ToManagerMsg>(TO_MANAGER_CHANNEL_CAPACITY);
 
@@ -264,12 +267,6 @@ impl TorrentManager {
                             && !self.file_manager.piece_completion_status[piece_idx as usize]
                         {
                             peer.am_interested = true;
-                            if peer.to_peer_tx.capacity() <= 5 {
-                                log::warn!(
-                                    "receive: before sending interested, to_peer_tx capacity: {}",
-                                    peer.to_peer_tx.capacity()
-                                );
-                            }
                             peer.send(ToPeerMsg::Send(Message::Interested)).await;
                         }
                     } else {
@@ -303,9 +300,6 @@ impl TorrentManager {
                                         && peer.haves[piece_idx]
                                     {
                                         peer.am_interested = true;
-                                        if peer.to_peer_tx.capacity() <= 5 {
-                                            log::warn!("before sending interested, to_peer_tx capacity: {}", peer.to_peer_tx.capacity());
-                                        }
                                         peer.send(ToPeerMsg::Send(Message::Interested)).await;
                                         break;
                                     }
@@ -342,13 +336,6 @@ impl TorrentManager {
 
                                 Ok(data) => {
                                     let data_len = data.len() as u64;
-
-                                    if peer.to_peer_tx.capacity() <= 5 {
-                                        log::warn!(
-                                            "receive: before sending piece, to_peer_tx capacity: {}",
-                                            peer.to_peer_tx.capacity()
-                                        );
-                                    }
                                     peer.send(ToPeerMsg::Send(Message::Piece(
                                         piece_idx, begin, data,
                                     )))
@@ -387,26 +374,13 @@ impl TorrentManager {
                                     let _ = self.tracker_request(Event::Completed).await;
                                 }
 
-                                if piece_completion_status_tx.capacity() <= 5 {
-                                    log::warn!(
-                                        "receive: before sending piece_completion_status_channel_tx, piece_completion_status_channel_tx capacity: {}",
-                                        piece_completion_status_tx.capacity()
-                                    );
-                                }
                                 let _ = piece_completion_status_tx
                                     .send(self.file_manager.piece_completion_status.clone())
                                     .await; // ignore in case of error: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors and the peer is still lingering in self.peers because the control message about the error is not yet been handled
 
-                                let now = SystemTime::now();
                                 for (_, peer) in self.peers.iter_mut() {
                                     // send have to interested peers
                                     if peer.peer_interested && !peer.haves[piece_idx as usize] {
-                                        if peer.to_peer_tx.capacity() <= 5 {
-                                            log::warn!(
-                                                "receive: before sending have, to_peer_tx capacity: {}",
-                                                peer.to_peer_tx.capacity()
-                                            );
-                                        }
                                         peer.send(ToPeerMsg::Send(Message::Have(piece_idx))).await;
                                     }
                                     // send not interested if needed
@@ -422,12 +396,6 @@ impl TorrentManager {
                                             }
                                         }
                                         if !am_still_interested {
-                                            if peer.to_peer_tx.capacity() <= 5 {
-                                                log::warn!(
-                                                    "receive: before sending interested, peer.to_peer_tx capacity: {}",
-                                                    peer.to_peer_tx.capacity()
-                                                );
-                                            }
                                             peer.send(ToPeerMsg::Send(Message::NotInterested))
                                                 .await;
                                         }
@@ -465,12 +433,6 @@ impl TorrentManager {
         }
         self.bad_peers.insert(peer_addr);
         if self.peers.len() < ENOUGH_PEERS {
-            if ok_to_accept_connection_tx.capacity() <= 5 {
-                log::warn!(
-                    "peer_error: before sending ok_to_accept_connection_tx, ok_to_accept_connection_tx capacity: {}",
-                    ok_to_accept_connection_tx.capacity()
-                );
-            }
             ok_to_accept_connection_tx.send(true).await.unwrap();
         }
     }
@@ -527,12 +489,6 @@ impl TorrentManager {
         for (_, peer) in self.peers.iter_mut() {
             if let Ok(elapsed) = now.duration_since(peer.last_sent) {
                 if elapsed > KEEP_ALIVE_FREQ {
-                    if peer.to_peer_tx.capacity() <= 5 {
-                        log::warn!(
-                            "tick: before sending keep-alive, to_peer_tx capacity: {}",
-                            peer.to_peer_tx.capacity()
-                        );
-                    }
                     peer.send(ToPeerMsg::Send(Message::KeepAlive)).await;
                 }
             }
@@ -723,12 +679,6 @@ impl TorrentManager {
         log::debug!("new peer initialized: {}", peer_addr);
         if self.peers.len() > ENOUGH_PEERS {
             log::trace!("stop accepting new peers");
-            if ok_to_accept_connection_tx.capacity() <= 5 {
-                log::warn!(
-                    "new_peer: before sending ok_to_accept_connection_tx, ok_to_accept_connection_tx capacity: {}",
-                    ok_to_accept_connection_tx.capacity()
-                );
-            }
             ok_to_accept_connection_tx.send(false).await.unwrap();
         }
     }
@@ -819,7 +769,6 @@ async fn tracker_request(
             return Err(Box::from(msg));
         }
         Ok(Response::Ok(ok_response)) => {
-            log::warn!("{:?}", ok_response);
             if let Some(msg) = ok_response.warning_message.clone() {
                 log::warn!("tracker send a warning: {}", msg);
             }
@@ -909,12 +858,6 @@ async fn file_requests(peer: &mut Peer, piece_idx: usize, mut incomplete_piece: 
     while peer.outstanding_block_requests.len() < MAX_OUTSTANDING_REQUESTS_PER_PEER {
         if let Some((begin, end)) = incomplete_piece.get_next_fragment(BLOCK_SIZE_B) {
             let request = (piece_idx as u32, begin as u32, (end - begin + 1) as u32);
-            if peer.to_peer_tx.capacity() <= 5 {
-                log::warn!(
-                    "file_requests: before seding request, to_peer_tx capacity: {}",
-                    peer.to_peer_tx.capacity()
-                );
-            }
             peer.send(ToPeerMsg::Send(Message::Request(
                 request.0, request.1, request.2,
             )))

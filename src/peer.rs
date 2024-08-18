@@ -76,35 +76,14 @@ pub async fn connect_to_new_peer(
             {
                 Err(_elapsed) => {
                     log::trace!("timed out completing handshake with peer {}", dest);
-                    if to_manager_tx.capacity() <= 5 {
-                        log::warn!("connect_to_new_peer: before sending error due to timeout, to_manager_tx capacity: {}", to_manager_tx.capacity());
-                    }
-                    to_manager_tx
-                        .send(ToManagerMsg::Error(peer_addr))
-                        .await
-                        .unwrap();
+                    send_to_manager(&to_manager_tx, ToManagerMsg::Error(peer_addr)).await;
                 }
                 Ok(Err(e)) => {
                     log::trace!("error out completing handshake with peer {}", e);
-                    if to_manager_tx.capacity() <= 5 {
-                        log::warn!("connect_to_new_peer: before sending error due to completing handshake, to_manager_tx capacity: {}", to_manager_tx.capacity());
-                    }
-                    to_manager_tx
-                        .send(ToManagerMsg::Error(peer_addr))
-                        .await
-                        .unwrap();
+                    send_to_manager(&to_manager_tx, ToManagerMsg::Error(peer_addr)).await;
                 }
                 Ok(Ok(tcp_stream)) => {
-                    if to_manager_tx.capacity() <= 5 {
-                        log::warn!(
-                            "connect_to_new_peer: before sending new peer, to_manager_tx capacity: {}",
-                            to_manager_tx.capacity()
-                        );
-                    }
-                    to_manager_tx
-                        .send(ToManagerMsg::NewPeer(tcp_stream))
-                        .await
-                        .unwrap();
+                    send_to_manager(&to_manager_tx, ToManagerMsg::NewPeer(tcp_stream)).await;
                 }
             }
         }
@@ -189,16 +168,11 @@ pub async fn run_new_incoming_peers_handler(
                         log::trace!("handshake failed with peer {}: {}", remote_addr, e);
                     }
                     Ok(Ok(tcp_stream)) => {
-                        if to_manager_tx_for_spawn.capacity() <= 5 {
-                            log::warn!(
-                                "run_new_incoming_peers_handler: before sending incoming new peer, to_manager_tx capacity: {}",
-                                to_manager_tx_for_spawn.capacity()
-                            );
-                        }
-                        to_manager_tx_for_spawn
-                            .send(ToManagerMsg::NewPeer(tcp_stream))
-                            .await
-                            .unwrap();
+                        send_to_manager(
+                            &to_manager_tx_for_spawn,
+                            ToManagerMsg::NewPeer(tcp_stream),
+                        )
+                        .await;
                     }
                 }
             });
@@ -287,49 +261,22 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
     loop {
         match timeout(Duration::from_secs(180), wire_proto.receive()).await {
             Err(_elapsed) => {
-                log::trace!(
-                "did not receive anything (not even keep-alive messages) from peer in 3 minutes {}",
-                peer_addr
-            );
-                if to_manager_tx.capacity() <= 5 {
-                    log::warn!(
-                        "rcv_message_handler: before sending error peer_addr due to timeout, to_manager_tx capacity: {}",
-                        to_manager_tx.capacity()
-                    );
-                }
-                to_manager_tx
-                    .send(ToManagerMsg::Error(peer_addr))
-                    .await
-                    .unwrap();
+                log::trace!("did not receive anything (not even keep-alive messages) from peer in 3 minutes {}", peer_addr);
+                send_to_manager(&to_manager_tx, ToManagerMsg::Error(peer_addr)).await;
                 break;
             }
             Ok(Err(e)) => {
-                if to_manager_tx.capacity() <= 5 {
-                    log::warn!(
-                        "rcv_message_handler: before sending error peer_addr due to error, to_manager_tx capacity: {}",
-                        to_manager_tx.capacity()
-                    );
-                }
                 log::trace!("receive failed with peer {}: {}", peer_addr, e);
-                to_manager_tx
-                    .send(ToManagerMsg::Error(peer_addr))
-                    .await
-                    .unwrap();
+                send_to_manager(&to_manager_tx, ToManagerMsg::Error(peer_addr)).await;
                 break;
             }
             Ok(Ok(proto_msg)) => {
                 log::trace!("received from {}: {}", peer_addr, proto_msg);
-                if to_manager_tx.capacity() <= 5 {
-                    log::warn!(
-                        "rcv_message_handler: before sending ok peer_addr, to_manager_tx capacity: {}, peer_addr: {}",
-                        to_manager_tx.capacity(),
-                        peer_addr
-                    );
-                }
-                to_manager_tx
-                    .send(ToManagerMsg::Receive(peer_addr.clone(), proto_msg))
-                    .await
-                    .unwrap();
+                send_to_manager(
+                    &to_manager_tx,
+                    ToManagerMsg::Receive(peer_addr.clone(), proto_msg),
+                )
+                .await;
             }
         }
     }
@@ -378,18 +325,12 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                 match timeout(DEFAULT_TIMEOUT, wire_proto.send(proto_msg)).await {
                     Err(_elapsed) => {
                         log::trace!("timeout sending message to peer {}", peer_addr);
-                        to_manager_tx
-                            .send(ToManagerMsg::Error(peer_addr))
-                            .await
-                            .unwrap();
+                        send_to_manager(&to_manager_tx, ToManagerMsg::Error(peer_addr)).await;
                         break;
                     }
                     Ok(Err(e)) => {
                         log::trace!("sending failed with peer {}: {}", peer_addr, e);
-                        to_manager_tx
-                            .send(ToManagerMsg::Error(peer_addr))
-                            .await
-                            .unwrap();
+                        send_to_manager(&to_manager_tx, ToManagerMsg::Error(peer_addr)).await;
                         break;
                     }
                     Ok(Ok(_)) => {}
@@ -397,4 +338,11 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
             }
         }
     }
+}
+
+async fn send_to_manager(to_manager_tx: &Sender<ToManagerMsg>, msg: ToManagerMsg) {
+    if to_manager_tx.capacity() <= 5 {
+        log::warn!("low to_manager_tx capacity: {}", to_manager_tx.capacity());
+    }
+    to_manager_tx.send(msg).await.unwrap();
 }
