@@ -482,8 +482,7 @@ impl TorrentManager {
         log::debug!("removing errored peer {}", peer_addr);
         if let Some(removed_peer) = self.peers.remove(&peer_addr) {
             for (piece_idx, _) in removed_peer.requested_pieces {
-                self.outstanding_piece_assigments
-                    .remove(&(piece_idx as usize));
+                self.outstanding_piece_assigments.remove(&piece_idx);
             }
         }
         self.bad_peers.insert(peer_addr);
