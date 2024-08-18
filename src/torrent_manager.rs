@@ -33,6 +33,7 @@ static TO_MANAGER_CHANNEL_CAPACITY: usize = 50000;
 static REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 static MIN_CHOKE_TIME: Duration = Duration::from_secs(60);
 static MIN_UNCHOKED_TO_TRY_DISCOVERING_NEW_PEERS: i32 = 3;
+static NEW_CONNECTION_COOL_OFF_PERIOD: Duration = Duration::from_secs(180);
 
 pub struct Peer {
     am_choking: bool,
@@ -82,7 +83,7 @@ pub struct TorrentManager {
     own_peer_id: String,
     listening_port: i32,
     peers: HashMap<PeerAddr, Peer>,
-    advertised_peers: Arc<Mutex<HashMap<PeerAddr, tracker::Peer>>>,
+    advertised_peers: Arc<Mutex<HashMap<PeerAddr, (tracker::Peer, SystemTime)>>>, // peer addr -> (peer, last connection attempt)
     bad_peers: HashSet<PeerAddr>,
     last_tracker_request_time: Arc<Mutex<SystemTime>>,
     tracker_request_interval: Arc<Mutex<Duration>>,
@@ -505,28 +506,43 @@ impl TorrentManager {
         if current_peers_n < LOW_ENOUGH_PEERS {
             let possible_peers_mg = self.advertised_peers.lock().unwrap();
             let possible_peers = possible_peers_mg.clone();
+            let now = SystemTime::now();
             drop(possible_peers_mg);
             let possible_peers = possible_peers
                 .iter()
-                .filter(|(k, _)| !self.peers.contains_key(*k))
-                .map(|(_, v)| v)
-                .collect::<Vec<&tracker::Peer>>();
-            let candidates_for_new_connections: Vec<&&tracker::Peer> = possible_peers
+                .filter(|(k, (_, last_connection_attempt))| {
+                    !self.peers.contains_key(*k)
+                        // use peers we didn't try to connect to recently
+                        // this cooloff time is also important to avoid new connections to peers we attempted few secs ago
+                        // and for which a connection attempt is still inflight
+                        && now.duration_since(*last_connection_attempt).unwrap()
+                            > NEW_CONNECTION_COOL_OFF_PERIOD
+                })
+                .collect::<Vec<_>>();
+
+            let candidates_for_new_connections: Vec<_> = possible_peers
                 .choose_multiple(&mut rand::thread_rng(), LOW_ENOUGH_PEERS - current_peers_n)
                 .collect();
             // todo:
             // * better algorithm to select new peers
             // * avoid selecting bad peers?
-            for p in candidates_for_new_connections.iter() {
+            for (_, (peer, _)) in candidates_for_new_connections.iter() {
                 tokio::spawn(peer::connect_to_new_peer(
-                    p.ip.clone(),
-                    p.port,
+                    peer.ip.clone(),
+                    peer.port,
                     self.info_hash,
                     self.own_peer_id.clone(),
                     self.file_manager.piece_completion_status.clone(),
                     to_manager_tx.clone(),
                 ));
             }
+            // update last connection attempt
+            let mut possible_peers_mg = self.advertised_peers.lock().unwrap();
+            for (peer_addr, _) in candidates_for_new_connections.iter() {
+                let possible_peer_entry = possible_peers_mg.get_mut(*peer_addr).unwrap();
+                possible_peer_entry.1 = now;
+            }
+            drop(possible_peers_mg);
         }
 
         // send keep-alives
@@ -616,9 +632,13 @@ impl TorrentManager {
     async fn assign_piece_reqs(&mut self) {
         // send requests for new blocks for pieces currently downloading
         for (piece_idx, peer_addr) in self.outstanding_piece_assigments.iter() {
-            if let Some(peer) = self.peers.get_mut(peer_addr) {
-                file_requests(peer, *piece_idx, None).await;
-            }
+            let peer = self.peers.get_mut(peer_addr).unwrap();
+            file_requests(
+                peer,
+                *piece_idx,
+                peer.requested_pieces.get(&piece_idx).unwrap().clone(),
+            )
+            .await;
         }
 
         // assign incomplete pieces if not assigned yet
@@ -626,7 +646,7 @@ impl TorrentManager {
             if !self.outstanding_piece_assigments.contains_key(piece_idx) {
                 if let Some(peer_addr) = assign_piece(*piece_idx, &self.peers) {
                     let peer = self.peers.get_mut(&peer_addr).unwrap();
-                    file_requests(peer, *piece_idx, Some(piece.clone())).await;
+                    file_requests(peer, *piece_idx, piece.clone()).await;
                     self.outstanding_piece_assigments
                         .insert(*piece_idx, peer_addr.clone());
                 }
@@ -646,7 +666,7 @@ impl TorrentManager {
                     file_requests(
                         peer,
                         piece_idx,
-                        Some(Piece::new(self.file_manager.piece_length(piece_idx))),
+                        Piece::new(self.file_manager.piece_length(piece_idx)),
                     )
                     .await;
                     self.outstanding_piece_assigments
@@ -807,7 +827,7 @@ async fn tracker_request(
     uploaded_bytes: u64,
     downloaded_bytes: u64,
     tracker_client: TrackerClient,
-    advertised_peers: Arc<Mutex<HashMap<PeerAddr, tracker::Peer>>>,
+    advertised_peers: Arc<Mutex<HashMap<PeerAddr, (tracker::Peer, SystemTime)>>>,
     tracker_request_interval: Arc<Mutex<Duration>>,
     last_tracker_request_time: Arc<Mutex<SystemTime>>,
     tracker_id: Arc<Mutex<Option<String>>>,
@@ -842,7 +862,10 @@ async fn tracker_request(
 
             let mut advertised_peers = advertised_peers.lock().unwrap();
             ok_response.peers.iter().for_each(|p| {
-                advertised_peers.insert(format!("{}:{}", p.ip, p.port), p.clone());
+                advertised_peers.insert(
+                    format!("{}:{}", p.ip, p.port),
+                    (p.clone(), SystemTime::UNIX_EPOCH),
+                );
             });
             drop(advertised_peers);
 
@@ -914,16 +937,9 @@ fn assign_piece(piece_idx: usize, peers: &HashMap<String, Peer>) -> Option<Strin
     }
 }
 
-async fn file_requests(peer: &mut Peer, piece_idx: usize, incomplete_piece: Option<Piece>) {
-    let mut piece: Piece;
-    if peer.requested_pieces.contains_key(&piece_idx) {
-        piece = peer.requested_pieces.get(&piece_idx).unwrap().clone();
-    } else {
-        piece = incomplete_piece.unwrap(); // todo: re-check if this can never panic
-    }
-
+async fn file_requests(peer: &mut Peer, piece_idx: usize, mut incomplete_piece: Piece) {
     while peer.outstanding_block_requests.len() < MAX_OUTSTANDING_REQUESTS_PER_PEER {
-        if let Some((begin, end)) = piece.get_next_fragment(BLOCK_SIZE_B) {
+        if let Some((begin, end)) = incomplete_piece.get_next_fragment(BLOCK_SIZE_B) {
             let request = (piece_idx as u32, begin as u32, (end - begin + 1) as u32);
             if peer.to_peer_tx.capacity() <= 5 {
                 log::warn!(
@@ -941,11 +957,12 @@ async fn file_requests(peer: &mut Peer, piece_idx: usize, incomplete_piece: Opti
             // todo: we block if channel is full, not good
             peer.outstanding_block_requests
                 .insert(request, SystemTime::now());
-            piece.add_fragment(begin, end);
+            incomplete_piece.add_fragment(begin, end);
         } else {
             break;
         }
     }
 
-    peer.requested_pieces.insert(piece_idx, piece.clone());
+    peer.requested_pieces
+        .insert(piece_idx, incomplete_piece.clone());
 }
