@@ -87,6 +87,7 @@ pub struct TorrentManager {
     file_manager: FileManager,
     tracker_client: TrackerClient,
     tracker_id: Arc<Mutex<Option<String>>>,
+    tracker_urls: Arc<Mutex<Vec<Vec<String>>>>,
     info_hash: [u8; 20],
     own_peer_id: String,
     listening_port: i32,
@@ -116,10 +117,11 @@ impl TorrentManager {
             ),
             tracker_client: TrackerClient::new(
                 own_peer_id.clone(),
-                metainfo.announce_list,
+                metainfo.announce_list.clone(),
                 listening_port,
             ),
             tracker_id: Arc::new(Mutex::new(Option::None)),
+            tracker_urls: Arc::new(Mutex::new(metainfo.announce_list)),
             info_hash: metainfo.info_hash,
             own_peer_id,
             listening_port,
@@ -597,6 +599,9 @@ impl TorrentManager {
         let tracker_id_mg = self.tracker_id.lock().unwrap();
         self.tracker_client.tracker_id = tracker_id_mg.clone();
         drop(tracker_id_mg);
+        let tracker_urls_mg = self.tracker_urls.lock().unwrap();
+        self.tracker_client.trackers_url = tracker_urls_mg.clone();
+        drop(tracker_urls_mg);
         tracker_request(
             event,
             self.file_manager.bytes_left(),
@@ -608,6 +613,7 @@ impl TorrentManager {
             self.tracker_request_interval.clone(),
             self.last_tracker_request_time.clone(),
             self.tracker_id.clone(),
+            self.tracker_urls.clone(),
         )
         .await
     }
@@ -621,6 +627,9 @@ impl TorrentManager {
         let tracker_id_mg = self.tracker_id.lock().unwrap();
         self.tracker_client.tracker_id = tracker_id_mg.clone();
         drop(tracker_id_mg);
+        let tracker_urls_mg = self.tracker_urls.lock().unwrap();
+        self.tracker_client.trackers_url = tracker_urls_mg.clone();
+        drop(tracker_urls_mg);
         tokio::spawn(tracker_request(
             event,
             self.file_manager.bytes_left(),
@@ -632,6 +641,7 @@ impl TorrentManager {
             self.tracker_request_interval.clone(),
             self.last_tracker_request_time.clone(),
             self.tracker_id.clone(),
+            self.tracker_urls.clone(),
         ));
     }
 
@@ -737,11 +747,12 @@ async fn tracker_request(
     info_hash: [u8; 20],
     uploaded_bytes: u64,
     downloaded_bytes: u64,
-    mut tracker_client: TrackerClient,
+    tracker_client: TrackerClient,
     advertised_peers: Arc<Mutex<HashMap<PeerAddr, (tracker::Peer, SystemTime)>>>,
     tracker_request_interval: Arc<Mutex<Duration>>,
     last_tracker_request_time: Arc<Mutex<SystemTime>>,
     tracker_id: Arc<Mutex<Option<String>>>,
+    tracker_urls: Arc<Mutex<Vec<Vec<String>>>>,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     match tracker_client
         .request(
@@ -757,11 +768,11 @@ async fn tracker_request(
             log::debug!("could not perform request to tracker: {}", e);
             return Err(Box::from(e.to_string()));
         }
-        Ok(Response::Failure(msg)) => {
+        Ok((Response::Failure(msg), _)) => {
             log::error!("tracker responded with failure: {}", msg);
             return Err(Box::from(msg));
         }
-        Ok(Response::Ok(ok_response)) => {
+        Ok((Response::Ok(ok_response), reordered_tracker_urls)) => {
             if let Some(msg) = ok_response.warning_message.clone() {
                 log::warn!("tracker sent a warning: {}", msg);
             }
@@ -794,6 +805,10 @@ async fn tracker_request(
                     drop(tracker_id);
                 }
             }
+
+            let mut tracker_urls = tracker_urls.lock().unwrap();
+            *tracker_urls = reordered_tracker_urls;
+            drop(tracker_urls);
 
             Ok(())
         }

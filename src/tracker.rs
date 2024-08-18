@@ -78,7 +78,7 @@ pub struct TrackerClient {
     peer_id: String,
     pub tracker_id: Option<String>,
     listening_port: i32,
-    trackers_url: Vec<Vec<String>>,
+    pub trackers_url: Vec<Vec<String>>,
 }
 
 impl TrackerClient {
@@ -100,14 +100,15 @@ impl TrackerClient {
     }
 
     pub async fn request(
-        &mut self,
+        &self,
         info_hash: [u8; 20],
         uploaded: u64,
         downloaded: u64,
         left: u64,
         event: Event,
-    ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+    ) -> Result<(Response, Vec<Vec<String>>), Box<dyn Error + Send + Sync>> {
         let mut res = Err(Box::from("no trackers in list"));
+        let mut reordered_trackers_url = self.trackers_url.clone();
         for tier_idx in 0..self.trackers_url.len() {
             for tracker_idx in 0..self.trackers_url[tier_idx].len() {
                 let url = self.trackers_url[tier_idx][tracker_idx].clone();
@@ -123,16 +124,19 @@ impl TrackerClient {
                     .await
                 {
                     Ok(Response::Failure(msg)) => {
-                        res = Ok(Response::Failure(msg.clone()));
+                        res = Ok((
+                            Response::Failure(msg.clone()),
+                            reordered_trackers_url.clone(),
+                        ));
                         log::debug!("tracker {} responded with failure: {}", url.clone(), msg);
                         log::debug!("will try next tracker if it exists...");
                     }
                     Ok(response) => {
                         if tracker_idx != 0 {
-                            let good_tracker = self.trackers_url[tier_idx].remove(tracker_idx);
-                            self.trackers_url[tier_idx].insert(0, good_tracker);
+                            let good_tracker = reordered_trackers_url[tier_idx].remove(tracker_idx);
+                            reordered_trackers_url[tier_idx].insert(0, good_tracker);
                         }
-                        return Ok(response);
+                        return Ok((response, reordered_trackers_url));
                     }
                     Err(e) => {
                         log::debug!("error from tracker {}: {}", url.clone(), e);
