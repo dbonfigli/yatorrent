@@ -770,7 +770,7 @@ async fn tracker_request(
         }
         Ok(Response::Ok(ok_response)) => {
             if let Some(msg) = ok_response.warning_message.clone() {
-                log::warn!("tracker send a warning: {}", msg);
+                log::warn!("tracker sent a warning: {}", msg);
             }
             log::trace!(
                 "tracker request succeeded, tracker response:\n{:?}",
