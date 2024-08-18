@@ -213,7 +213,7 @@ impl TorrentManager {
         piece_completion_status_tx: Sender<Vec<bool>>,
         to_manager_channel_capacity: usize,
     ) {
-        log::debug!("received message from peer {}: {}", peer_addr, msg);
+        log::trace!("received message from peer {}: {}", peer_addr, msg);
         let now = SystemTime::now();
         if let Some(peer) = self.peers.get_mut(&peer_addr) {
             peer.last_received = now;
@@ -260,7 +260,7 @@ impl TorrentManager {
                             peer.last_sent = SystemTime::now();
                             if peer.to_peer_tx.capacity() <= 5 {
                                 log::warn!(
-                                    "before sending interested, to_peer_tx capacity: {}",
+                                    "receive: before sending interested, to_peer_tx capacity: {}",
                                     peer.to_peer_tx.capacity()
                                 );
                             }
@@ -275,7 +275,7 @@ impl TorrentManager {
                         //self.assign_piece_reqs().await; // todo
                     } else {
                         log::warn!(
-                            "got message have {} from peer {} but the torrent have only {} pieces",
+                            "got message \"have\" {} from peer {} but the torrent have only {} pieces",
                             piece_idx,
                             peer_addr,
                             pieces
@@ -353,7 +353,7 @@ impl TorrentManager {
 
                                     if peer.to_peer_tx.capacity() <= 5 {
                                         log::warn!(
-                                            "before sending piece, to_peer_tx capacity: {}",
+                                            "receive: before sending piece, to_peer_tx capacity: {}",
                                             peer.to_peer_tx.capacity()
                                         );
                                     }
@@ -399,7 +399,7 @@ impl TorrentManager {
 
                                 if piece_completion_status_tx.capacity() <= 5 {
                                     log::warn!(
-                                        "before sending piece_completion_status_channel_tx, piece_completion_status_channel_tx capacity: {}",
+                                        "receive: before sending piece_completion_status_channel_tx, piece_completion_status_channel_tx capacity: {}",
                                         piece_completion_status_tx.capacity()
                                     );
                                 }
@@ -415,7 +415,7 @@ impl TorrentManager {
                                     if peer.peer_interested && !peer.haves[piece_idx as usize] {
                                         if peer.to_peer_tx.capacity() <= 5 {
                                             log::warn!(
-                                                "before sending have, to_peer_tx capacity: {}",
+                                                "receive: before sending have, to_peer_tx capacity: {}",
                                                 peer.to_peer_tx.capacity()
                                             );
                                         }
@@ -443,7 +443,7 @@ impl TorrentManager {
                                             peer.last_sent = now;
                                             if peer.to_peer_tx.capacity() <= 5 {
                                                 log::warn!(
-                                                    "before sending interested, peer.to_peer_tx capacity: {}",
+                                                    "receive: before sending interested, peer.to_peer_tx capacity: {}",
                                                     peer.to_peer_tx.capacity()
                                                 );
                                             }
@@ -490,7 +490,7 @@ impl TorrentManager {
         if self.peers.len() < ENOUGH_PEERS {
             if ok_to_accept_connection_tx.capacity() <= 5 {
                 log::warn!(
-                    "before sending ok_to_accept_connection_tx, ok_to_accept_connection_tx capacity: {}",
+                    "peer_error: before sending ok_to_accept_connection_tx, ok_to_accept_connection_tx capacity: {}",
                     ok_to_accept_connection_tx.capacity()
                 );
             }
@@ -552,7 +552,7 @@ impl TorrentManager {
                 if elapsed > KEEP_ALIVE_FREQ {
                     if peer.to_peer_tx.capacity() <= 5 {
                         log::warn!(
-                            "before sending keep-alive, to_peer_tx capacity: {}",
+                            "tick: before sending keep-alive, to_peer_tx capacity: {}",
                             peer.to_peer_tx.capacity()
                         );
                     }
@@ -734,7 +734,6 @@ impl TorrentManager {
                 return;
             }
         };
-        log::debug!("got message with new peer: {}", peer_addr);
         let (to_peer_tx, to_peer_rx) = mpsc::channel(TO_PEER_CHANNEL_CAPACITY);
         let (to_peer_cancel_tx, to_peer_cancel_rx) = mpsc::channel(TO_PEER_CANCEL_CHANNEL_CAPACITY);
         peer::start_peer_msg_handlers(
@@ -743,10 +742,9 @@ impl TorrentManager {
             to_manager_tx.clone(),
             to_peer_rx,
             to_peer_cancel_rx,
-        )
-        .await;
+        );
         self.peers.insert(
-            peer_addr,
+            peer_addr.clone(),
             Peer::new(
                 self.file_manager.num_pieces(),
                 to_peer_tx,
@@ -754,11 +752,12 @@ impl TorrentManager {
                 should_choke(to_manager_tx.capacity()),
             ),
         );
+        log::debug!("new peer initialized: {}", peer_addr);
         if self.peers.len() > ENOUGH_PEERS {
             log::trace!("stop accepting new peers");
             if ok_to_accept_connection_tx.capacity() <= 5 {
                 log::warn!(
-                    "before sending ok_to_accept_connection_tx, ok_to_accept_connection_tx capacity: {}",
+                    "new_peer: before sending ok_to_accept_connection_tx, ok_to_accept_connection_tx capacity: {}",
                     ok_to_accept_connection_tx.capacity()
                 );
             }
@@ -784,7 +783,7 @@ impl TorrentManager {
         self.downloaded_bytes_previous_poll = self.downloaded_bytes;
         self.last_bandwidth_poll = now;
         log::info!(
-            "left: {}, pieces: {}/{} | U: {}/s - D: {}/s (tot. U: {} - D: {}) | peers known: {}, connected: {}, unchocked: {} | pending to_manager msgs: {}/{}",
+            "left: {}, pieces: {}/{} | Up: {}/s, Down: {}/s (tot.: {}, {}), wasted: {} | peers known: {}, connected: {}, unchoked: {} | pending to_manager msgs: {}/{}",
             Size::from_bytes(self.file_manager.bytes_left()),
             self.file_manager.completed_pieces(),
             self.file_manager.num_pieces(),
@@ -792,6 +791,7 @@ impl TorrentManager {
             Size::from_bytes(bandwidth_down).format().with_style(Style::Abbreviated),
             Size::from_bytes(self.uploaded_bytes).format().with_style(Style::Abbreviated),
             Size::from_bytes(self.downloaded_bytes).format().with_style(Style::Abbreviated),
+            Size::from_bytes(self.file_manager.wasted_bytes).format().with_style(Style::Abbreviated),
             advertised_peers_len,
             self.peers.len(),
             self.peers.iter()
@@ -843,7 +843,7 @@ async fn tracker_request(
         .await
     {
         Err(e) => {
-            log::error!("could not perform request to tracker: {}", e);
+            log::debug!("could not perform request to tracker: {}", e);
             return Err(Box::from(e.to_string()));
         }
         Ok(Response::Failure(msg)) => {
@@ -943,7 +943,7 @@ async fn file_requests(peer: &mut Peer, piece_idx: usize, mut incomplete_piece: 
             let request = (piece_idx as u32, begin as u32, (end - begin + 1) as u32);
             if peer.to_peer_tx.capacity() <= 5 {
                 log::warn!(
-                    "before seding request, to_peer_tx capacity: {}",
+                    "file_requests: before seding request, to_peer_tx capacity: {}",
                     peer.to_peer_tx.capacity()
                 );
             }

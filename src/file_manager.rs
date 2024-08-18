@@ -20,6 +20,7 @@ pub struct FileManager {
     pub piece_completion_status: Vec<bool>, // piece identified by position in array -> download completed / incomplete
     file_handles: FileHandles,
     pub incomplete_pieces: HashMap<usize, Piece>, // piece id -> piece with downloaded fragments
+    pub wasted_bytes: usize,
 }
 
 struct FileHandles {
@@ -144,6 +145,7 @@ impl FileManager {
             piece_completion_status,
             file_handles: FileHandles::new(),
             incomplete_pieces: HashMap::new(),
+            wasted_bytes: 0,
         }
     }
 
@@ -333,9 +335,10 @@ impl FileManager {
         // avoid useless writes if we already have the piece
         if self.piece_completion_status[piece_idx] {
             log::trace!(
-                "we already have the piece {}, will avoid to write it again",
+                "we already have the piece {}, will avoid to writing it again",
                 piece_idx
             );
+            self.wasted_bytes += data.len();
             return Ok(true);
         }
 
@@ -353,7 +356,8 @@ impl FileManager {
         }
         let piece = self.incomplete_pieces.get_mut(&piece_idx).unwrap();
         if piece.contains(block_begin, block_begin + data_len) {
-            log::trace!("we already have written all the data in this block");
+            log::trace!("we already have written all the data in this block (begin: {} lenght: {}) for piece {}, will avoid writing it again", block_begin, data_len, piece_idx);
+            self.wasted_bytes += data.len();
             return Ok(false);
         }
 

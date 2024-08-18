@@ -118,7 +118,7 @@ impl TrackerClient {
             ))
         }
 
-        log::trace!("requesting url: {}", url);
+        log::debug!("requesting url: {}", url);
 
         let body: Vec<u8> = match ClientBuilder::new()
             .connect_timeout(Duration::from_secs(5))
