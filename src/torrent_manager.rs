@@ -787,10 +787,12 @@ async fn tracker_request(
             *tracker_request_interval = Duration::from_secs(ok_response.interval as u64);
             drop(tracker_request_interval);
 
-            if let Some(id) = ok_response.tracker_id {
-                let mut tracker_id = tracker_id.lock().unwrap();
-                *tracker_id = Some(id);
-                drop(tracker_id);
+            let mut tracker_id = tracker_id.lock().unwrap();
+            if let None = *tracker_id {
+                if let Some(id) = ok_response.tracker_id {
+                    *tracker_id = Some(id);
+                    drop(tracker_id);
+                }
             }
 
             Ok(())
