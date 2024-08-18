@@ -73,6 +73,13 @@ impl Peer {
             requested_pieces: HashMap::new(),
         };
     }
+
+    async fn send(&mut self, msg: ToPeerMsg) {
+        self.last_sent = SystemTime::now();
+        let _ = self.to_peer_tx.send(msg).await;
+        // ignore errors: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors
+        // and the peer is still lingering in self.peers because the control message about the error is not yet been handled
+    }
 }
 
 pub struct TorrentManager {
@@ -257,22 +264,14 @@ impl TorrentManager {
                             && !self.file_manager.piece_completion_status[piece_idx as usize]
                         {
                             peer.am_interested = true;
-                            peer.last_sent = SystemTime::now();
                             if peer.to_peer_tx.capacity() <= 5 {
                                 log::warn!(
                                     "receive: before sending interested, to_peer_tx capacity: {}",
                                     peer.to_peer_tx.capacity()
                                 );
                             }
-                            let _ = peer
-                                .to_peer_tx
-                                .send(ToPeerMsg::Send(Message::Interested))
-                                .await; // ignore in case of error: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors and the peer is still lingering in self.peers because the control message about the error is not yet been handled
-
-                            // todo: we block if channel is full, not good
+                            peer.send(ToPeerMsg::Send(Message::Interested)).await;
                         }
-
-                        //self.assign_piece_reqs().await; // todo
                     } else {
                         log::warn!(
                             "got message \"have\" {} from peer {} but the torrent have only {} pieces",
@@ -304,16 +303,10 @@ impl TorrentManager {
                                         && peer.haves[piece_idx]
                                     {
                                         peer.am_interested = true;
-                                        peer.last_sent = SystemTime::now();
                                         if peer.to_peer_tx.capacity() <= 5 {
                                             log::warn!("before sending interested, to_peer_tx capacity: {}", peer.to_peer_tx.capacity());
                                         }
-                                        let _ = peer
-                                            .to_peer_tx
-                                            .send(ToPeerMsg::Send(Message::Interested))
-                                            .await; // ignore in case of error: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors and the peer is still lingering in self.peers because the control message about the error is not yet been handled
-
-                                        // todo: we block if channel is full, not good
+                                        peer.send(ToPeerMsg::Send(Message::Interested)).await;
                                         break;
                                     }
                                 }
@@ -334,8 +327,7 @@ impl TorrentManager {
                 Message::Request(piece_idx, begin, lenght) => {
                     if !peer.am_choking {
                         if should_choke(to_manager_channel_capacity) {
-                            let _ = peer.to_peer_tx.send(ToPeerMsg::Send(Message::Choke)).await;
-                            // ignore in case of error: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors and the peer is still lingering in self.peers because the control message about the error is not yet been handled
+                            peer.send(ToPeerMsg::Send(Message::Choke)).await;
                             peer.am_choking = true;
                             peer.am_choking_since = SystemTime::now();
                         } else {
@@ -357,12 +349,10 @@ impl TorrentManager {
                                             peer.to_peer_tx.capacity()
                                         );
                                     }
-                                    let _ = peer
-                                        .to_peer_tx
-                                        .send(ToPeerMsg::Send(Message::Piece(
-                                            piece_idx, begin, data,
-                                        )))
-                                        .await; // ignore in case of error: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors and the peer is still lingering in self.peers because the control message about the error is not yet been handled
+                                    peer.send(ToPeerMsg::Send(Message::Piece(
+                                        piece_idx, begin, data,
+                                    )))
+                                    .await;
 
                                     // todo: really naive, must avoid saturating upload
 
@@ -407,8 +397,6 @@ impl TorrentManager {
                                     .send(self.file_manager.piece_completion_status.clone())
                                     .await; // ignore in case of error: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors and the peer is still lingering in self.peers because the control message about the error is not yet been handled
 
-                                // todo: we block if channel is full, not good
-
                                 let now = SystemTime::now();
                                 for (_, peer) in self.peers.iter_mut() {
                                     // send have to interested peers
@@ -419,13 +407,7 @@ impl TorrentManager {
                                                 peer.to_peer_tx.capacity()
                                             );
                                         }
-                                        peer.last_sent = now;
-                                        let _ = peer
-                                            .to_peer_tx
-                                            .send(ToPeerMsg::Send(Message::Have(piece_idx)))
-                                            .await; // ignore in case of error: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors and the peer is still lingering in self.peers because the control message about the error is not yet been handled
-
-                                        // todo: we block if channel is full, not good
+                                        peer.send(ToPeerMsg::Send(Message::Have(piece_idx))).await;
                                     }
                                     // send not interested if needed
                                     if peer.am_interested {
@@ -440,19 +422,14 @@ impl TorrentManager {
                                             }
                                         }
                                         if !am_still_interested {
-                                            peer.last_sent = now;
                                             if peer.to_peer_tx.capacity() <= 5 {
                                                 log::warn!(
                                                     "receive: before sending interested, peer.to_peer_tx capacity: {}",
                                                     peer.to_peer_tx.capacity()
                                                 );
                                             }
-                                            let _ = peer
-                                                .to_peer_tx
-                                                .send(ToPeerMsg::Send(Message::NotInterested))
-                                                .await; // ignore in case of error: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors and the peer is still lingering in self.peers because the control message about the error is not yet been handled
-
-                                            // todo: we block if channel is full, not good
+                                            peer.send(ToPeerMsg::Send(Message::NotInterested))
+                                                .await;
                                         }
                                     }
                                 }
@@ -556,13 +533,7 @@ impl TorrentManager {
                             peer.to_peer_tx.capacity()
                         );
                     }
-                    let _ = peer
-                        .to_peer_tx
-                        .send(ToPeerMsg::Send(Message::KeepAlive))
-                        .await; // ignore in case of error: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors and the peer is still lingering in self.peers because the control message about the error is not yet been handled
-
-                    // todo: we block if channel is full, not good
-                    peer.last_sent = now;
+                    peer.send(ToPeerMsg::Send(Message::KeepAlive)).await;
                 }
             }
         }
@@ -598,10 +569,7 @@ impl TorrentManager {
                     && now.duration_since(peer.am_choking_since).unwrap() > MIN_CHOKE_TIME
                 {
                     peer.am_choking = false;
-                    let _ = peer
-                        .to_peer_tx
-                        .send(ToPeerMsg::Send(Message::Unchoke))
-                        .await;
+                    peer.send(ToPeerMsg::Send(Message::Unchoke)).await;
                 }
             }
         }
@@ -947,14 +915,11 @@ async fn file_requests(peer: &mut Peer, piece_idx: usize, mut incomplete_piece: 
                     peer.to_peer_tx.capacity()
                 );
             }
-            let _ = peer
-                .to_peer_tx
-                .send(ToPeerMsg::Send(Message::Request(
-                    request.0, request.1, request.2,
-                )))
-                .await; // ignore in case of error: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors and the peer is still lingering in self.peers because the control message about the error is not yet been handled
+            peer.send(ToPeerMsg::Send(Message::Request(
+                request.0, request.1, request.2,
+            )))
+            .await;
 
-            // todo: we block if channel is full, not good
             peer.outstanding_block_requests
                 .insert(request, SystemTime::now());
             incomplete_piece.add_fragment(begin, end);
