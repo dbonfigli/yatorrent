@@ -1,6 +1,7 @@
 use reqwest::ClientBuilder;
 
 use crate::bencoding::Value;
+use rand::seq::SliceRandom;
 use std::{error::Error, fmt, io::Read, str, time::Duration};
 
 #[derive(PartialEq, Debug, Clone)]
@@ -49,6 +50,7 @@ impl fmt::Display for Response {
     }
 }
 
+#[derive(PartialEq, Debug, Clone)]
 pub enum Event {
     None,
     Started,
@@ -76,21 +78,76 @@ pub struct TrackerClient {
     peer_id: String,
     pub tracker_id: Option<String>,
     listening_port: i32,
-    tracker_url: String,
+    trackers_url: Vec<Vec<String>>,
 }
 
 impl TrackerClient {
-    pub fn new(peer_id: String, tracker_url: String, listening_port: i32) -> Self {
+    pub fn new(peer_id: String, trackers_url: Vec<Vec<String>>, listening_port: i32) -> Self {
+        let mut randomized_tiers: Vec<Vec<String>> = Vec::new();
+        for tier in trackers_url {
+            let randomized_tier = tier
+                .choose_multiple(&mut rand::thread_rng(), tier.len())
+                .map(|e| e.clone())
+                .collect();
+            randomized_tiers.push(randomized_tier);
+        }
         TrackerClient {
             peer_id: peer_id,
             tracker_id: Option::None,
             listening_port,
-            tracker_url,
+            trackers_url: randomized_tiers,
         }
     }
 
     pub async fn request(
+        &mut self,
+        info_hash: [u8; 20],
+        uploaded: u64,
+        downloaded: u64,
+        left: u64,
+        event: Event,
+    ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+        let mut res = Err(Box::from("no trackers in list"));
+        for tier_idx in 0..self.trackers_url.len() {
+            for tracker_idx in 0..self.trackers_url[tier_idx].len() {
+                let url = self.trackers_url[tier_idx][tracker_idx].clone();
+                match self
+                    .request_to_tracker(
+                        url.clone(),
+                        info_hash,
+                        uploaded,
+                        downloaded,
+                        left,
+                        event.clone(),
+                    )
+                    .await
+                {
+                    Ok(Response::Failure(msg)) => {
+                        res = Ok(Response::Failure(msg.clone()));
+                        log::debug!("tracker {} responded with failure: {}", url.clone(), msg);
+                        log::debug!("will try next tracker if it exists...");
+                    }
+                    Ok(response) => {
+                        if tracker_idx != 0 {
+                            let good_tracker = self.trackers_url[tier_idx].remove(tracker_idx);
+                            self.trackers_url[tier_idx].insert(0, good_tracker);
+                        }
+                        return Ok(response);
+                    }
+                    Err(e) => {
+                        log::debug!("error from tracker {}: {}", url.clone(), e);
+                        log::debug!("will try next tracker if it exists...");
+                        res = Err(Box::from(e.to_string())); // e is not Send + sync
+                    }
+                }
+            }
+        }
+        return res;
+    }
+
+    pub async fn request_to_tracker(
         &self,
+        url: String,
         info_hash: [u8; 20],
         uploaded: u64,
         downloaded: u64,
@@ -98,7 +155,7 @@ impl TrackerClient {
         event: Event,
     ) -> Result<Response, Box<dyn Error>> {
         let mut url = reqwest::Url::parse_with_params(
-            self.tracker_url.as_str(),
+            url.as_str(),
             &[
                 ("peer_id", self.peer_id.clone()),
                 ("port", self.listening_port.to_string()),

@@ -6,7 +6,7 @@ use Result;
 
 #[derive(PartialEq, Debug)]
 pub struct Metainfo {
-    pub announce: String,
+    pub announce_list: Vec<Vec<String>>,
     pub piece_length: u64,     // number of bytes in each piece (integer)
     pub pieces: Vec<[u8; 20]>, // 20-byte SHA1 of each piece
     pub info_hash: [u8; 20], // 20-byte SHA1 hash of the value of the info key from the Metainfo file
@@ -55,8 +55,8 @@ impl fmt::Display for Metainfo {
             .join("\n");
         write!(
             f,
-            "announce: {}\npiece_lenght: {}\nn. pieces: {}\ninfo_hash: {}\nfiles:\n{}",
-            self.announce,
+            "announces: {:?}\npiece_lenght: {}\nn. pieces: {}\ninfo_hash: {}\nfiles:\n{}",
+            self.announce_list,
             self.piece_length,
             self.pieces.len(),
             pretty_info_hash(self.info_hash),
@@ -72,14 +72,59 @@ impl Metainfo {
             _ => return Err("The .torrent file is invalid: it does not contain a dict"),
         };
 
-        // announce
-        let announce_string = match torrent_map.get(&b"announce".to_vec()) {
-            Some(Value::Str(announce_vec)) => match str::from_utf8(&announce_vec) {
-                Ok(a) => a.to_string(),
-                _ => return Err("The .torrent file \"announce\" is not an UTF8 string"),
-            },
-            _ => return Err("The .torrent file does not contain a valid \"announce\""),
-        };
+        // announce / announce-list
+        let mut announces = Vec::new();
+
+        match torrent_map.get(&b"announce-list".to_vec()) {
+            None => {}
+            Some(Value::List(announce_list)) => {
+                for tier in announce_list {
+                    if let Value::List(announces_in_tier) = tier {
+                        let mut tier_list = Vec::new();
+                        for announce_url in announces_in_tier {
+                            if let Value::Str(announce_vec) = announce_url {
+                                if let Ok(a) = str::from_utf8(&announce_vec) {
+                                    tier_list.push(a.to_string());
+                                } else {
+                                    return Err("The .torrent file \"announce-list\" has an element in a tier list that is not an UTF-8 string");
+                                }
+                            } else {
+                                return Err(
+                                        "The .torrent file \"announce-list\" has an element in a tier list that is not a string",
+                                    );
+                            }
+                        }
+                        if tier_list.len() == 0 {
+                            return Err(
+                                "The .torrent file \"announce-list\" has a tier list without elements",
+                            );
+                        }
+                        announces.push(tier_list);
+                    } else {
+                        return Err(
+                            "The .torrent file \"announce-list\" does not contain a list of lists",
+                        );
+                    }
+                }
+            }
+            Some(_) => {
+                return Err("The .torrent file has a \"announce-list\" field but it does not contain a list");
+            }
+        }
+        if announces.len() == 0 {
+            match torrent_map.get(&b"announce".to_vec()) {
+                Some(Value::Str(announce_vec)) => match str::from_utf8(&announce_vec) {
+                    Ok(a) => announces.push(vec![a.to_string()]),
+                    _ => return Err("The .torrent file \"announce\" is not an UTF8 string"),
+                },
+                _ => {}
+            };
+        }
+        if announces.len() == 0 {
+            return Err(
+                "The .torrent file does not contain a valid \"announce\" or \"announce-list\"",
+            );
+        }
 
         // info dict
         let (info_dict, info_hash) = match torrent_map.get(&b"info".to_vec()) {
@@ -188,7 +233,7 @@ impl Metainfo {
         }
 
         Ok(Metainfo {
-            announce: announce_string,
+            announce_list: announces,
             piece_length: *piece_length_i64_value as u64,
             pieces: pieces_vec,
             info_hash: info_hash,

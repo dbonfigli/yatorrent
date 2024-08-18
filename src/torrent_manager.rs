@@ -116,7 +116,7 @@ impl TorrentManager {
             ),
             tracker_client: TrackerClient::new(
                 own_peer_id.clone(),
-                metainfo.announce,
+                metainfo.announce_list,
                 listening_port,
             ),
             tracker_id: Arc::new(Mutex::new(Option::None)),
@@ -737,7 +737,7 @@ async fn tracker_request(
     info_hash: [u8; 20],
     uploaded_bytes: u64,
     downloaded_bytes: u64,
-    tracker_client: TrackerClient,
+    mut tracker_client: TrackerClient,
     advertised_peers: Arc<Mutex<HashMap<PeerAddr, (tracker::Peer, SystemTime)>>>,
     tracker_request_interval: Arc<Mutex<Duration>>,
     last_tracker_request_time: Arc<Mutex<SystemTime>>,

@@ -17,6 +17,7 @@ log levels are defined via the `RUST_LOG` environment variable (`trace`, `debug`
 
 
 Things yet to be implemented / todos:
+* [UDP Tracker Protocol for BitTorrent](http://bittorrent.org/beps/bep_0015.html) ([alternative spec](https://xbtt.sourceforge.net/udp_tracker_protocol.html))
 * optionally limit upload/download speed
 * do not over-request blocks
 * better choking algorithm
@@ -28,7 +29,4 @@ Things yet to be implemented / todos:
 * avoid re-requesting blocks after receiving choke message for awhile - requested blocks could still come
 * better command line args
 * text-based UI / ncourses
-
-and more torrent features:
-* [UDP Tracker Protocol for BitTorrent](http://bittorrent.org/beps/bep_0015.html)
 * [DHT Protocol](http://bittorrent.org/beps/bep_0005.html)
