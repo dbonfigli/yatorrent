@@ -24,7 +24,7 @@ extern crate assert_matches;
 async fn main() -> Result<(), Box<dyn Error>> {
     // init logging
     env_logger::init_from_env(
-        env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "debug"),
+        env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "info"),
     );
 
     // get command parameters
