@@ -2,7 +2,13 @@ use reqwest::ClientBuilder;
 
 use crate::bencoding::Value;
 use rand::seq::SliceRandom;
-use std::{error::Error, fmt, io::Read, str, time::Duration};
+use std::{
+    error::Error,
+    fmt,
+    io::Read,
+    str,
+    time::{Duration, SystemTime},
+};
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct Peer {
@@ -79,6 +85,8 @@ pub struct TrackerClient {
     pub tracker_id: Option<String>,
     listening_port: i32,
     pub trackers_url: Vec<Vec<String>>,
+    pub tracker_request_interval: Duration,
+    pub last_tracker_request_time: SystemTime,
 }
 
 impl TrackerClient {
@@ -96,19 +104,20 @@ impl TrackerClient {
             tracker_id: Option::None,
             listening_port,
             trackers_url: randomized_tiers,
+            tracker_request_interval: Duration::from_secs(0),
+            last_tracker_request_time: SystemTime::UNIX_EPOCH,
         }
     }
 
     pub async fn request(
-        &self,
+        &mut self,
         info_hash: [u8; 20],
         uploaded: u64,
         downloaded: u64,
         left: u64,
         event: Event,
-    ) -> Result<(Response, Vec<Vec<String>>), Box<dyn Error + Send + Sync>> {
+    ) -> Result<Response, Box<dyn Error + Send + Sync>> {
         let mut res = Err(Box::from("no trackers in list"));
-        let mut reordered_trackers_url = self.trackers_url.clone();
         for tier_idx in 0..self.trackers_url.len() {
             for tracker_idx in 0..self.trackers_url[tier_idx].len() {
                 let url = self.trackers_url[tier_idx][tracker_idx].clone();
@@ -124,19 +133,28 @@ impl TrackerClient {
                     .await
                 {
                     Ok(Response::Failure(msg)) => {
-                        res = Ok((
-                            Response::Failure(msg.clone()),
-                            reordered_trackers_url.clone(),
-                        ));
+                        res = Ok(Response::Failure(msg.clone()));
                         log::debug!("tracker {} responded with failure: {}", url.clone(), msg);
                         log::debug!("will try next tracker if it exists...");
                     }
-                    Ok(response) => {
-                        if tracker_idx != 0 {
-                            let good_tracker = reordered_trackers_url[tier_idx].remove(tracker_idx);
-                            reordered_trackers_url[tier_idx].insert(0, good_tracker);
+                    Ok(Response::Ok(response)) => {
+                        // update tracker id
+                        if let None = self.tracker_id {
+                            if let Some(id) = response.tracker_id.clone() {
+                                self.tracker_id = Some(id);
+                            }
                         }
-                        return Ok((response, reordered_trackers_url));
+                        // update order of trackers with the good one first
+                        if tracker_idx != 0 {
+                            let good_tracker = self.trackers_url[tier_idx].remove(tracker_idx);
+                            self.trackers_url[tier_idx].insert(0, good_tracker);
+                        }
+                        // update tracker request interval
+                        self.tracker_request_interval =
+                            Duration::from_secs(response.interval as u64);
+                        // keep track of latest request time
+                        self.last_tracker_request_time = SystemTime::now();
+                        return Ok(Response::Ok(response));
                     }
                     Err(e) => {
                         log::debug!("error from tracker {}: {}", url.clone(), e);
