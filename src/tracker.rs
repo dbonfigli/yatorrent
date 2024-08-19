@@ -1,4 +1,6 @@
+use rand::{thread_rng, Rng};
 use reqwest::ClientBuilder;
+use tokio::{net::UdpSocket, time::timeout};
 
 use crate::bencoding::Value;
 use rand::seq::SliceRandom;
@@ -9,6 +11,8 @@ use std::{
     str,
     time::{Duration, SystemTime},
 };
+
+static UDP_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct Peer {
@@ -176,6 +180,28 @@ impl TrackerClient {
         left: u64,
         event: Event,
     ) -> Result<Response, Box<dyn Error>> {
+        if url.starts_with("http") {
+            return self
+                .request_to_http_tracker(url, info_hash, uploaded, downloaded, left, event)
+                .await;
+        } else if url.starts_with("udp") {
+            return self
+                .request_to_udp_tracker(url, info_hash, uploaded, downloaded, left, event)
+                .await;
+        } else {
+            return Err(Box::from(format!("scheme of url not supported: {}", url)));
+        }
+    }
+
+    pub async fn request_to_http_tracker(
+        &self,
+        url: String,
+        info_hash: [u8; 20],
+        uploaded: u64,
+        downloaded: u64,
+        left: u64,
+        event: Event,
+    ) -> Result<Response, Box<dyn Error>> {
         let mut url = reqwest::Url::parse_with_params(
             url.as_str(),
             &[
@@ -294,6 +320,200 @@ impl TrackerClient {
             incomplete: incomplete,
             peers: peers,
         }))
+    }
+
+    pub async fn request_to_udp_tracker(
+        &self,
+        url: String,
+        info_hash: [u8; 20],
+        uploaded: u64,
+        downloaded: u64,
+        left: u64,
+        event: Event,
+    ) -> Result<Response, Box<dyn Error>> {
+        let url = reqwest::Url::parse(&url)?;
+        let host = match url.host() {
+            Some(h) => h,
+            None => {
+                return Err(Box::from(format!(
+                    "udp tracker url did not contain host: {}",
+                    url
+                )));
+            }
+        };
+        let port = match url.port() {
+            Some(p) => p,
+            None => {
+                return Err(Box::from(format!(
+                    "udp tracker url did not contain port: {}",
+                    url
+                )));
+            }
+        };
+
+        let dest_addr = format!("{}:{}", host, port);
+        let socket = UdpSocket::bind("0.0.0.0:0").await?;
+        if let Err(e) = socket.connect(dest_addr).await {
+            return Err(Box::from(e));
+        }
+
+        // send connect
+        let transaction_id: u32 = thread_rng().gen::<u32>();
+        let mut send_connect_buf = [0u8; 16];
+        send_connect_buf[0..8].copy_from_slice(&(0x41727101980u64.to_be_bytes()));
+        send_connect_buf[8..12].copy_from_slice(&(0u32.to_be_bytes()));
+        send_connect_buf[12..16].copy_from_slice(&(transaction_id.to_be_bytes()));
+        if let Err(e) = socket.send(&send_connect_buf).await {
+            return Err(Box::from(e));
+        }
+
+        // receive connect response
+        let mut recv_connect_buf = [0u8; 16];
+        match timeout(UDP_TIMEOUT, socket.recv(&mut recv_connect_buf)).await {
+            Err(_elapsed) => {
+                return Err(Box::from(
+                    "timed out receiving connect response from udp tracker",
+                ));
+            }
+            Ok(Err(e)) => {
+                return Err(Box::from(e));
+            }
+            Ok(Ok(bytes_recv)) => {
+                if bytes_recv != recv_connect_buf.len() {
+                    return Err(Box::from(
+                        "received less than 16 bytes on recv connect from udp tracker",
+                    ));
+                }
+            }
+        }
+
+        let mut action_buf = [0u8; 4];
+        action_buf.copy_from_slice(&recv_connect_buf[0..4]);
+        let action = u32::from_be_bytes(action_buf);
+        if action != 0 {
+            return Err(Box::from(format!(
+                "got connect response from udp tracker but received action was not 0 (i.e.: connect): {}",
+                action
+            )));
+        }
+
+        let mut transaction_id_buf = [0u8; 4];
+        transaction_id_buf.copy_from_slice(&recv_connect_buf[4..8]);
+        let recv_transaction_id = u32::from_be_bytes(transaction_id_buf);
+        if recv_transaction_id != transaction_id {
+            return Err(Box::from(format!("got connect response from udp tracker but received transaction_id {} was different from the request ({})", recv_transaction_id, transaction_id )));
+        }
+
+        let mut connection_id_buf = [0u8; 8];
+        connection_id_buf.copy_from_slice(&recv_connect_buf[8..16]);
+        let connection_id = u64::from_be_bytes(connection_id_buf);
+
+        // send announce
+        let mut announce_buf = [0u8; 98];
+        announce_buf[0..8].copy_from_slice(&connection_id.to_be_bytes());
+        announce_buf[8..12].copy_from_slice(&(1u32).to_be_bytes()); // action: announce
+        let transaction_id: u32 = thread_rng().gen::<u32>();
+        announce_buf[12..16].copy_from_slice(&transaction_id.to_be_bytes());
+        announce_buf[16..36].copy_from_slice(&info_hash);
+        announce_buf[36..56].copy_from_slice(self.peer_id.as_bytes());
+        announce_buf[56..64].copy_from_slice(&downloaded.to_be_bytes());
+        announce_buf[64..72].copy_from_slice(&left.to_be_bytes());
+        announce_buf[72..80].copy_from_slice(&uploaded.to_be_bytes());
+        let event_id: u32 = match event {
+            Event::None => 0,
+            Event::Completed => 1,
+            Event::Started => 2,
+            Event::Stopped => 3,
+        };
+        announce_buf[80..84].copy_from_slice(&event_id.to_be_bytes());
+        announce_buf[92..96].copy_from_slice(&(-1i32).to_be_bytes());
+        announce_buf[96..98].copy_from_slice(&port.to_be_bytes());
+        if let Err(e) = socket.send(&announce_buf).await {
+            return Err(Box::from(e));
+        }
+
+        // receive announce response
+        let mut recv_announce_buf = [0u8; 65535]; // max udp datagram size
+        match timeout(UDP_TIMEOUT, socket.recv(&mut recv_announce_buf)).await {
+            Err(_elapsed) => {
+                return Err(Box::from(
+                    "timed out receiving announce response from udp tracker",
+                ));
+            }
+            Ok(Err(e)) => {
+                return Err(Box::from(e));
+            }
+            Ok(Ok(bytes_recv)) => {
+                if bytes_recv < 16 {
+                    return Err(Box::from(
+                        "received less than 16 bytes on recv announce from udp tracker",
+                    ));
+                }
+
+                let mut action_buf = [0u8; 4];
+                action_buf.copy_from_slice(&recv_announce_buf[0..4]);
+                let action = u32::from_be_bytes(action_buf);
+                if action != 1 {
+                    return Err(Box::from(format!(
+                        "got announce response from udp tracker but received action was not 1 (i.e.: announce): {}",
+                        action
+                    )));
+                }
+
+                let mut transaction_id_buf = [0u8; 4];
+                transaction_id_buf.copy_from_slice(&recv_announce_buf[4..8]);
+                let recv_transaction_id = u32::from_be_bytes(transaction_id_buf);
+                if recv_transaction_id != transaction_id {
+                    return Err(Box::from(format!("got announce response from udp tracker but received transaction_id {} was different from the request ({})", recv_transaction_id, transaction_id )));
+                }
+
+                let mut interval_buf = [0u8; 4];
+                interval_buf.copy_from_slice(&recv_announce_buf[8..12]);
+                let interval = u32::from_be_bytes(interval_buf);
+
+                let mut leechers_buf = [0u8; 4];
+                leechers_buf.copy_from_slice(&recv_announce_buf[12..16]);
+                let leechers = u32::from_be_bytes(leechers_buf);
+
+                let mut seeders_buf = [0u8; 4];
+                seeders_buf.copy_from_slice(&recv_announce_buf[16..20]);
+                let seeders = u32::from_be_bytes(seeders_buf);
+
+                let mut peers = Vec::new();
+                let address_len = 4; // todo check if we are using ipv6
+                if (bytes_recv - 20) % 6 != 0 {
+                    return Err(Box::from(format!("gor announce response but size is not valid: addresses field is not divisible by 6: {}", bytes_recv - 20)));
+                }
+                for i in (20..bytes_recv).step_by(address_len + 2) {
+                    let mut address_buf = [0u8; 4];
+                    address_buf.copy_from_slice(&recv_announce_buf[i..i + 4]);
+                    let ip = [
+                        (address_buf[0]).to_string(),
+                        (address_buf[1]).to_string(),
+                        (address_buf[2]).to_string(),
+                        address_buf[3].to_string(),
+                    ]
+                    .join(".");
+                    let peer_port_bytes = &recv_announce_buf[i + 4..i + 6];
+                    let port = peer_port_bytes[0] as u32 * 256 + peer_port_bytes[1] as u32;
+                    peers.push(Peer {
+                        peer_id: Option::None,
+                        ip,
+                        port,
+                    });
+                }
+
+                return Ok(Response::Ok(OkResponse {
+                    warning_message: None,
+                    interval: interval as i64,
+                    min_interval: None,
+                    tracker_id: None,
+                    complete: seeders as i64,
+                    incomplete: leechers as i64,
+                    peers,
+                }));
+            }
+        }
     }
 }
 
