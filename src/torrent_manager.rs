@@ -30,7 +30,7 @@ static BLOCK_SIZE_B: u64 = 16384;
 static TO_PEER_CHANNEL_CAPACITY: usize = 2000;
 static TO_PEER_CANCEL_CHANNEL_CAPACITY: usize = 1000;
 static TO_MANAGER_CHANNEL_CAPACITY: usize = 50000;
-static REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
+static REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 static MIN_CHOKE_TIME: Duration = Duration::from_secs(60);
 static MIN_UNCHOKED_TO_TRY_DISCOVERING_NEW_PEERS: i32 = 3;
 static NEW_CONNECTION_COOL_OFF_PERIOD: Duration = Duration::from_secs(180);
@@ -45,7 +45,7 @@ pub struct Peer {
     to_peer_tx: Sender<ToPeerMsg>,
     last_sent: SystemTime,
     to_peer_cancel_tx: Sender<ToPeerCancelMsg>,
-    outstanding_block_requests: HashMap<(u32, u32, u32), SystemTime>,
+    outstanding_block_requests: HashMap<(u32, u32, u32), SystemTime>, // (piece idx, block begin, data len) -> request time
     requested_pieces: HashMap<usize, Piece>, // piece idx -> piece status with all the requested fragments
 }
 
@@ -527,11 +527,13 @@ impl TorrentManager {
         let now = SystemTime::now();
         for (peer_addr, peer) in self.peers.iter_mut() {
             peer.outstanding_block_requests
-                .retain(|req, req_time| {
+                .retain(|(piece_idx, block_begin, data_len), req_time| {
                     if now.duration_since(*req_time).unwrap() < REQUEST_TIMEOUT {
                         return true;
                     } else {
-                        log::debug!("removed stale request to peer: {}: (piece idx: {}, block begin: {}, lenght: {})", peer_addr, req.0, req.1, req.2);
+                        log::debug!("removed stale request to peer: {}: (piece idx: {}, block begin: {}, lenght: {})", peer_addr, piece_idx, block_begin, data_len);
+                        peer.requested_pieces.remove(&(*piece_idx as usize));
+                        self.outstanding_piece_assigments.remove(&(*piece_idx as usize));
                         return false;
                     }
                 })
