@@ -11,7 +11,7 @@ $ cargo build --release
 ```
 and run with:
 ```
-$ yatorrent <torrent file location> <destination directory where to donwload files (optional, will use current dir if not provided)> <port where to listen incoming connections (optional: default 8000)>
+$ yatorrent <torrent file location> <destination directory where to donwload files (optional, will use current dir if not provided)> <port where to listen for incoming connections (optional: default 8000)>
 ```
 log levels are defined via the `RUST_LOG` environment variable (`trace`, `debug`, `info` (default), `warn`, `error`).
 
