@@ -590,20 +590,22 @@ impl TorrentManager {
         let tracker_client = tracker_client_mg.clone();
         drop(tracker_client_mg);
         match tracker_request(
+            tracker_client,
             event,
             self.file_manager.bytes_left(),
             self.info_hash,
             self.uploaded_bytes,
             self.downloaded_bytes,
-            tracker_client,
-            self.advertised_peers.clone(),
         )
         .await
         {
-            Ok(returned_tracker_client) => {
-                let mut tracker_client_mg = self.tracker_client.lock().unwrap();
-                *tracker_client_mg = returned_tracker_client;
-                drop(tracker_client_mg);
+            Ok((updated_tracker_client, latest_advertised_peers)) => {
+                update_tracker_client_and_advertised_peers(
+                    self.tracker_client.clone(),
+                    self.advertised_peers.clone(),
+                    updated_tracker_client,
+                    latest_advertised_peers,
+                );
                 Ok(())
             }
             Err(e) => Err(e),
@@ -626,20 +628,22 @@ impl TorrentManager {
         drop(tracker_client_mg);
         let tracker_client_arc = self.tracker_client.clone();
         tokio::spawn(async move {
-            if let Ok(returned_tracker_client) = tracker_request(
+            if let Ok((updated_tracker_client, latest_advertised_peers)) = tracker_request(
+                tracker_client,
                 event,
                 bytes_left,
                 info_hash,
                 uploaded_bytes,
                 downloaded_bytes,
-                tracker_client,
-                advertised_peers,
             )
             .await
             {
-                let mut tracker_client_mg = tracker_client_arc.lock().unwrap();
-                *tracker_client_mg = returned_tracker_client;
-                drop(tracker_client_mg);
+                update_tracker_client_and_advertised_peers(
+                    tracker_client_arc,
+                    advertised_peers,
+                    updated_tracker_client,
+                    latest_advertised_peers,
+                );
             }
         });
     }
@@ -741,14 +745,13 @@ fn generate_peer_id() -> String {
 }
 
 async fn tracker_request(
+    mut tracker_client: TrackerClient,
     event: Event,
     bytes_left: u64,
     info_hash: [u8; 20],
     uploaded_bytes: u64,
     downloaded_bytes: u64,
-    mut tracker_client: TrackerClient,
-    advertised_peers: Arc<Mutex<HashMap<PeerAddr, (tracker::Peer, SystemTime)>>>,
-) -> Result<TrackerClient, Box<dyn Error + Sync + Send>> {
+) -> Result<(TrackerClient, Vec<tracker::Peer>), Box<dyn Error + Sync + Send>> {
     match tracker_client
         .request(
             info_hash,
@@ -776,18 +779,28 @@ async fn tracker_request(
                 ok_response
             );
 
-            let mut advertised_peers = advertised_peers.lock().unwrap();
-            ok_response.peers.iter().for_each(|p| {
-                advertised_peers.insert(
-                    format!("{}:{}", p.ip, p.port),
-                    (p.clone(), SystemTime::UNIX_EPOCH),
-                );
-            });
-            drop(advertised_peers);
-
-            Ok(tracker_client)
+            Ok((tracker_client, ok_response.peers))
         }
     }
+}
+
+fn update_tracker_client_and_advertised_peers(
+    tracker_client: Arc<Mutex<TrackerClient>>,
+    advertised_peers: Arc<Mutex<HashMap<PeerAddr, (tracker::Peer, SystemTime)>>>,
+    updated_tracker_client: TrackerClient,
+    latest_advertised_peers: Vec<tracker::Peer>,
+) {
+    let mut tracker_client_mg = tracker_client.lock().unwrap();
+    *tracker_client_mg = updated_tracker_client;
+    drop(tracker_client_mg);
+    let mut advertised_peers = advertised_peers.lock().unwrap();
+    latest_advertised_peers.iter().for_each(|p| {
+        advertised_peers.insert(
+            format!("{}:{}", p.ip, p.port),
+            (p.clone(), SystemTime::UNIX_EPOCH),
+        );
+    });
+    drop(advertised_peers);
 }
 
 fn should_choke(to_manager_channel_pending_msgs: usize) -> bool {
