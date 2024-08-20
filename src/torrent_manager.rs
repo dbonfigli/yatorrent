@@ -357,8 +357,10 @@ impl TorrentManager {
                                 self.outstanding_piece_assigments
                                     .remove(&(piece_idx as usize));
 
-                                if self.file_manager.completed() {
-                                    let _ = self.tracker_request(Event::Completed).await;
+                                if !self.completed_sent_to_tracker && self.file_manager.completed()
+                                {
+                                    self.completed_sent_to_tracker = true;
+                                    self.tracker_request_async(Event::Completed).await;
                                 }
 
                                 let _ = piece_completion_status_tx
@@ -497,7 +499,7 @@ impl TorrentManager {
                     && unchoked < MIN_UNCHOKED_TO_TRY_DISCOVERING_NEW_PEERS
                     && !self.file_manager.completed())
             {
-                self.tracker_request_async().await;
+                self.tracker_request_async(Event::None).await;
             }
         }
 
@@ -614,12 +616,7 @@ impl TorrentManager {
         }
     }
 
-    async fn tracker_request_async(&mut self) {
-        let mut event = Event::None;
-        if !self.completed_sent_to_tracker && self.file_manager.completed() {
-            self.completed_sent_to_tracker = true;
-            event = Event::Completed
-        }
+    async fn tracker_request_async(&mut self, event: Event) {
         let bytes_left = self.file_manager.bytes_left();
         let info_hash = self.info_hash;
         let uploaded_bytes = self.uploaded_bytes;
