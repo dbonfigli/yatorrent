@@ -189,6 +189,7 @@ impl TrackerClient {
                 .request_to_udp_tracker(url, info_hash, uploaded, downloaded, left, event)
                 .await;
         } else {
+            // some torrents are announcing webtorrent websockets with scheme wss://
             return Err(Box::from(format!("scheme of url not supported: {}", url)));
         }
     }
