@@ -7,6 +7,8 @@ use Result;
 #[derive(PartialEq, Debug)]
 pub struct Metainfo {
     pub announce_list: Vec<Vec<String>>,
+    pub url_list: Vec<String>,
+    pub nodes: Vec<String>,
     pub piece_length: u64,     // number of bytes in each piece (integer)
     pub pieces: Vec<[u8; 20]>, // 20-byte SHA1 of each piece
     pub info_hash: [u8; 20], // 20-byte SHA1 hash of the value of the info key from the Metainfo file
@@ -55,8 +57,10 @@ impl fmt::Display for Metainfo {
             .join("\n");
         write!(
             f,
-            "announces: {:?}\npiece_lenght: {}\nn. pieces: {}\ninfo_hash: {}\nfiles:\n{}",
+            "announces: {:?}\nurl-list: {:?}\nnodes:{:?}\npiece_lenght: {}\nn. pieces: {}\ninfo_hash: {}\nfiles:\n{}",
             self.announce_list,
+            self.url_list,
+            self.nodes,
             self.piece_length,
             self.pieces.len(),
             pretty_info_hash(self.info_hash),
@@ -116,6 +120,20 @@ impl Metainfo {
             }
         }
 
+        if announces.len() == 0 {
+            match torrent_map.get(&b"announce".to_vec()) {
+                Some(Value::Str(announce_vec)) => match str::from_utf8(&announce_vec) {
+                    Ok(a) => announces.push(vec![a.to_string()]),
+                    _ => {
+                        return Err(Box::from(
+                            "The .torrent file \"announce\" is not an UTF8 string",
+                        ))
+                    }
+                },
+                _ => {}
+            };
+        }
+
         let mut url_list = Vec::new();
         match torrent_map.get(&b"url-list".to_vec()) {
             None => {}
@@ -141,27 +159,48 @@ impl Metainfo {
             }
         }
 
-        if announces.len() == 0 {
-            match torrent_map.get(&b"announce".to_vec()) {
-                Some(Value::Str(announce_vec)) => match str::from_utf8(&announce_vec) {
-                    Ok(a) => announces.push(vec![a.to_string()]),
-                    _ => {
+        let mut node_list = Vec::new();
+        match torrent_map.get(&b"nodes".to_vec()) {
+            None => {}
+            Some(Value::List(l)) => {
+                for node_host_port_list_value in l {
+                    if let Value::List(node_host_port_list) = node_host_port_list_value {
+                        if node_host_port_list.len() != 2 {
+                            return Err(Box::from(
+                                "The .torrent file \"nodes\" has an element that is a list of size other than 2",
+                            ));
+                        }
+                        let node_host;
+                        if let Value::Str(node_host_vec) = node_host_port_list[0].clone() {
+                            if let Ok(host) = str::from_utf8(&node_host_vec) {
+                                node_host = host.to_string();
+                            } else {
+                                return Err(Box::from("The .torrent file \"nodes\" has a host that is not an UTF-8 string"));
+                            }
+                        } else {
+                            return Err(Box::from(
+                                "The .torrent file \"nodes\" has a host that is not a string",
+                            ));
+                        }
+                        let node_port;
+                        if let Value::Int(node_port_int) = node_host_port_list[1].clone() {
+                            node_port = node_port_int;
+                        } else {
+                            return Err(Box::from(
+                                "The .torrent file \"nodes\" has a port that is not a number",
+                            ));
+                        }
+                        node_list.push(format!("{}:{}", node_host, node_port));
+                    } else {
                         return Err(Box::from(
-                            "The .torrent file \"announce\" is not an UTF8 string",
-                        ))
+                            "The .torrent file \"nodes\" has an element that is not a list",
+                        ));
                     }
-                },
-                _ => {}
-            };
-        }
-        if announces.len() == 0 {
-            if url_list.len() > 0 {
-                return Err(Box::from(format!(
-                    "The .torrent file does not contain a valid \"announce\" or \"announce-list\" but it contain a url-list field, this means the torrent is meant to be dowloaded via HTTP/FTP (http://www.bittorrent.org/beps/bep_0019.html), this is not supported by this client, use a browser instead. url-list was: {:?}", url_list)
-                ));
-            } else {
+                }
+            }
+            Some(_) => {
                 return Err(Box::from(
-                    "The .torrent file does not contain a valid \"announce\" or \"announce-list\"",
+                    "The .torrent file has a \"nodes\" field but it does not contain a list",
                 ));
             }
         }
@@ -298,6 +337,8 @@ impl Metainfo {
 
         Ok(Metainfo {
             announce_list: announces,
+            url_list: url_list,
+            nodes: node_list,
             piece_length: *piece_length_i64_value as u64,
             pieces: pieces_vec,
             info_hash: info_hash,

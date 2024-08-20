@@ -3,7 +3,7 @@ use std::str;
 
 type IndexOfError = usize;
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum ErrorElem {
     Unknown,
     Str,
@@ -12,13 +12,13 @@ pub enum ErrorElem {
     Dict,
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub struct ParseError {
     pub elem: ErrorElem,
     pub index: IndexOfError,
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum Value {
     Error(ParseError),
     Str(Vec<u8>),
