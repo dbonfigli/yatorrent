@@ -121,7 +121,7 @@ impl TrackerClient {
         left: u64,
         event: Event,
     ) -> Result<Response, Box<dyn Error + Send + Sync>> {
-        let mut res = Err(Box::from("no trackers in list"));
+        let mut error_message = Vec::new();
         for tier_idx in 0..self.trackers_url.len() {
             for tracker_idx in 0..self.trackers_url[tier_idx].len() {
                 let url = self.trackers_url[tier_idx][tracker_idx].clone();
@@ -137,7 +137,11 @@ impl TrackerClient {
                     .await
                 {
                     Ok(Response::Failure(msg)) => {
-                        res = Ok(Response::Failure(msg.clone()));
+                        error_message.push(format!(
+                            "tracker {} errored: \"{}\"",
+                            url.clone(),
+                            msg.clone()
+                        ));
                         log::debug!("tracker {} responded with failure: {}", url.clone(), msg);
                         log::debug!("will try next tracker if it exists...");
                     }
@@ -163,12 +167,15 @@ impl TrackerClient {
                     Err(e) => {
                         log::debug!("error from tracker {}: {}", url.clone(), e);
                         log::debug!("will try next tracker if it exists...");
-                        res = Err(Box::from(e.to_string())); // e is not Send + sync
+                        error_message.push(format!("tracker {} errored: \"{}\"", url.clone(), e));
                     }
                 }
             }
         }
-        return res;
+        if error_message.len() == 0 {
+            error_message.push("no trackers in list".to_string());
+        }
+        return Err(Box::from(error_message.join("; ")));
     }
 
     pub async fn request_to_tracker(
