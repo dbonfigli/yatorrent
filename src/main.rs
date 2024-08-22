@@ -1,8 +1,9 @@
+use clap::Parser;
 use std::env::current_dir;
 use std::error::Error;
 use std::path::Path;
 use std::process::exit;
-use std::{env, fs};
+use std::{fmt, fs};
 
 use torrent_manager::TorrentManager;
 
@@ -20,33 +21,59 @@ mod wire_protocol;
 #[macro_use]
 extern crate assert_matches;
 
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// Path to the .torrent file
+    #[arg(short, long, env)]
+    torrent_file: String,
+
+    /// Optional base path where files are stored (directory will be created if it does not exist)
+    #[arg(short, long, env, default_value_t = current_dir().unwrap().to_str().expect("current path must be an utf8 string").to_string())]
+    base_path: String,
+
+    /// Optional listening port
+    #[arg(short, long, env, default_value_t = 8000)]
+    port: i32,
+
+    /// Optional log level
+    #[arg(short, long, env, default_value_t = LogLevels::Info)]
+    log_level: LogLevels,
+}
+
+#[derive(clap::ValueEnum, Debug, Clone)]
+enum LogLevels {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl fmt::Display for LogLevels {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", format!("{:?}", self).to_lowercase())
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let args = Args::parse();
+    let base_path = Path::new(&args.base_path);
+
     // init logging
     env_logger::init_from_env(
-        env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "info"),
+        env_logger::Env::default().filter_or("LOG_LEVEL", args.log_level.to_string()),
     );
 
-    // get command parameters
-    let args: Vec<_> = env::args().collect();
-    if args.len() < 2 {
-        println!("Must include the name of a .torrent file as first argument\nsecond argument is optional and is the base path where the files will be downloaded\n third argument is optional and is the listening port (default: 8000)");
-        exit(1);
-    }
-    let torrent_file = args.get(1).unwrap();
-    let current_path = current_dir().unwrap();
-    let base_path = match args.get(2) {
-        Some(p) => Path::new(p),
-        None => current_path.as_path(),
+    // read torrent file and start manager
+    let contents = match fs::read(args.torrent_file.clone()) {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("could not read .torrent file {}: {}", args.torrent_file, e);
+            exit(1);
+        }
     };
-    let port = match args.get(3) {
-        Some(p) => p
-            .parse::<i32>()
-            .expect("could not convert port argument to integer"),
-        None => 8000,
-    };
-
-    let contents = fs::read(torrent_file).unwrap();
     let torrent_content = bencoding::Value::new(&contents);
     let metainfo = metainfo::Metainfo::new(&torrent_content, &contents);
     match metainfo {
@@ -62,7 +89,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
                 exit(1);
             }
-            TorrentManager::new(base_path, port, m).start().await;
+            TorrentManager::new(base_path, args.port, m).start().await;
             exit(0);
         }
         Err(e) => {

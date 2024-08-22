@@ -11,10 +11,21 @@ $ cargo build --release
 ```
 and run with:
 ```
-$ yatorrent <torrent file location> <destination directory where to donwload files (optional, will use current dir if not provided)> <port where to listen for incoming connections (optional: default 8000)>
+$ yatorrent -t <path to torrent file>
 ```
-log levels are defined via the `RUST_LOG` environment variable (`trace`, `debug`, `info` (default), `warn`, `error`).
 
+All command line arguments (show them with the `--help`), also definible via environment variables:
+```
+Usage: yatorrent [OPTIONS] --torrent-file <TORRENT_FILE>
+
+Options:
+  -t, --torrent-file <TORRENT_FILE>  Path to the .torrent file [env: TORRENT_FILE=]
+  -b, --base-path <BASE_PATH>        Optional base path where files are downloaded (directory will be created if it does not exist) [env: BASE_PATH=] [default: <current directory>]
+  -p, --port <PORT>                  Optional listening port [env: PORT=] [default: 8000]
+  -l, --log-level <LOG_LEVEL>        Optional log level [env: LOG_LEVEL=] [default: info] [possible values: trace, debug, info, warn, error]
+  -h, --help                         Print help
+  -V, --version                      Print version
+```
 
 Things yet to be implemented / todos:
 * optionally limit upload/download speed
@@ -26,7 +37,6 @@ Things yet to be implemented / todos:
 * better algorithm to exlude bad peers for new connections
 * remove not interested peers if we are also not interested
 * avoid re-requesting blocks after receiving choke message for awhile - requested blocks could still come
-* better command line args
 * text-based UI / ncourses
 * [DHT Protocol](http://bittorrent.org/beps/bep_0005.html)
 * [uTorrent transport protocol](http://bittorrent.org/beps/bep_0029.html)

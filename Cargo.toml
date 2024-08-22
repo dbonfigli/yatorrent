@@ -2,6 +2,7 @@
 name = "yatorrent"
 version = "0.1.0"
 edition = "2021"
+description = "Yet Another Torrent Client"
 
 [dependencies]
 parse-display = "0.9.1"
@@ -14,3 +15,4 @@ log = "0.4"
 env_logger = "0.11.5"
 size = "0.4.1"
 trait-variant = "0.1.2"
+clap = { version = "4.5.16", features = ["derive", "env"] }
