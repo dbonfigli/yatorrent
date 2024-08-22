@@ -88,7 +88,7 @@ pub struct TorrentManager {
     tracker_client: Arc<Mutex<TrackerClient>>,
     info_hash: [u8; 20],
     own_peer_id: String,
-    listening_port: i32,
+    listening_port: u16,
     peers: HashMap<PeerAddr, Peer>,
     advertised_peers: Arc<Mutex<HashMap<PeerAddr, (tracker::Peer, SystemTime)>>>, // peer addr -> (peer, last connection attempt)
     bad_peers: HashSet<PeerAddr>,
@@ -102,7 +102,7 @@ pub struct TorrentManager {
 }
 
 impl TorrentManager {
-    pub fn new(base_path: &Path, listening_port: i32, metainfo: Metainfo) -> Self {
+    pub fn new(base_path: &Path, listening_port: u16, metainfo: Metainfo) -> Self {
         let own_peer_id = generate_peer_id();
         TorrentManager {
             file_manager: FileManager::new(

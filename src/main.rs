@@ -34,7 +34,8 @@ struct Args {
 
     /// Optional listening port
     #[arg(short, long, env, default_value_t = 8000)]
-    port: i32,
+    port: u16,
+
 
     /// Optional log level
     #[arg(short, long, env, default_value_t = LogLevels::Info)]

@@ -87,14 +87,14 @@ const COMPACT: i32 = 1;
 pub struct TrackerClient {
     peer_id: String,
     pub tracker_id: Option<String>,
-    listening_port: i32,
+    listening_port: u16,
     pub trackers_url: Vec<Vec<String>>,
     pub tracker_request_interval: Duration,
     pub last_tracker_request_time: SystemTime,
 }
 
 impl TrackerClient {
-    pub fn new(peer_id: String, trackers_url: Vec<Vec<String>>, listening_port: i32) -> Self {
+    pub fn new(peer_id: String, trackers_url: Vec<Vec<String>>, listening_port: u16) -> Self {
         let mut randomized_tiers: Vec<Vec<String>> = Vec::new();
         for tier in trackers_url {
             let randomized_tier = tier

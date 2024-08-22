@@ -91,7 +91,7 @@ pub async fn connect_to_new_peer(
 }
 
 pub async fn run_new_incoming_peers_handler(
-    listening_port: i32,
+    listening_port: u16,
     info_hash: [u8; 20],
     own_peer_id: String,
     piece_completion_status: Vec<bool>,
