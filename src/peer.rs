@@ -40,6 +40,7 @@ pub async fn connect_to_new_peer(
     port: u32,
     info_hash: [u8; 20],
     own_peer_id: String,
+    tcp_wire_protocol_listening_port: u16,
     piece_completion_status: Vec<bool>,
     to_manager_tx: Sender<ToManagerMsg>,
 ) {
@@ -69,6 +70,7 @@ pub async fn connect_to_new_peer(
                     tcp_stream,
                     info_hash.clone(),
                     own_peer_id.clone(),
+                    tcp_wire_protocol_listening_port,
                     Box::from(piece_completion_status),
                 ),
             )
@@ -91,9 +93,9 @@ pub async fn connect_to_new_peer(
 }
 
 pub async fn run_new_incoming_peers_handler(
-    listening_port: u16,
     info_hash: [u8; 20],
     own_peer_id: String,
+    tcp_wire_protocol_listening_port: u16,
     piece_completion_status: Vec<bool>,
     mut ok_to_accept_connection_rx: Receiver<bool>,
     mut piece_completion_status_rx: Receiver<Vec<bool>>,
@@ -127,9 +129,10 @@ pub async fn run_new_incoming_peers_handler(
         }
     });
 
-    let incoming_connection_listener = TcpListener::bind(format!("0.0.0.0:{}", listening_port))
-        .await
-        .unwrap();
+    let incoming_connection_listener =
+        TcpListener::bind(format!("0.0.0.0:{}", tcp_wire_protocol_listening_port))
+            .await
+            .unwrap();
 
     tokio::spawn(async move {
         loop {
@@ -157,7 +160,13 @@ pub async fn run_new_incoming_peers_handler(
                 let remote_addr = addr_or_unknown(&stream);
                 match timeout(
                     DEFAULT_TIMEOUT,
-                    handshake(stream, info_hash, own_peer_id_for_spawn, Box::from(pcs)),
+                    handshake(
+                        stream,
+                        info_hash,
+                        own_peer_id_for_spawn,
+                        tcp_wire_protocol_listening_port,
+                        Box::from(pcs),
+                    ),
                 )
                 .await
                 {
@@ -210,13 +219,14 @@ async fn handshake(
     mut stream: TcpStream,
     info_hash: [u8; 20],
     own_peer_id: String,
+    tcp_wire_protocol_listening_port: u16,
     piece_completion_status: Box<Vec<bool>>,
 ) -> Result<TcpStream, Box<dyn Error + Send + Sync>> {
-    let (peer_protocol, _reserved, peer_info_hash, peer_id) = stream
+    let (peer_protocol, reserved, peer_info_hash, peer_id) = stream
         .handshake(info_hash, own_peer_id.as_bytes().try_into()?)
         .await?;
     log::trace!(
-        "received handshake info from {}: peer protocol: {}, info_hash: {}, peer_id: {}",
+        "received handshake info from {}: peer protocol: {}, info_hash: {}, peer_id: {}, reserved: {:?}",
         addr_or_unknown(&stream),
         peer_protocol,
         pretty_info_hash(peer_info_hash),
@@ -233,6 +243,7 @@ async fn handshake(
             )
             .as_str()
         ),
+        reserved,
     );
     if peer_info_hash != info_hash {
         log::debug!("handshake errored: info hash received during handshake does not match to the one we want (own: {}, theirs: {})", pretty_info_hash(info_hash), pretty_info_hash(peer_info_hash));
@@ -246,6 +257,14 @@ async fn handshake(
         .send(Message::Bitfield(piece_completion_status))
         .await?;
     log::trace!("bitfield sent to peer {}", peer_addr);
+
+    // if peer supports DHT, send port
+    if reserved[7] & 1u8 == 1 {
+        write
+            .send(Message::Port(tcp_wire_protocol_listening_port))
+            .await?;
+        log::trace!("port sent to peer {}", peer_addr);
+    }
 
     let stream = read.unsplit(write);
 

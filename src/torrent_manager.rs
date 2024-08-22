@@ -11,6 +11,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time;
 
+use crate::dht_protocol::DhtClient;
 use crate::peer::{self, PeerAddr, ToManagerMsg, ToPeerCancelMsg, ToPeerMsg};
 use crate::piece::Piece;
 use crate::tracker;
@@ -88,7 +89,7 @@ pub struct TorrentManager {
     tracker_client: Arc<Mutex<TrackerClient>>,
     info_hash: [u8; 20],
     own_peer_id: String,
-    listening_port: u16,
+    listening_torrent_wire_protocol_port: u16,
     peers: HashMap<PeerAddr, Peer>,
     advertised_peers: Arc<Mutex<HashMap<PeerAddr, (tracker::Peer, SystemTime)>>>, // peer addr -> (peer, last connection attempt)
     bad_peers: HashSet<PeerAddr>,
@@ -99,10 +100,17 @@ pub struct TorrentManager {
     downloaded_bytes_previous_poll: u64,
     outstanding_piece_assigments: HashMap<usize, String>, // piece idx -> peer_addr
     completed_sent_to_tracker: bool,
+    listening_dht_port: u16,
+    dht_client: DhtClient,
 }
 
 impl TorrentManager {
-    pub fn new(base_path: &Path, listening_port: u16, metainfo: Metainfo) -> Self {
+    pub fn new(
+        base_path: &Path,
+        listening_torrent_wire_protocol_port: u16,
+        listening_dht_port: u16,
+        metainfo: Metainfo,
+    ) -> Self {
         let own_peer_id = generate_peer_id();
         TorrentManager {
             file_manager: FileManager::new(
@@ -114,11 +122,11 @@ impl TorrentManager {
             tracker_client: Arc::new(Mutex::new(TrackerClient::new(
                 own_peer_id.clone(),
                 metainfo.announce_list.clone(),
-                listening_port,
+                listening_torrent_wire_protocol_port,
             ))),
             info_hash: metainfo.info_hash,
-            own_peer_id,
-            listening_port,
+            own_peer_id: own_peer_id.clone(),
+            listening_torrent_wire_protocol_port,
             peers: HashMap::new(),
             advertised_peers: Arc::new(Mutex::new(HashMap::new())),
             bad_peers: HashSet::new(),
@@ -129,6 +137,12 @@ impl TorrentManager {
             downloaded_bytes_previous_poll: 0,
             outstanding_piece_assigments: HashMap::new(),
             completed_sent_to_tracker: false,
+            listening_dht_port,
+            dht_client: DhtClient::new(
+                listening_torrent_wire_protocol_port,
+                listening_dht_port,
+                own_peer_id,
+            ),
         }
     }
 
@@ -150,9 +164,9 @@ impl TorrentManager {
                 start_tick(tick_tx).await;
 
                 peer::run_new_incoming_peers_handler(
-                    self.listening_port.clone(),
                     self.info_hash.clone(),
                     self.own_peer_id.clone(),
+                    self.listening_torrent_wire_protocol_port.clone(),
                     self.file_manager.piece_completion_status.clone(),
                     ok_to_accept_connection_rx,
                     piece_completion_status_rx,
@@ -406,8 +420,8 @@ impl TorrentManager {
                         .to_peer_cancel_tx
                         .try_send((piece_idx, begin, lenght, now));
                 }
-                Message::Port(_) => {
-                    // feature not supported
+                Message::Port(port) => {
+                    // todo do something with port: we know the peer supports DHT
                 }
             }
         }
@@ -460,6 +474,7 @@ impl TorrentManager {
                     peer.port,
                     self.info_hash,
                     self.own_peer_id.clone(),
+                    self.listening_torrent_wire_protocol_port,
                     self.file_manager.piece_completion_status.clone(),
                     to_manager_tx.clone(),
                 ));

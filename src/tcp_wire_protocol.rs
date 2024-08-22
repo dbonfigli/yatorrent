@@ -27,6 +27,7 @@ impl Protocol for TcpStream {
                 let mut buf: [u8; 68] = [0; 68];
                 buf[0] = 19;
                 buf[1..20].copy_from_slice(b"BitTorrent protocol");
+                buf[27] = 1u8; // send support for DHT
                 buf[28..48].copy_from_slice(&info_hash);
                 buf[48..68].copy_from_slice(&peer_id);
                 if let Err(e) = write.write_all(&buf).await {

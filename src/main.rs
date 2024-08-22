@@ -8,6 +8,7 @@ use std::{fmt, fs};
 use torrent_manager::TorrentManager;
 
 mod bencoding;
+mod dht_protocol;
 mod file_manager;
 mod metainfo;
 mod peer;
@@ -36,6 +37,9 @@ struct Args {
     #[arg(short, long, env, default_value_t = 8000)]
     port: u16,
 
+    /// Optional listening port for DHT protocol
+    #[arg(short, long, env, default_value_t = 8001)]
+    dht_port: u16,
 
     /// Optional log level
     #[arg(short, long, env, default_value_t = LogLevels::Info)]
@@ -90,7 +94,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
                 exit(1);
             }
-            TorrentManager::new(base_path, args.port, m).start().await;
+            TorrentManager::new(base_path, args.port, args.dht_port, m)
+                .start()
+                .await;
             exit(0);
         }
         Err(e) => {
