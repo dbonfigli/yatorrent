@@ -26,7 +26,7 @@ pub enum ToPeerMsg {
 
 pub type PeerAddr = String;
 
-pub enum ToManagerMsg {
+pub enum PeersToManagerMsg {
     Error(PeerAddr),
     Receive(PeerAddr, Message),
     NewPeer(TcpStream),
@@ -41,7 +41,7 @@ pub async fn connect_to_new_peer(
     own_peer_id: String,
     tcp_wire_protocol_listening_port: u16,
     piece_completion_status: Vec<bool>,
-    to_manager_tx: Sender<ToManagerMsg>,
+    peers_to_manager_tx: Sender<PeersToManagerMsg>,
 ) {
     let dest = format!("{}:{}", host, port);
     log::trace!("initiating connection to peer: {}", dest);
@@ -77,14 +77,14 @@ pub async fn connect_to_new_peer(
             {
                 Err(_elapsed) => {
                     log::trace!("timed out completing handshake with peer {}", dest);
-                    send_to_manager(&to_manager_tx, ToManagerMsg::Error(peer_addr)).await;
+                    send_to_manager(&peers_to_manager_tx, PeersToManagerMsg::Error(peer_addr)).await;
                 }
                 Ok(Err(e)) => {
                     log::trace!("error out completing handshake with peer {}", e);
-                    send_to_manager(&to_manager_tx, ToManagerMsg::Error(peer_addr)).await;
+                    send_to_manager(&peers_to_manager_tx, PeersToManagerMsg::Error(peer_addr)).await;
                 }
                 Ok(Ok(tcp_stream)) => {
-                    send_to_manager(&to_manager_tx, ToManagerMsg::NewPeer(tcp_stream)).await;
+                    send_to_manager(&peers_to_manager_tx, PeersToManagerMsg::NewPeer(tcp_stream)).await;
                 }
             }
         }
@@ -98,7 +98,7 @@ pub async fn run_new_incoming_peers_handler(
     piece_completion_status: Vec<bool>,
     mut ok_to_accept_connection_rx: Receiver<bool>,
     mut piece_completion_status_rx: Receiver<Vec<bool>>,
-    to_manager_tx: Sender<ToManagerMsg>,
+    peers_to_manager_tx: Sender<PeersToManagerMsg>,
 ) {
     let ok_to_accept_connection_for_rcv: Arc<Mutex<bool>> = Arc::new(Mutex::new(true)); // accept new connections at start
     let ok_to_accept_connection = ok_to_accept_connection_for_rcv.clone();
@@ -151,7 +151,7 @@ pub async fn run_new_incoming_peers_handler(
 
             let piece_completion_status_for_spawn = piece_completion_status.clone();
             let own_peer_id_for_spawn = own_peer_id.clone();
-            let to_manager_tx_for_spawn = to_manager_tx.clone();
+            let peers_to_manager_tx_for_spawn = peers_to_manager_tx.clone();
             tokio::spawn(async move {
                 let pcs_lock = piece_completion_status_for_spawn.lock().await;
                 let pcs = pcs_lock.clone();
@@ -177,8 +177,8 @@ pub async fn run_new_incoming_peers_handler(
                     }
                     Ok(Ok(tcp_stream)) => {
                         send_to_manager(
-                            &to_manager_tx_for_spawn,
-                            ToManagerMsg::NewPeer(tcp_stream),
+                            &peers_to_manager_tx_for_spawn,
+                            PeersToManagerMsg::NewPeer(tcp_stream),
                         )
                         .await;
                     }
@@ -198,17 +198,17 @@ fn addr_or_unknown(stream: &TcpStream) -> String {
 pub fn start_peer_msg_handlers(
     peer_addr: String,
     tcp_stream: TcpStream,
-    to_manager_tx: Sender<ToManagerMsg>,
+    peers_to_manager_tx: Sender<PeersToManagerMsg>,
     to_peer_rx: Receiver<ToPeerMsg>,
     to_peer_cancel_rx: Receiver<ToPeerCancelMsg>,
 ) {
-    let to_manager_tx_for_snd_message_handler = to_manager_tx.clone();
+    let peers_to_manager_tx_for_snd_message_handler = peers_to_manager_tx.clone();
     let (read, write) = tokio::io::split(tcp_stream);
-    tokio::spawn(rcv_message_handler(peer_addr.clone(), to_manager_tx, read));
+    tokio::spawn(rcv_message_handler(peer_addr.clone(), peers_to_manager_tx, read));
     tokio::spawn(snd_message_handler(
         peer_addr.clone(),
         to_peer_rx,
-        to_manager_tx_for_snd_message_handler,
+        peers_to_manager_tx_for_snd_message_handler,
         write,
         to_peer_cancel_rx,
     ));
@@ -261,26 +261,26 @@ async fn handshake(
 
 async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
     peer_addr: String,
-    to_manager_tx: Sender<ToManagerMsg>,
+    peers_to_manager_tx: Sender<PeersToManagerMsg>,
     mut wire_proto: T,
 ) {
     loop {
         match timeout(Duration::from_secs(180), wire_proto.receive()).await {
             Err(_elapsed) => {
                 log::trace!("did not receive anything (not even keep-alive messages) from peer in 3 minutes {}", peer_addr);
-                send_to_manager(&to_manager_tx, ToManagerMsg::Error(peer_addr)).await;
+                send_to_manager(&peers_to_manager_tx, PeersToManagerMsg::Error(peer_addr)).await;
                 break;
             }
             Ok(Err(e)) => {
                 log::trace!("receive failed with peer {}: {}", peer_addr, e);
-                send_to_manager(&to_manager_tx, ToManagerMsg::Error(peer_addr)).await;
+                send_to_manager(&peers_to_manager_tx, PeersToManagerMsg::Error(peer_addr)).await;
                 break;
             }
             Ok(Ok(proto_msg)) => {
                 log::trace!("received from {}: {}", peer_addr, proto_msg);
                 send_to_manager(
-                    &to_manager_tx,
-                    ToManagerMsg::Receive(peer_addr.clone(), proto_msg),
+                    &peers_to_manager_tx,
+                    PeersToManagerMsg::Receive(peer_addr.clone(), proto_msg),
                 )
                 .await;
             }
@@ -291,7 +291,7 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
 async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
     peer_addr: String,
     mut to_peer_rx: Receiver<ToPeerMsg>,
-    to_manager_tx: Sender<ToManagerMsg>,
+    peers_to_manager_tx: Sender<PeersToManagerMsg>,
     mut wire_proto: T,
     mut to_peer_cancel_rx: Receiver<ToPeerCancelMsg>,
 ) {
@@ -331,12 +331,12 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                 match timeout(DEFAULT_TIMEOUT, wire_proto.send(proto_msg)).await {
                     Err(_elapsed) => {
                         log::trace!("timeout sending message to peer {}", peer_addr);
-                        send_to_manager(&to_manager_tx, ToManagerMsg::Error(peer_addr)).await;
+                        send_to_manager(&peers_to_manager_tx, PeersToManagerMsg::Error(peer_addr)).await;
                         break;
                     }
                     Ok(Err(e)) => {
                         log::trace!("sending failed with peer {}: {}", peer_addr, e);
-                        send_to_manager(&to_manager_tx, ToManagerMsg::Error(peer_addr)).await;
+                        send_to_manager(&peers_to_manager_tx, PeersToManagerMsg::Error(peer_addr)).await;
                         break;
                     }
                     Ok(Ok(_)) => {}
@@ -346,9 +346,9 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
     }
 }
 
-async fn send_to_manager(to_manager_tx: &Sender<ToManagerMsg>, msg: ToManagerMsg) {
-    if to_manager_tx.capacity() <= 5 {
-        log::warn!("low to_manager_tx capacity: {}", to_manager_tx.capacity());
+async fn send_to_manager(peers_to_manager_tx: &Sender<PeersToManagerMsg>, msg: PeersToManagerMsg) {
+    if peers_to_manager_tx.capacity() <= 5 {
+        log::warn!("low to_manager_tx capacity: {}", peers_to_manager_tx.capacity());
     }
-    to_manager_tx.send(msg).await.unwrap();
+    peers_to_manager_tx.send(msg).await.unwrap();
 }

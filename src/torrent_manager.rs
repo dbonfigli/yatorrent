@@ -12,8 +12,8 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time;
 
-use crate::dht_protocol::{self, DhtClient, ToDhtMsg};
-use crate::peer::{self, PeerAddr, ToManagerMsg, ToPeerCancelMsg, ToPeerMsg};
+use crate::dht_protocol::{DhtClient, DhtToManagerMsg, ToDhtMsg};
+use crate::peer::{self, PeerAddr, PeersToManagerMsg, ToPeerCancelMsg, ToPeerMsg};
 use crate::piece::Piece;
 use crate::tracker;
 use crate::wire_protocol::Message;
@@ -31,7 +31,7 @@ static MAX_OUTSTANDING_PIECES: usize = 100;
 static BLOCK_SIZE_B: u64 = 16384;
 static TO_PEER_CHANNEL_CAPACITY: usize = 2000;
 static TO_PEER_CANCEL_CHANNEL_CAPACITY: usize = 1000;
-static TO_MANAGER_CHANNEL_CAPACITY: usize = 50000;
+static PEERS_TO_MANAGER_CHANNEL_CAPACITY: usize = 50000;
 static REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 static MIN_CHOKE_TIME: Duration = Duration::from_secs(60);
 static MIN_UNCHOKED_TO_TRY_DISCOVERING_NEW_PEERS: i32 = 3;
@@ -163,8 +163,8 @@ impl TorrentManager {
 
                 let (ok_to_accept_connection_tx, ok_to_accept_connection_rx) = mpsc::channel(10);
                 let (piece_completion_status_tx, piece_completion_status_rx) = mpsc::channel(100);
-                let (to_manager_tx, to_manager_rx) =
-                    mpsc::channel::<ToManagerMsg>(TO_MANAGER_CHANNEL_CAPACITY);
+                let (peers_to_manager_tx, peers_to_manager_rx) =
+                    mpsc::channel::<PeersToManagerMsg>(PEERS_TO_MANAGER_CHANNEL_CAPACITY);
                 peer::run_new_incoming_peers_handler(
                     self.info_hash.clone(),
                     self.own_peer_id.clone(),
@@ -172,7 +172,7 @@ impl TorrentManager {
                     self.file_manager.piece_completion_status.clone(),
                     ok_to_accept_connection_rx,
                     piece_completion_status_rx,
-                    to_manager_tx.clone(),
+                    peers_to_manager_tx.clone(),
                 )
                 .await;
 
@@ -183,8 +183,8 @@ impl TorrentManager {
                 self.control_loop(
                     ok_to_accept_connection_tx.clone(),
                     piece_completion_status_tx.clone(),
-                    to_manager_tx,
-                    to_manager_rx,
+                    peers_to_manager_tx,
+                    peers_to_manager_rx,
                     tick_rx,
                     to_dht_tx,
                     dht_to_manager_rx,
@@ -198,33 +198,32 @@ impl TorrentManager {
         &mut self,
         ok_to_accept_connection_tx: Sender<bool>,
         piece_completion_status_channel_tx: Sender<Vec<bool>>,
-        to_manager_tx: Sender<ToManagerMsg>,
-        mut to_manager_rx: Receiver<ToManagerMsg>,
+        peers_to_manager_tx: Sender<PeersToManagerMsg>,
+        mut peers_to_manager_rx: Receiver<PeersToManagerMsg>,
         mut tick_rx: Receiver<()>,
         to_dht_tx: Sender<ToDhtMsg>,
-        mut dht_to_manager_rx: Receiver<dht_protocol::ToManagerMsg>,
+        mut dht_to_manager_rx: Receiver<DhtToManagerMsg>,
     ) {
         loop {
-            let x = dht_protocol::ToManagerMsg::NewPeer(a, b);
             tokio::select! {
-                Some(msg) = to_manager_rx.recv() => {
+                Some(msg) = peers_to_manager_rx.recv() => {
                     match msg {
-                        ToManagerMsg::Error(peer_addr) => {
+                        PeersToManagerMsg::Error(peer_addr) => {
                             self.peer_error(peer_addr, ok_to_accept_connection_tx.clone()).await;
                         }
-                        ToManagerMsg::Receive(peer_addr, msg) => {
-                            self.receive(peer_addr, msg, piece_completion_status_channel_tx.clone(), to_manager_tx.capacity(), to_dht_tx.clone()).await;
+                        PeersToManagerMsg::Receive(peer_addr, msg) => {
+                            self.receive(peer_addr, msg, piece_completion_status_channel_tx.clone(), peers_to_manager_tx.capacity(), to_dht_tx.clone()).await;
                         }
-                        ToManagerMsg::NewPeer(tcp_stream) => {
-                            self.new_peer(tcp_stream,to_manager_tx.clone(), ok_to_accept_connection_tx.clone()).await;
+                        PeersToManagerMsg::NewPeer(tcp_stream) => {
+                            self.new_peer(tcp_stream, peers_to_manager_tx.clone(), ok_to_accept_connection_tx.clone()).await;
                         }
                     }
                 }
                 Some(()) = tick_rx.recv() => {
-                    self.tick(to_manager_tx.clone()).await;
+                    self.tick(peers_to_manager_tx.clone()).await;
                 }
 
-                Some(dht_protocol::ToManagerMsg::NewPeer(ip, port)) = dht_to_manager_rx.recv() => {
+                Some(DhtToManagerMsg::NewPeer(ip, port)) = dht_to_manager_rx.recv() => {
                     let p = tracker::Peer{peer_id: None, ip: ip.to_string(), port: port};
                     let mut possible_peers_mg = self.advertised_peers.lock().unwrap();
                     possible_peers_mg.insert(format!("{}:{}", ip, port), (p, SystemTime::UNIX_EPOCH));
@@ -240,7 +239,7 @@ impl TorrentManager {
         peer_addr: String,
         msg: Message,
         piece_completion_status_tx: Sender<Vec<bool>>,
-        to_manager_channel_capacity: usize,
+        peers_to_manager_channel_capacity: usize,
         to_dht_tx: Sender<ToDhtMsg>,
     ) {
         log::trace!("received message from peer {}: {}", peer_addr, msg);
@@ -339,7 +338,7 @@ impl TorrentManager {
                 }
                 Message::Request(piece_idx, begin, lenght) => {
                     if !peer.am_choking {
-                        if should_choke(to_manager_channel_capacity) {
+                        if should_choke(peers_to_manager_channel_capacity) {
                             peer.send(ToPeerMsg::Send(Message::Choke)).await;
                             peer.am_choking = true;
                             peer.am_choking_since = SystemTime::now();
@@ -462,8 +461,8 @@ impl TorrentManager {
         }
     }
 
-    async fn tick(&mut self, to_manager_tx: Sender<ToManagerMsg>) {
-        self.log_stats(to_manager_tx.capacity());
+    async fn tick(&mut self, peers_to_manager_tx: Sender<PeersToManagerMsg>) {
+        self.log_stats(peers_to_manager_tx.capacity());
 
         // connect to new peers
         let current_peers_n = self.peers.len();
@@ -498,7 +497,7 @@ impl TorrentManager {
                     self.own_peer_id.clone(),
                     self.listening_torrent_wire_protocol_port,
                     self.file_manager.piece_completion_status.clone(),
-                    to_manager_tx.clone(),
+                    peers_to_manager_tx.clone(),
                 ));
             }
             // update last connection attempt
@@ -541,7 +540,7 @@ impl TorrentManager {
         }
 
         // unchoke peers
-        let choking = should_choke(to_manager_tx.capacity());
+        let choking = should_choke(peers_to_manager_tx.capacity());
         if !choking {
             let now = SystemTime::now();
             for (_, peer) in self.peers.iter_mut() {
@@ -687,7 +686,7 @@ impl TorrentManager {
     async fn new_peer(
         &mut self,
         tcp_stream: TcpStream,
-        to_manager_tx: Sender<ToManagerMsg>,
+        peers_to_manager_tx: Sender<PeersToManagerMsg>,
         ok_to_accept_connection_tx: Sender<bool>,
     ) {
         let peer_addr = match tcp_stream.peer_addr() {
@@ -705,7 +704,7 @@ impl TorrentManager {
         peer::start_peer_msg_handlers(
             peer_addr.clone(),
             tcp_stream,
-            to_manager_tx.clone(),
+            peers_to_manager_tx.clone(),
             to_peer_rx,
             to_peer_cancel_rx,
         );
@@ -715,7 +714,7 @@ impl TorrentManager {
                 self.file_manager.num_pieces(),
                 to_peer_tx,
                 to_peer_cancel_tx,
-                should_choke(to_manager_tx.capacity()),
+                should_choke(peers_to_manager_tx.capacity()),
             ),
         );
         log::debug!("new peer initialized: {}", peer_addr);
@@ -725,7 +724,7 @@ impl TorrentManager {
         }
     }
 
-    fn log_stats(&mut self, to_manager_channel_capacity: usize) {
+    fn log_stats(&mut self, peers_to_manager_channel_capacity: usize) {
         let advertised_peers_lock = self.advertised_peers.lock().unwrap();
         let advertised_peers_len = advertised_peers_lock.len();
         drop(advertised_peers_lock);
@@ -756,8 +755,8 @@ impl TorrentManager {
             self.peers.len(),
             self.peers.iter()
             .fold(0, |acc, (_,p)| if !p.peer_choking { acc + 1 } else { acc }),
-            TO_MANAGER_CHANNEL_CAPACITY - to_manager_channel_capacity,
-            TO_MANAGER_CHANNEL_CAPACITY,
+            PEERS_TO_MANAGER_CHANNEL_CAPACITY - peers_to_manager_channel_capacity,
+            PEERS_TO_MANAGER_CHANNEL_CAPACITY,
         );
     }
 }
@@ -839,8 +838,8 @@ fn update_tracker_client_and_advertised_peers(
     drop(advertised_peers);
 }
 
-fn should_choke(to_manager_channel_pending_msgs: usize) -> bool {
-    to_manager_channel_pending_msgs > TO_MANAGER_CHANNEL_CAPACITY / 2
+fn should_choke(peers_to_manager_channel_pending_msgs: usize) -> bool {
+    peers_to_manager_channel_pending_msgs > PEERS_TO_MANAGER_CHANNEL_CAPACITY / 2
 }
 
 fn assign_piece(piece_idx: usize, peers: &HashMap<String, Peer>) -> Option<String> {

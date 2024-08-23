@@ -36,7 +36,7 @@ pub enum ToDhtMsg {
     NewNode(String),
 }
 
-pub enum ToManagerMsg {
+pub enum DhtToManagerMsg {
     NewPeer(Ipv4Addr, u16),
 }
 
@@ -63,7 +63,7 @@ impl DhtClient {
     pub async fn start(
         &mut self,
         to_dht_rx: Receiver<ToDhtMsg>,
-        to_manager_tx: Sender<ToManagerMsg>,
+        dht_to_manager_tx: Sender<DhtToManagerMsg>,
     ) {
         let socket = UdpSocket::bind(format!("0.0.0.0:{}", self.listening_dht_port))
             .await
