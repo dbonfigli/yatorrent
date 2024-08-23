@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use std::{error::Error, iter, path::Path};
@@ -11,7 +12,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time;
 
-use crate::dht_protocol::DhtClient;
+use crate::dht_protocol::{self, DhtClient, ToDhtMsg};
 use crate::peer::{self, PeerAddr, ToManagerMsg, ToPeerCancelMsg, ToPeerMsg};
 use crate::piece::Piece;
 use crate::tracker;
@@ -142,6 +143,7 @@ impl TorrentManager {
                 listening_torrent_wire_protocol_port,
                 listening_dht_port,
                 own_peer_id,
+                metainfo.nodes,
             ),
         }
     }
@@ -155,14 +157,14 @@ impl TorrentManager {
                 log::error!("could not perform first request to tracker: {}", e);
             }
             Ok(()) => {
+                let (to_dht_tx, to_dht_rx) = mpsc::channel(10);
+                let (dht_to_manager_tx, dht_to_manager_rx) = mpsc::channel(1000);
+                self.dht_client.start(to_dht_rx, dht_to_manager_tx).await;
+
                 let (ok_to_accept_connection_tx, ok_to_accept_connection_rx) = mpsc::channel(10);
                 let (piece_completion_status_tx, piece_completion_status_rx) = mpsc::channel(100);
                 let (to_manager_tx, to_manager_rx) =
                     mpsc::channel::<ToManagerMsg>(TO_MANAGER_CHANNEL_CAPACITY);
-
-                let (tick_tx, tick_rx) = mpsc::channel(1);
-                start_tick(tick_tx).await;
-
                 peer::run_new_incoming_peers_handler(
                     self.info_hash.clone(),
                     self.own_peer_id.clone(),
@@ -174,6 +176,9 @@ impl TorrentManager {
                 )
                 .await;
 
+                let (tick_tx, tick_rx) = mpsc::channel(1);
+                start_tick(tick_tx).await;
+
                 // block forever
                 self.control_loop(
                     ok_to_accept_connection_tx.clone(),
@@ -181,6 +186,8 @@ impl TorrentManager {
                     to_manager_tx,
                     to_manager_rx,
                     tick_rx,
+                    to_dht_tx,
+                    dht_to_manager_rx,
                 )
                 .await;
             }
@@ -194,8 +201,11 @@ impl TorrentManager {
         to_manager_tx: Sender<ToManagerMsg>,
         mut to_manager_rx: Receiver<ToManagerMsg>,
         mut tick_rx: Receiver<()>,
+        to_dht_tx: Sender<ToDhtMsg>,
+        mut dht_to_manager_rx: Receiver<dht_protocol::ToManagerMsg>,
     ) {
         loop {
+            let x = dht_protocol::ToManagerMsg::NewPeer(a, b);
             tokio::select! {
                 Some(msg) = to_manager_rx.recv() => {
                     match msg {
@@ -203,7 +213,7 @@ impl TorrentManager {
                             self.peer_error(peer_addr, ok_to_accept_connection_tx.clone()).await;
                         }
                         ToManagerMsg::Receive(peer_addr, msg) => {
-                            self.receive(peer_addr, msg, piece_completion_status_channel_tx.clone(), to_manager_tx.capacity()).await;
+                            self.receive(peer_addr, msg, piece_completion_status_channel_tx.clone(), to_manager_tx.capacity(), to_dht_tx.clone()).await;
                         }
                         ToManagerMsg::NewPeer(tcp_stream) => {
                             self.new_peer(tcp_stream,to_manager_tx.clone(), ok_to_accept_connection_tx.clone()).await;
@@ -212,6 +222,13 @@ impl TorrentManager {
                 }
                 Some(()) = tick_rx.recv() => {
                     self.tick(to_manager_tx.clone()).await;
+                }
+
+                Some(dht_protocol::ToManagerMsg::NewPeer(ip, port)) = dht_to_manager_rx.recv() => {
+                    let p = tracker::Peer{peer_id: None, ip: ip.to_string(), port: port};
+                    let mut possible_peers_mg = self.advertised_peers.lock().unwrap();
+                    possible_peers_mg.insert(format!("{}:{}", ip, port), (p, SystemTime::UNIX_EPOCH));
+                    drop(possible_peers_mg);
                 }
                 else => break,
             }
@@ -224,6 +241,7 @@ impl TorrentManager {
         msg: Message,
         piece_completion_status_tx: Sender<Vec<bool>>,
         to_manager_channel_capacity: usize,
+        to_dht_tx: Sender<ToDhtMsg>,
     ) {
         log::trace!("received message from peer {}: {}", peer_addr, msg);
         let now = SystemTime::now();
@@ -421,7 +439,11 @@ impl TorrentManager {
                         .try_send((piece_idx, begin, lenght, now));
                 }
                 Message::Port(port) => {
-                    // todo do something with port: we know the peer supports DHT
+                    // we know the peer supports DHT, send this to dht as new node
+                    let peer_ip_addr = peer_addr.parse::<Ipv4Addr>().unwrap();
+                    let _ = to_dht_tx
+                        .send(ToDhtMsg::NewNode(format!("{}:{}", peer_ip_addr, port)))
+                        .await;
                 }
             }
         }
