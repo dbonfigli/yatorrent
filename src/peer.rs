@@ -36,7 +36,7 @@ pub type ToPeerCancelMsg = (u32, u32, u32, SystemTime); // piece_idx, begin, len
 
 pub async fn connect_to_new_peer(
     host: String,
-    port: u32,
+    port: u16,
     info_hash: [u8; 20],
     own_peer_id: String,
     tcp_wire_protocol_listening_port: u16,

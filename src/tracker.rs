@@ -18,7 +18,7 @@ static UDP_TIMEOUT: Duration = Duration::from_secs(15);
 pub struct Peer {
     pub peer_id: Option<String>, // peer's self-selected ID, as described above for the tracker request (string)
     pub ip: String, // peer's IP address either IPv6 (hexed) or IPv4 (dotted quad) or DNS name (string)
-    pub port: u32,  // peer's port number (integer)
+    pub port: u16,  // peer's port number (integer)
 }
 
 #[derive(PartialEq, Debug)]
@@ -503,7 +503,7 @@ impl TrackerClient {
                     ]
                     .join(".");
                     let peer_port_bytes = &recv_announce_buf[i + 4..i + 6];
-                    let port = peer_port_bytes[0] as u32 * 256 + peer_port_bytes[1] as u32;
+                    let port = peer_port_bytes[0] as u16 * 256 + peer_port_bytes[1] as u16;
                     peers.push(Peer {
                         peer_id: Option::None,
                         ip,
@@ -550,7 +550,7 @@ fn get_peers_wiht_dict_model(peers_values: &Vec<Value>) -> Result<Vec<Peer>, Box
 
                 // port
                 let port = match peer_dic.get(&b"port".to_vec()) {
-                    Some(Value::Int(port_vec)) => u32::try_from(*port_vec)?,
+                    Some(Value::Int(port_vec)) => u16::try_from(*port_vec)?,
                     _ => return Err("Port key not provided in list of peers in bencoded dict response or provided but it is not a valid number".into()),
                 };
 
@@ -579,7 +579,7 @@ fn get_peers_wiht_binary_model(peers_bytes: &Vec<u8>) -> Result<Vec<Peer>, Box<d
         ]
         .join(".");
         let peer_port_bytes = &peers_bytes[i + 4..i + 6];
-        let port = peer_port_bytes[0] as u32 * 256 + peer_port_bytes[1] as u32;
+        let port = peer_port_bytes[0] as u16 * 256 + peer_port_bytes[1] as u16;
 
         peers_list.push(Peer {
             peer_id: Option::None,
