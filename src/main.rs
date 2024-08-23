@@ -8,6 +8,7 @@ use std::{fmt, fs};
 use torrent_manager::TorrentManager;
 
 mod bencoding;
+mod dht_messages;
 mod dht_protocol;
 mod file_manager;
 mod metainfo;
