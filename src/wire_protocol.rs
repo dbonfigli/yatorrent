@@ -1,4 +1,3 @@
-use parse_display::Display;
 use std::{error::Error, fmt};
 
 #[derive(Debug)]
@@ -100,7 +99,7 @@ pub trait LocalProtocolWriteHalf {
     async fn send(&mut self, message: Message) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 
-#[derive(Display, Debug)]
+#[derive(Debug)]
 pub struct ProtocolError {
     message: String,
 }
@@ -108,6 +107,12 @@ pub struct ProtocolError {
 impl ProtocolError {
     pub fn new(message: String) -> Self {
         ProtocolError { message }
+    }
+}
+
+impl fmt::Display for ProtocolError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.message)
     }
 }
 

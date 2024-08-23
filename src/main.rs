@@ -16,6 +16,7 @@ mod piece;
 mod tcp_wire_protocol;
 mod torrent_manager;
 mod tracker;
+mod util;
 mod wire_protocol;
 
 #[cfg(test)]

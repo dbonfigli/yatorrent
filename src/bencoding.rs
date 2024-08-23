@@ -1,4 +1,6 @@
+use core::fmt;
 use std::collections::HashMap;
+use std::error::Error;
 use std::str;
 
 type IndexOfError = usize;
@@ -17,6 +19,18 @@ pub struct ParseError {
     pub elem: ErrorElem,
     pub index: IndexOfError,
 }
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "parse error parsing {:?} at char {}",
+            self.elem, self.index
+        )
+    }
+}
+
+impl Error for ParseError {}
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum Value {

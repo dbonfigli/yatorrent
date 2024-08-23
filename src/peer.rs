@@ -1,5 +1,3 @@
-use core::str;
-use std::ascii;
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
@@ -12,6 +10,7 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 
+use crate::util::force_string;
 use crate::wire_protocol::{ProtocolReadHalf, ProtocolWriteHalf};
 use crate::{
     metainfo::pretty_info_hash,
@@ -230,19 +229,7 @@ async fn handshake(
         addr_or_unknown(&stream),
         peer_protocol,
         pretty_info_hash(peer_info_hash),
-        str::from_utf8(&peer_id).unwrap_or(
-            format!(
-                "<non utf-8> {}",
-                str::from_utf8(
-                    &peer_id
-                        .iter()
-                        .flat_map(|b| ascii::escape_default(*b))
-                        .collect::<Vec<u8>>()
-                )
-                .unwrap_or("??")
-            )
-            .as_str()
-        ),
+        force_string(&peer_id.to_vec()),
         reserved,
     );
     if peer_info_hash != info_hash {
