@@ -1,6 +1,6 @@
 use crate::bencoding::Value;
 use sha1::{Digest, Sha1};
-use size::Size;
+use size::{Size, Style};
 use std::{error::Error, fmt, str};
 use Result;
 
@@ -61,7 +61,7 @@ impl fmt::Display for Metainfo {
             self.announce_list,
             self.url_list,
             self.nodes,
-            self.piece_length,
+            Size::from_bytes(self.piece_length).format().with_style(Style::Abbreviated),
             self.pieces.len(),
             pretty_info_hash(self.info_hash),
             files
