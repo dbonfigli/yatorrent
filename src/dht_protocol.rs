@@ -11,7 +11,7 @@ use tokio::{
 
 use rand::Rng;
 
-use crate::dht_messages::decode_krpc_message;
+use crate::{dht_messages::decode_krpc_message, util::pretty_info_hash};
 
 // NOTE! we are only supporting IPv4 DHT, i.e. BEP 32 (https://www.bittorrent.org/beps/bep_0032.html) is not implemented
 
@@ -39,8 +39,8 @@ fn generate_transaction_id() -> [u8; 2] {
 }
 
 pub enum ToDhtManagerMsg {
-    GetNewPeers,
-    NewNode(String),
+    GetNewPeers([u8; 20]), // info hash
+    NewNode(String),       // "host:port"
 }
 
 pub enum DhtToTorrentManagerMsg {
@@ -71,25 +71,13 @@ impl DhtManager {
 
     pub async fn start(
         &mut self,
-        mut to_dht_manager_rx: Receiver<ToDhtManagerMsg>,
+        to_dht_manager_rx: Receiver<ToDhtManagerMsg>,
         dht_to_torrent_manager_tx: Sender<DhtToTorrentManagerMsg>,
     ) {
-        let nodes_for_rcv_from_manager = self.nodes.clone();
-        tokio::spawn(async move {
-            while let Some(msg) = to_dht_manager_rx.recv().await {
-                match msg {
-                    ToDhtManagerMsg::GetNewPeers => {
-                        // todo
-                    }
-                    ToDhtManagerMsg::NewNode(n) => {
-                        let mut nodes_mg = nodes_for_rcv_from_manager.lock().unwrap();
-                        nodes_mg.insert(n, Node {});
-                        log::warn!("current nodes: {:?}", nodes_mg);
-                        drop(nodes_mg);
-                    }
-                }
-            }
-        });
+        tokio::spawn(handle_torrent_manger_messages(
+            to_dht_manager_rx,
+            self.nodes.clone(),
+        ));
 
         let socket = UdpSocket::bind(format!("0.0.0.0:{}", self.listening_dht_port))
             .await
@@ -105,6 +93,25 @@ impl DhtManager {
                 Ok((transaction_id, msg)) => {
                     // do things
                 }
+            }
+        }
+    }
+}
+
+async fn handle_torrent_manger_messages(
+    mut to_dht_manager_rx: Receiver<ToDhtManagerMsg>,
+    nodes: Arc<Mutex<HashMap<String, Node>>>,
+) {
+    while let Some(msg) = to_dht_manager_rx.recv().await {
+        match msg {
+            ToDhtManagerMsg::GetNewPeers(info_hash) => {
+                log::warn!("got GetNewPeers msg: {:?}", pretty_info_hash(info_hash));
+            }
+            ToDhtManagerMsg::NewNode(n) => {
+                let mut nodes_mg = nodes.lock().unwrap();
+                nodes_mg.insert(n, Node {});
+                log::warn!("current nodes: {:?}", nodes_mg);
+                drop(nodes_mg);
             }
         }
     }

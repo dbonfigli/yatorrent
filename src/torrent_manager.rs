@@ -161,6 +161,9 @@ impl TorrentManager {
                 .start(to_dht_manager_rx, dht_to_torrent_manager_tx)
                 .await;
         });
+        let _ = to_dht_manager_tx
+            .send(ToDhtManagerMsg::GetNewPeers(self.info_hash))
+            .await; // todo remove this
 
         // start incoming peer connections handler
         let (ok_to_accept_connection_tx, ok_to_accept_connection_rx) = mpsc::channel(10);
