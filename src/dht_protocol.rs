@@ -1,4 +1,8 @@
-use std::net::Ipv4Addr;
+use std::{
+    collections::HashMap,
+    net::Ipv4Addr,
+    sync::{Arc, Mutex},
+};
 
 use tokio::{
     net::UdpSocket,
@@ -19,11 +23,14 @@ static WELL_KNOWN_BOOTSTRAP_NODES: &[&str] = &[
     "dht.aelitis.com:6881",
 ];
 
-pub struct DhtClient {
+#[derive(Debug)]
+struct Node {} // todo: fill up with useful info
+
+pub struct DhtManager {
     listening_dht_port: u16,
     listening_torrent_wire_protocol_port: u16,
     own_node_id: String,
-    nodes: Vec<String>,
+    nodes: Arc<Mutex<HashMap<String, Node>>>,
 }
 
 fn generate_transaction_id() -> [u8; 2] {
@@ -31,40 +38,59 @@ fn generate_transaction_id() -> [u8; 2] {
     [rng.gen(), rng.gen()]
 }
 
-pub enum ToDhtMsg {
+pub enum ToDhtManagerMsg {
     GetNewPeers,
     NewNode(String),
 }
 
-pub enum DhtToManagerMsg {
+pub enum DhtToTorrentManagerMsg {
     NewPeer(Ipv4Addr, u16),
 }
 
-impl DhtClient {
+impl DhtManager {
     pub fn new(
         listening_torrent_wire_protocol_port: u16,
         listening_dht_port: u16,
         own_node_id: String,
         mut nodes: Vec<String>,
-    ) -> DhtClient {
-        let mut start_nodes = Vec::new();
-        start_nodes.append(&mut nodes);
-        for n in WELL_KNOWN_BOOTSTRAP_NODES {
-            start_nodes.push(n.to_string());
+    ) -> DhtManager {
+        let mut start_nodes = HashMap::new();
+        for n in nodes {
+            start_nodes.insert(n, Node {});
         }
-        return DhtClient {
+        for n in WELL_KNOWN_BOOTSTRAP_NODES {
+            start_nodes.insert(n.to_string(), Node {});
+        }
+        return DhtManager {
             listening_dht_port,
             listening_torrent_wire_protocol_port,
             own_node_id,
-            nodes: start_nodes,
+            nodes: Arc::new(Mutex::new(start_nodes)),
         };
     }
 
     pub async fn start(
         &mut self,
-        to_dht_rx: Receiver<ToDhtMsg>,
-        dht_to_manager_tx: Sender<DhtToManagerMsg>,
+        mut to_dht_manager_rx: Receiver<ToDhtManagerMsg>,
+        dht_to_torrent_manager_tx: Sender<DhtToTorrentManagerMsg>,
     ) {
+        let nodes_for_rcv_from_manager = self.nodes.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = to_dht_manager_rx.recv().await {
+                match msg {
+                    ToDhtManagerMsg::GetNewPeers => {
+                        // todo
+                    }
+                    ToDhtManagerMsg::NewNode(n) => {
+                        let mut nodes_mg = nodes_for_rcv_from_manager.lock().unwrap();
+                        nodes_mg.insert(n, Node {});
+                        log::warn!("current nodes: {:?}", nodes_mg);
+                        drop(nodes_mg);
+                    }
+                }
+            }
+        });
+
         let socket = UdpSocket::bind(format!("0.0.0.0:{}", self.listening_dht_port))
             .await
             .unwrap();
