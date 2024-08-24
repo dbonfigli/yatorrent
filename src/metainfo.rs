@@ -1,4 +1,4 @@
-use crate::bencoding::Value;
+use crate::{bencoding::Value, util::pretty_info_hash};
 use sha1::{Digest, Sha1};
 use size::{Size, Style};
 use std::{error::Error, fmt, str};
@@ -37,14 +37,6 @@ pub struct MetainfoMultiFile {
 pub struct MultifileFile {
     pub length: u64,       // length of the file in bytes. (integer)
     pub path: Vec<String>, // a list containing one or more string elements that together represent the path and filename. Each element in the list corresponds to either a directory name or (in the case of the final element) the filename. For example, a the file "dir1/dir2/file.ext" would consist of three string elements: "dir1", "dir2", and "file.ext". This is encoded as a bencoded list of strings such as l4:dir14:dir28:file.exte
-}
-
-pub fn pretty_info_hash(info_hash: [u8; 20]) -> String {
-    info_hash
-        .iter()
-        .map(|b| format!("{:02x}", b))
-        .collect::<Vec<_>>()
-        .join("")
 }
 
 impl fmt::Display for Metainfo {

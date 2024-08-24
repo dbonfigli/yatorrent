@@ -17,3 +17,11 @@ pub fn force_string(v: &Vec<u8>) -> String {
         )
         .to_string()
 }
+
+pub fn pretty_info_hash(info_hash: [u8; 20]) -> String {
+    info_hash
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<Vec<_>>()
+        .join("")
+}

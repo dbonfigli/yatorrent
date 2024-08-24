@@ -488,7 +488,10 @@ impl TorrentManager {
                 .collect::<Vec<_>>();
 
             let candidates_for_new_connections: Vec<_> = possible_peers
-                .choose_multiple(&mut rand::thread_rng(), CONNECTED_PEERS_TO_START_NEW_PEER_CONNECTIONS - current_peers_n)
+                .choose_multiple(
+                    &mut rand::thread_rng(),
+                    CONNECTED_PEERS_TO_START_NEW_PEER_CONNECTIONS - current_peers_n,
+                )
                 .collect();
             // todo:
             // * better algorithm to select new peers
@@ -591,7 +594,7 @@ impl TorrentManager {
         // send requests for new blocks for pieces currently downloading
         for (piece_idx, peer_addr) in self.outstanding_piece_assigments.iter() {
             let peer = self.peers.get_mut(peer_addr).unwrap();
-            file_requests(
+            send_requests(
                 peer,
                 *piece_idx,
                 peer.requested_pieces.get(&piece_idx).unwrap().clone(),
@@ -604,7 +607,7 @@ impl TorrentManager {
             if !self.outstanding_piece_assigments.contains_key(piece_idx) {
                 if let Some(peer_addr) = assign_piece(*piece_idx, &self.peers) {
                     let peer = self.peers.get_mut(&peer_addr).unwrap();
-                    file_requests(peer, *piece_idx, piece.clone()).await;
+                    send_requests(peer, *piece_idx, piece.clone()).await;
                     self.outstanding_piece_assigments
                         .insert(*piece_idx, peer_addr.clone());
                 }
@@ -621,7 +624,7 @@ impl TorrentManager {
             {
                 if let Some(peer_addr) = assign_piece(piece_idx, &self.peers) {
                     let peer = self.peers.get_mut(&peer_addr).unwrap();
-                    file_requests(
+                    send_requests(
                         peer,
                         piece_idx,
                         Piece::new(self.file_manager.piece_length(piece_idx)),
@@ -896,7 +899,7 @@ fn assign_piece(piece_idx: usize, peers: &HashMap<String, Peer>) -> Option<Strin
     }
 }
 
-async fn file_requests(peer: &mut Peer, piece_idx: usize, mut incomplete_piece: Piece) {
+async fn send_requests(peer: &mut Peer, piece_idx: usize, mut incomplete_piece: Piece) {
     while peer.outstanding_block_requests.len() < MAX_OUTSTANDING_REQUESTS_PER_PEER {
         if let Some((begin, end)) = incomplete_piece.get_next_fragment(BLOCK_SIZE_B) {
             let request = (piece_idx as u32, begin as u32, (end - begin + 1) as u32);

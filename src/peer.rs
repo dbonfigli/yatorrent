@@ -10,12 +10,9 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 
-use crate::util::force_string;
+use crate::util::{force_string, pretty_info_hash};
+use crate::wire_protocol::{Message, Protocol};
 use crate::wire_protocol::{ProtocolReadHalf, ProtocolWriteHalf};
-use crate::{
-    metainfo::pretty_info_hash,
-    wire_protocol::{Message, Protocol},
-};
 
 static DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 static CANCELLATION_DURATION: Duration = Duration::from_secs(120);
