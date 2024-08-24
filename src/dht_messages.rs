@@ -1,6 +1,7 @@
 use crate::{bencoding::Value, util::force_string};
 use std::{collections::HashMap, error::Error, net::Ipv4Addr};
 
+#[derive(Debug)]
 pub enum KRPCMessage {
     PingReq(String),                                          // querying nodes id
     PingOrAnnouncePeerResp(Vec<u8>), // queried nodes id, resps to ping or announce_peer messages cannot be distinghised by themselves without original transaciton id
@@ -12,11 +13,13 @@ pub enum KRPCMessage {
     Error(ErrorType, String),                              // error type, message
 }
 
+#[derive(Debug)]
 pub enum GetPeersRespValuesOrNodes {
     Nodes(Vec<(String, Ipv4Addr, u16)>), // 20-byte Node ID in network byte order, IP-address, port
     Values(Vec<(Ipv4Addr, u16)>),        // peer IP-address, peer port
 }
 
+#[derive(Debug)]
 pub enum ErrorType {
     GenericError,
     ServerError,
@@ -48,7 +51,7 @@ impl ErrorType {
 pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8> {
     let mut h = HashMap::from([
         (b"t".to_vec(), Value::Str(transaction_id)),
-        (b"v".to_vec(), Value::Str(b"YT00".to_vec())),
+        //(b"v".to_vec(), Value::Str(b"YT00".to_vec())),
     ]);
 
     match msg {
@@ -91,13 +94,11 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
             );
         }
         KRPCMessage::FindNodeResp(queried_node_id, nodes) => {
-            let mut compact_node_info_vec = Vec::new();
-            for (node_id, ip, port) in nodes {
-                let mut compact_node_info_buf = [0u8; 26];
-                compact_node_info_buf[0..20].copy_from_slice(&node_id.into_bytes());
-                compact_node_info_buf[20..24].copy_from_slice(&ip.octets());
-                compact_node_info_buf[24..26].copy_from_slice(&port.to_be_bytes());
-                compact_node_info_vec.push(Value::Str(compact_node_info_buf.to_vec()));
+            let mut compact_node_info = vec![0u8; nodes.len() * 26];
+            for (i, (node_id, ip, port)) in nodes.iter().enumerate() {
+                compact_node_info[i..i + 20].copy_from_slice(&node_id.clone().into_bytes());
+                compact_node_info[i + 20..i + 24].copy_from_slice(&ip.octets());
+                compact_node_info[i + 24..i + 26].copy_from_slice(&port.to_be_bytes());
             }
             h.insert(b"y".to_vec(), Value::Str(b"r".to_vec()));
             h.insert(
@@ -105,7 +106,7 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
                 Value::Dict(
                     HashMap::from([
                         (b"id".to_vec(), Value::Str(queried_node_id.into_bytes())),
-                        (b"nodes".to_vec(), Value::List(compact_node_info_vec)),
+                        (b"nodes".to_vec(), Value::Str(compact_node_info)),
                     ]),
                     0, // this is discarded when creating hashmap bencoded values
                     0, // this is discarded when creating hashmap bencoded values
@@ -134,25 +135,21 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
             ]);
             match values_or_nodes {
                 GetPeersRespValuesOrNodes::Nodes(nodes) => {
-                    let mut n_l = Vec::new();
-                    for (node_id, ip_addr, port) in nodes {
-                        let mut p_buf = [0u8, 6];
-                        p_buf[0..20].copy_from_slice(&node_id.into_bytes());
-                        p_buf[20..24].copy_from_slice(&ip_addr.octets());
-                        p_buf[24..26].copy_from_slice(&port.to_be_bytes());
-                        n_l.push(Value::Str(p_buf.to_vec()));
+                    let mut compact_node_info = vec![0u8; nodes.len() * 26];
+                    for (i, (node_id, ip, port)) in nodes.iter().enumerate() {
+                        compact_node_info[i..i + 20].copy_from_slice(&node_id.clone().into_bytes());
+                        compact_node_info[i + 20..i + 24].copy_from_slice(&ip.octets());
+                        compact_node_info[i + 24..i + 26].copy_from_slice(&port.to_be_bytes());
                     }
-                    r.insert(b"nodes".to_vec(), Value::List(n_l));
+                    r.insert(b"nodes".to_vec(), Value::Str(compact_node_info));
                 }
                 GetPeersRespValuesOrNodes::Values(values) => {
-                    let mut v_l = Vec::new();
-                    for (ip_addr, port) in values {
-                        let mut p_buf = [0u8, 6];
-                        p_buf[0..4].copy_from_slice(&ip_addr.octets());
-                        p_buf[4..2].copy_from_slice(&port.to_be_bytes());
-                        v_l.push(Value::Str(p_buf.to_vec()));
+                    let mut compact_peer_info = vec![0u8; values.len() * 6];
+                    for (i, (ip, port)) in values.iter().enumerate() {
+                        compact_peer_info[i..i + 4].copy_from_slice(&ip.octets());
+                        compact_peer_info[i + 4..i + 6].copy_from_slice(&port.to_be_bytes());
                     }
-                    r.insert(b"values".to_vec(), Value::List(v_l));
+                    r.insert(b"values".to_vec(), Value::Str(compact_peer_info));
                 }
             }
             h.insert(b"y".to_vec(), Value::Str(b"r".to_vec()));
@@ -488,31 +485,25 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Bo
             }
         };
         if let Some(nodes_v) = r_h.get(&b"nodes".to_vec()) {
-            let nodes_l = match nodes_v {
-                Value::List(nodes_l) => nodes_l,
+            let nodes_str = match nodes_v {
+                Value::Str(nodes_str) => nodes_str,
                 _ => {
-                    return Err(Box::from("got krpc message that is a response (y=r) and has a nodes key in the r map that is not a list"));
+                    return Err(Box::from("got krpc message that is a response (y=r) and has a nodes key in the r map that is not a bencoded string"));
                 }
             };
+            if nodes_str.len() % 26 != 0 {
+                return Err(Box::from("got krpc message that is a response (y=r) and has a nodes key in the r map that is not a bencoded string with lenght divisible by 26"));
+            }
             let mut nodes = Vec::new();
-            for n in nodes_l {
-                let n_str = match n {
-                    Value::Str(n_str) => n_str,
-                    _ => {
-                        return Err(Box::from("got krpc message that is a response (y=r) and has a nodes key in the r map but contains an element that is not a bencoded string"));
-                    }
-                };
-                if n_str.len() != 26 {
-                    return Err(Box::from("got krpc message that is a response (y=r) and has a nodes key in the r map but contains an element that is not 26 chars long"));
-                }
+            for i in (0..nodes_str.len()).step_by(26) {
                 let mut node_id_buf: [u8; 20] = [0; 20];
-                node_id_buf.copy_from_slice(&n_str[0..20]); // todo optmize this
+                node_id_buf.copy_from_slice(&nodes_str[i..i + 20]);
                 let node_id = force_string(&node_id_buf.to_vec());
                 let mut node_ip_buf: [u8; 4] = [0; 4];
-                node_ip_buf.copy_from_slice(&n_str[2..24]); // todo optmize this
+                node_ip_buf.copy_from_slice(&nodes_str[i + 20..i + 24]);
                 let node_ip = Ipv4Addr::from(node_ip_buf);
                 let mut node_port_buf: [u8; 2] = [0; 2];
-                node_port_buf.copy_from_slice(&n_str[24..26]); // todo optmize this
+                node_port_buf.copy_from_slice(&nodes_str[i + 24..i + 26]);
                 let node_port = u16::from_be_bytes(node_port_buf);
                 nodes.push((node_id, node_ip, node_port));
             }
@@ -524,28 +515,22 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Bo
                 ), // todo really force string here?
             );
         } else if let Some(peers_v) = r_h.get(&b"values".to_vec()) {
-            let peers_l = match peers_v {
-                Value::List(peers_l) => peers_l,
+            let peers_str = match peers_v {
+                Value::Str(peers_str) => peers_str,
                 _ => {
-                    return Err(Box::from("got krpc message that is a response (y=r) and has a values key in the r map that is not a list"));
+                    return Err(Box::from("got krpc message that is a response (y=r) and has a values key in the r map that is not a string"));
                 }
             };
+            if peers_str.len() % 6 != 0 {
+                return Err(Box::from("got krpc message that is a response (y=r) and has a values key in the r map that is not a bencoded string with lenght divisible by 6"));
+            }
             let mut peers = Vec::new();
-            for n in peers_l {
-                let n_str = match n {
-                    Value::Str(n_str) => n_str,
-                    _ => {
-                        return Err(Box::from("got krpc message that is a response (y=r) and has a values key in the r map but contains an element that is not a bencoded string"));
-                    }
-                };
-                if n_str.len() != 6 {
-                    return Err(Box::from("got krpc message that is a response (y=r) and has a values key in the r map but contains an element that is not 6 chars long"));
-                }
+            for i in (0..peers_str.len()).step_by(6) {
                 let mut peer_ip_buf: [u8; 4] = [0; 4];
-                peer_ip_buf.copy_from_slice(&n_str[0..4]); // todo optmize this
+                peer_ip_buf.copy_from_slice(&peers_str[i..i + 4]);
                 let peer_ip = Ipv4Addr::from(peer_ip_buf);
                 let mut peer_port_buf: [u8; 2] = [0; 2];
-                peer_port_buf.copy_from_slice(&n_str[4..6]); // todo optmize this
+                peer_port_buf.copy_from_slice(&peers_str[i + 4..i + 6]);
                 let peer_port = u16::from_be_bytes(peer_port_buf);
                 peers.push((peer_ip, peer_port));
             }
@@ -561,36 +546,30 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Bo
         }
     } else if let Some(nodes_v) = r_h.get(&b"nodes".to_vec()) {
         // this is a find_node response
-        let nodes_l = match nodes_v {
-            Value::List(nodes_l) => nodes_l,
+        let nodes_str = match nodes_v {
+            Value::Str(nodes_str) => nodes_str,
             _ => {
-                return Err(Box::from("got krpc message that is a response (y=r) and has a nodes key in the r map that is not a list"));
+                return Err(Box::from("got krpc message that is a response (y=r) and has a nodes key in the r map that is not a string"));
             }
         };
+        if nodes_str.len() % 26 != 0 {
+            return Err(Box::from("got krpc message that is a response (y=r) and has a nodes key in the r map that is not a bencoded string with lenght divisible by 26"));
+        }
         let mut nodes = Vec::new();
-        for n in nodes_l {
-            let n_str = match n {
-                Value::Str(n_str) => n_str,
-                _ => {
-                    return Err(Box::from("got krpc message that is a response (y=r) and has a nodes key in the r map but contains an element that is not a bencoded string"));
-                }
-            };
-            if n_str.len() != 26 {
-                return Err(Box::from("got krpc message that is a response (y=r) and has a nodes key in the r map but contains an element that is not 26 chars long"));
-            }
+        for i in (0..nodes_str.len()).step_by(26) {
             let mut node_id_buf: [u8; 20] = [0; 20];
-            node_id_buf.copy_from_slice(&n_str[0..20]); // todo optmize this
+            node_id_buf.copy_from_slice(&nodes_str[i..i + 20]);
             let node_id = force_string(&node_id_buf.to_vec());
             let mut node_ip_buf: [u8; 4] = [0; 4];
-            node_ip_buf.copy_from_slice(&n_str[2..24]); // todo optmize this
+            node_ip_buf.copy_from_slice(&nodes_str[i + 20..i + 24]);
             let node_ip = Ipv4Addr::from(node_ip_buf);
             let mut node_port_buf: [u8; 2] = [0; 2];
-            node_port_buf.copy_from_slice(&n_str[24..26]); // todo optmize this
+            node_port_buf.copy_from_slice(&nodes_str[i + 24..i + 26]);
             let node_port = u16::from_be_bytes(node_port_buf);
             nodes.push((node_id, node_ip, node_port));
         }
         return Ok(
-            KRPCMessage::FindNodeResp(force_string(id_str), (nodes)), // todo really force string here?
+            KRPCMessage::FindNodeResp(force_string(id_str), nodes), // todo really force string here?
         );
     } else {
         // this is a ping or announce_peer response
