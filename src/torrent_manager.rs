@@ -152,46 +152,40 @@ impl TorrentManager {
         self.file_manager.refresh_completed_pieces();
         self.file_manager.refresh_completed_files();
         self.file_manager.log_file_completion_stats();
-        match self.tracker_request(Event::Started).await {
-            Err(e) => {
-                log::error!("could not perform first request to tracker: {}", e);
-            }
-            Ok(()) => {
-                let (to_dht_tx, to_dht_rx) = mpsc::channel(10);
-                let (dht_to_manager_tx, dht_to_manager_rx) = mpsc::channel(1000);
-                self.dht_client.start(to_dht_rx, dht_to_manager_tx).await;
 
-                let (ok_to_accept_connection_tx, ok_to_accept_connection_rx) = mpsc::channel(10);
-                let (piece_completion_status_tx, piece_completion_status_rx) = mpsc::channel(100);
-                let (peers_to_manager_tx, peers_to_manager_rx) =
-                    mpsc::channel::<PeersToManagerMsg>(PEERS_TO_MANAGER_CHANNEL_CAPACITY);
-                peer::run_new_incoming_peers_handler(
-                    self.info_hash.clone(),
-                    self.own_peer_id.clone(),
-                    self.listening_torrent_wire_protocol_port.clone(),
-                    self.file_manager.piece_completion_status.clone(),
-                    ok_to_accept_connection_rx,
-                    piece_completion_status_rx,
-                    peers_to_manager_tx.clone(),
-                )
-                .await;
+        let (to_dht_tx, to_dht_rx) = mpsc::channel(10);
+        let (dht_to_manager_tx, dht_to_manager_rx) = mpsc::channel(1000);
+        // self.dht_client.start(to_dht_rx, dht_to_manager_tx).await;
 
-                let (tick_tx, tick_rx) = mpsc::channel(1);
-                start_tick(tick_tx).await;
+        let (ok_to_accept_connection_tx, ok_to_accept_connection_rx) = mpsc::channel(10);
+        let (piece_completion_status_tx, piece_completion_status_rx) = mpsc::channel(100);
+        let (peers_to_manager_tx, peers_to_manager_rx) =
+            mpsc::channel::<PeersToManagerMsg>(PEERS_TO_MANAGER_CHANNEL_CAPACITY);
+        peer::run_new_incoming_peers_handler(
+            self.info_hash.clone(),
+            self.own_peer_id.clone(),
+            self.listening_torrent_wire_protocol_port.clone(),
+            self.file_manager.piece_completion_status.clone(),
+            ok_to_accept_connection_rx,
+            piece_completion_status_rx,
+            peers_to_manager_tx.clone(),
+        )
+        .await;
 
-                // block forever
-                self.control_loop(
-                    ok_to_accept_connection_tx.clone(),
-                    piece_completion_status_tx.clone(),
-                    peers_to_manager_tx,
-                    peers_to_manager_rx,
-                    tick_rx,
-                    to_dht_tx,
-                    dht_to_manager_rx,
-                )
-                .await;
-            }
-        }
+        let (tick_tx, tick_rx) = mpsc::channel(1);
+        start_tick(tick_tx).await;
+
+        // block forever
+        self.control_loop(
+            ok_to_accept_connection_tx.clone(),
+            piece_completion_status_tx.clone(),
+            peers_to_manager_tx,
+            peers_to_manager_rx,
+            tick_rx,
+            to_dht_tx,
+            dht_to_manager_rx,
+        )
+        .await;
     }
 
     async fn control_loop(
@@ -535,7 +529,12 @@ impl TorrentManager {
                     && unchoked < MIN_UNCHOKED_TO_TRY_DISCOVERING_NEW_PEERS
                     && !self.file_manager.completed())
             {
-                self.tracker_request_async(Event::None).await;
+                let event = if last_tracker_request_time == SystemTime::UNIX_EPOCH {
+                    Event::Started
+                } else {
+                    Event::None
+                };
+                self.tracker_request_async(event).await;
             }
         }
 

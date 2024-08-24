@@ -87,14 +87,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Ok(m) => {
             log::info!("torrent file metainfo:\n{}", m);
             if m.announce_list.len() == 0 {
-                log::error!("The .torrent file does not contain valid announces (\"announce-list\" or \"announce\" fields): trackless torrents or torrents with only \"url-list\" are not supported by this client");
+                log::warn!("The .torrent file does not contain valid announces (\"announce-list\" or \"announce\" fields): this is a trackless torrent relying only on DHT");
                 if m.url_list.len() != 0 {
                     log::warn!("The .torrent file contains a \"url-list\" field, this means the torrent can be dowloaded via HTTP/FTP http://www.bittorrent.org/beps/bep_0019.html), this is not supported by this client");
                 }
-                if m.nodes.len() != 0 {
-                    log::warn!("The .torrent file contains a \"nodes\" field, this means the torrent is announcing via DHT protocol http://bittorrent.org/beps/bep_0005.html, this is not supported by this client");
-                }
-                exit(1);
+            }
+            if m.nodes.len() != 0 {
+                log::info!("The .torrent file contains a \"nodes\" field, the torrent is announcing also via specific DHT nodes");
             }
             TorrentManager::new(base_path, args.port, args.dht_port, m)
                 .start()
