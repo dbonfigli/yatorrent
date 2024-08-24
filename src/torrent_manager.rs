@@ -22,8 +22,8 @@ use crate::{
     tracker::{Event, Response, TrackerClient},
 };
 
-static ENOUGH_PEERS: usize = 100;
-static LOW_ENOUGH_PEERS: usize = 80;
+static CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS: usize = 100;
+static CONNECTED_PEERS_TO_START_NEW_PEER_CONNECTIONS: usize = 80;
 static KEEP_ALIVE_FREQ: Duration = Duration::from_secs(90);
 static MAX_OUTSTANDING_REQUESTS_PER_PEER: usize = 500;
 static MAX_OUTSTANDING_PIECES: usize = 100;
@@ -460,7 +460,7 @@ impl TorrentManager {
             }
         }
         self.bad_peers.insert(peer_addr);
-        if self.peers.len() < ENOUGH_PEERS {
+        if self.peers.len() < CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS {
             ok_to_accept_connection_tx.send(true).await.unwrap();
         }
     }
@@ -470,7 +470,7 @@ impl TorrentManager {
 
         // connect to new peers
         let current_peers_n = self.peers.len();
-        if current_peers_n < LOW_ENOUGH_PEERS {
+        if current_peers_n < CONNECTED_PEERS_TO_START_NEW_PEER_CONNECTIONS {
             let possible_peers_mg = self.advertised_peers.lock().unwrap();
             let possible_peers = possible_peers_mg.clone();
             let now = SystemTime::now();
@@ -488,7 +488,7 @@ impl TorrentManager {
                 .collect::<Vec<_>>();
 
             let candidates_for_new_connections: Vec<_> = possible_peers
-                .choose_multiple(&mut rand::thread_rng(), LOW_ENOUGH_PEERS - current_peers_n)
+                .choose_multiple(&mut rand::thread_rng(), CONNECTED_PEERS_TO_START_NEW_PEER_CONNECTIONS - current_peers_n)
                 .collect();
             // todo:
             // * better algorithm to select new peers
@@ -727,7 +727,7 @@ impl TorrentManager {
             ),
         );
         log::debug!("new peer initialized: {}", peer_addr);
-        if self.peers.len() > ENOUGH_PEERS {
+        if self.peers.len() > CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS {
             log::trace!("stop accepting new peers");
             ok_to_accept_connection_tx.send(false).await.unwrap();
         }
