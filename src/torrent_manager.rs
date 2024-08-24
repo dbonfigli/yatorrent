@@ -9,12 +9,12 @@ use rand::{thread_rng, Rng};
 use size::{Size, Style};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Receiver, Sender};
-use tokio::time;
 
 use crate::dht_protocol::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMsg};
 use crate::peer::{self, PeerAddr, PeersToManagerMsg, ToPeerCancelMsg, ToPeerMsg};
 use crate::piece::Piece;
 use crate::tracker;
+use crate::util::start_tick;
 use crate::wire_protocol::Message;
 use crate::{
     file_manager::FileManager,
@@ -183,7 +183,7 @@ impl TorrentManager {
 
         // start ticker
         let (tick_tx, tick_rx) = mpsc::channel(1);
-        start_tick(tick_tx).await;
+        start_tick(tick_tx, Duration::from_secs(1)).await;
 
         // start contro loop to handle channel messages - will block forever
         self.control_loop(
@@ -774,16 +774,6 @@ impl TorrentManager {
             PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY,
         );
     }
-}
-
-async fn start_tick(tick_tx: Sender<()>) {
-    tokio::spawn(async move {
-        let mut interval = time::interval(Duration::from_secs(1));
-        loop {
-            interval.tick().await;
-            tick_tx.send(()).await.unwrap();
-        }
-    });
 }
 
 fn generate_peer_id() -> String {
