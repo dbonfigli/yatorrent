@@ -1,6 +1,5 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
-use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use std::{error::Error, iter, path::Path};
@@ -433,7 +432,7 @@ impl TorrentManager {
                 }
                 Message::Port(port) => {
                     // we know the peer supports DHT, send this to dht as new node
-                    let peer_ip_addr = peer_addr.parse::<Ipv4Addr>().unwrap();
+                    let peer_ip_addr = peer_addr.split(":").next().unwrap();
                     let _ = to_dht_tx
                         .send(ToDhtMsg::NewNode(format!("{}:{}", peer_ip_addr, port)))
                         .await;
