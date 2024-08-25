@@ -419,7 +419,7 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Box<dyn
         };
 
         // check port is a int
-        let mut port_int: u16 = match port {
+        let port_int: u16 = match port {
             Value::Int(port_int) => match (*port_int).try_into() {
                 Ok(p) => p,
                 Err(_) => {
