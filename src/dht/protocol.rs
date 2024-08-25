@@ -12,7 +12,8 @@ use tokio::{
 use rand::Rng;
 
 use crate::{
-    dht::messages::{decode_krpc_message, encode_krpc_message}, util::{force_string, pretty_info_hash, start_tick}
+    dht::messages::{decode_krpc_message, encode_krpc_message},
+    util::{force_string, pretty_info_hash, start_tick},
 };
 
 use super::messages::KRPCMessage;
@@ -129,10 +130,11 @@ impl DhtManager {
                 Some(msg) = to_dht_manager_rx.recv() => {
                     match msg {
                         ToDhtManagerMsg::GetNewPeers(info_hash) => {
-                            log::trace!("got GetNewPeers msg: {:?}", pretty_info_hash(info_hash));
+                            log::trace!("got GetNewPeers msg from torrent manager: {}", pretty_info_hash(info_hash));
                             // todo do stuff to gather new peers for this info hash
                         }
                         ToDhtManagerMsg::NewNode(addr) => {
+                            log::trace!("got NewNode msg from torrent manager: {}", addr);
                             // ping new dht node to get node id and eventually put it in routing table
                             let tid = generate_transaction_id().to_vec();
                             let buf = encode_krpc_message(tid, KRPCMessage::PingReq(self.own_node_id));
@@ -181,11 +183,11 @@ impl DhtManager {
                     );
                 }
             }
-            KRPCMessage::FindNodeResp(_, _) => {}
-            KRPCMessage::GetPeersReq(_, _) => {}
-            KRPCMessage::GetPeersResp(_, _, _) => {}
-            KRPCMessage::AnnouncePeerReq(_, _, _, _, _) => {}
-            KRPCMessage::Error(_, _) => {}
+            KRPCMessage::FindNodeResp(_, _) => {}    // todo
+            KRPCMessage::GetPeersReq(_, _) => {}     // todo
+            KRPCMessage::GetPeersResp(_, _, _) => {} // todo
+            KRPCMessage::AnnouncePeerReq(_, _, _, _, _) => {} // todo
+            KRPCMessage::Error(_, _) => {}           // todo
         }
     }
 }

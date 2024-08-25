@@ -10,7 +10,9 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 
-use crate::torrent_protocol::wire_protocol::{Message, Protocol, ProtocolReadHalf, ProtocolWriteHalf};
+use crate::torrent_protocol::wire_protocol::{
+    Message, Protocol, ProtocolReadHalf, ProtocolWriteHalf,
+};
 use crate::util::{force_string, pretty_info_hash};
 
 static DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);

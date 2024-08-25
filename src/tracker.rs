@@ -85,9 +85,9 @@ const COMPACT: i32 = 1;
 #[derive(Clone)]
 pub struct TrackerClient {
     peer_id: String,
-    pub tracker_id: Option<String>,
+    tracker_id: Option<String>,
     listening_port: u16,
-    pub trackers_url: Vec<Vec<String>>,
+    trackers_url: Vec<Vec<String>>,
     pub tracker_request_interval: Duration,
 }
 
@@ -173,7 +173,7 @@ impl TrackerClient {
         return Err(Box::from(error_message.join("; ")));
     }
 
-    pub async fn request_to_tracker(
+    async fn request_to_tracker(
         &self,
         url: String,
         info_hash: [u8; 20],
@@ -222,7 +222,7 @@ impl TrackerClient {
         }
     }
 
-    pub async fn request_to_http_tracker(
+    async fn request_to_http_tracker(
         &self,
         url: String,
         info_hash: [u8; 20],
@@ -351,7 +351,7 @@ impl TrackerClient {
         }))
     }
 
-    pub async fn request_to_udp_tracker(
+    async fn request_to_udp_tracker(
         &self,
         url: String,
         info_hash: [u8; 20],

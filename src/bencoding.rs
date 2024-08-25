@@ -42,10 +42,6 @@ pub enum Value {
 }
 
 impl Value {
-    fn new_error(elem: ErrorElem, index: IndexOfError) -> Self {
-        Value::Error(ParseError { elem, index })
-    }
-
     pub fn encode(&self) -> Vec<u8> {
         match self {
             Value::Error(_) => b"!!!error!!!".to_vec(),
@@ -58,6 +54,10 @@ impl Value {
 
     pub fn new(source: &Vec<u8>) -> Self {
         from_char_vec(&source, 0).0
+    }
+
+    fn new_error(elem: ErrorElem, index: IndexOfError) -> Self {
+        Value::Error(ParseError { elem, index })
     }
 }
 
