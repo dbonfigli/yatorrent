@@ -87,6 +87,7 @@ impl Peer {
 pub struct TorrentManager {
     file_manager: FileManager,
     tracker_client: Arc<Mutex<TrackerClient>>,
+    last_tracker_request_time: SystemTime,
     info_hash: [u8; 20],
     own_peer_id: String,
     listening_torrent_wire_protocol_port: u16,
@@ -124,6 +125,7 @@ impl TorrentManager {
                 metainfo.announce_list.clone(),
                 listening_torrent_wire_protocol_port,
             ))),
+            last_tracker_request_time: SystemTime::UNIX_EPOCH,
             info_hash: metainfo.info_hash,
             own_peer_id: own_peer_id.clone(),
             listening_torrent_wire_protocol_port,
@@ -531,10 +533,9 @@ impl TorrentManager {
 
         // send status to tracker
         let tracker_client_mg = self.tracker_client.lock().unwrap();
-        let last_tracker_request_time = tracker_client_mg.last_tracker_request_time;
         let tracker_request_interval = tracker_client_mg.tracker_request_interval;
         drop(tracker_client_mg);
-        if let Ok(elapsed) = now.duration_since(last_tracker_request_time) {
+        if let Ok(elapsed) = now.duration_since(self.last_tracker_request_time) {
             let unchoked = self
                 .peers
                 .iter()
@@ -545,7 +546,7 @@ impl TorrentManager {
                     && unchoked < MIN_UNCHOKED_TO_TRY_DISCOVERING_NEW_PEERS
                     && !self.file_manager.completed())
             {
-                let event = if last_tracker_request_time == SystemTime::UNIX_EPOCH {
+                let event = if self.last_tracker_request_time == SystemTime::UNIX_EPOCH {
                     Event::Started
                 } else {
                     Event::None
@@ -640,34 +641,8 @@ impl TorrentManager {
         }
     }
 
-    async fn tracker_request(&mut self, event: Event) -> Result<(), Box<dyn Error + Sync + Send>> {
-        let tracker_client_mg = self.tracker_client.lock().unwrap();
-        let tracker_client = tracker_client_mg.clone();
-        drop(tracker_client_mg);
-        match tracker_request(
-            tracker_client,
-            event,
-            self.file_manager.bytes_left(),
-            self.info_hash,
-            self.uploaded_bytes,
-            self.downloaded_bytes,
-        )
-        .await
-        {
-            Ok((updated_tracker_client, latest_advertised_peers)) => {
-                update_tracker_client_and_advertised_peers(
-                    self.tracker_client.clone(),
-                    self.advertised_peers.clone(),
-                    updated_tracker_client,
-                    latest_advertised_peers,
-                );
-                Ok(())
-            }
-            Err(e) => Err(e),
-        }
-    }
-
     async fn tracker_request_async(&mut self, event: Event) {
+        self.last_tracker_request_time = SystemTime::now();
         let bytes_left = self.file_manager.bytes_left();
         let info_hash = self.info_hash;
         let uploaded_bytes = self.uploaded_bytes;

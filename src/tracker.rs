@@ -90,7 +90,6 @@ pub struct TrackerClient {
     listening_port: u16,
     pub trackers_url: Vec<Vec<String>>,
     pub tracker_request_interval: Duration,
-    pub last_tracker_request_time: SystemTime,
 }
 
 impl TrackerClient {
@@ -108,8 +107,7 @@ impl TrackerClient {
             tracker_id: Option::None,
             listening_port,
             trackers_url: randomized_tiers,
-            tracker_request_interval: Duration::from_secs(0),
-            last_tracker_request_time: SystemTime::UNIX_EPOCH,
+            tracker_request_interval: Duration::from_secs(600), // high inteval by default to avoid bombarding tracker before we get the proper interval from it
         }
     }
 
@@ -160,9 +158,6 @@ impl TrackerClient {
                         // update tracker request interval
                         self.tracker_request_interval =
                             Duration::from_secs(response.interval as u64);
-                        // keep track of latest request time
-                        self.last_tracker_request_time = SystemTime::now();
-                        return Ok(Response::Ok(response));
                     }
                     Err(e) => {
                         log::debug!("error from tracker {}: {}", url.clone(), e);
