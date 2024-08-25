@@ -157,6 +157,7 @@ impl TrackerClient {
                         // update tracker request interval
                         self.tracker_request_interval =
                             Duration::from_secs(response.interval as u64);
+                        return Ok(Response::Ok(response));
                     }
                     Err(e) => {
                         log::debug!("error from tracker {}: {}", url.clone(), e);
@@ -267,7 +268,7 @@ impl TrackerClient {
             .collect()
         {
             Ok(b) => b,
-            Err(e) => return Err(Box::new(e)),
+            Err(e) => return Err(Box::from(format!("error on http request: {}", e))),
         };
 
         let response_map = match Value::new(&body) {
