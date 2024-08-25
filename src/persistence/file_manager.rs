@@ -9,7 +9,7 @@ use std::fs::File;
 use sha1::{Digest, Sha1};
 use size::Size;
 
-use crate::piece::Piece;
+use crate::persistence::piece::Piece;
 
 pub struct FileManager {
     file_list: Vec<(PathBuf, u64, bool)>, // name with path, size, download completed / incomplete

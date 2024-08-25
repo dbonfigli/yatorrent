@@ -10,15 +10,15 @@ use size::{Size, Style};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
-use crate::dht_protocol::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMsg};
-use crate::peer::{self, PeerAddr, PeersToManagerMsg, ToPeerCancelMsg, ToPeerMsg};
-use crate::piece::Piece;
+use crate::dht::protocol::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMsg};
+use crate::manager::peer::{self, PeerAddr, PeersToManagerMsg, ToPeerCancelMsg, ToPeerMsg};
+use crate::persistence::piece::Piece;
+use crate::torrent_protocol::wire_protocol::Message;
 use crate::tracker;
 use crate::util::start_tick;
-use crate::wire_protocol::Message;
 use crate::{
-    file_manager::FileManager,
     metainfo::Metainfo,
+    persistence::file_manager::FileManager,
     tracker::{Event, Response, TrackerClient},
 };
 

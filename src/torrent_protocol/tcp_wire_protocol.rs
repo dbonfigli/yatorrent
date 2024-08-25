@@ -7,7 +7,9 @@ use tokio::{
     net::TcpStream,
 };
 
-use crate::wire_protocol::{Message, Protocol, ProtocolError, ProtocolReadHalf, ProtocolWriteHalf};
+use crate::torrent_protocol::wire_protocol::{
+    Message, Protocol, ProtocolError, ProtocolReadHalf, ProtocolWriteHalf,
+};
 
 impl Protocol for TcpStream {
     async fn handshake(

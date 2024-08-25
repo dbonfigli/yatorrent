@@ -1,4 +1,5 @@
 use clap::Parser;
+use manager::torrent_manager;
 use std::env::current_dir;
 use std::error::Error;
 use std::path::Path;
@@ -8,17 +9,13 @@ use std::{fmt, fs};
 use torrent_manager::TorrentManager;
 
 mod bencoding;
-mod dht_messages;
-mod dht_protocol;
-mod file_manager;
+mod dht;
+mod manager;
 mod metainfo;
-mod peer;
-mod piece;
-mod tcp_wire_protocol;
-mod torrent_manager;
+mod persistence;
+mod torrent_protocol;
 mod tracker;
 mod util;
-mod wire_protocol;
 
 #[cfg(test)]
 #[macro_use]

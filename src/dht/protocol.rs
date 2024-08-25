@@ -12,9 +12,10 @@ use tokio::{
 use rand::Rng;
 
 use crate::{
-    dht_messages::{decode_krpc_message, encode_krpc_message, KRPCMessage},
-    util::{force_string, pretty_info_hash, start_tick},
+    dht::messages::{decode_krpc_message, encode_krpc_message}, util::{force_string, pretty_info_hash, start_tick}
 };
+
+use super::messages::KRPCMessage;
 
 // NOTE! we are only supporting IPv4 DHT, i.e. BEP 32 (https://www.bittorrent.org/beps/bep_0032.html) is not implemented
 
