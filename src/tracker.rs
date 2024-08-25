@@ -1,18 +1,17 @@
 use rand::{thread_rng, Rng};
 use reqwest::ClientBuilder;
-use tokio::{net::UdpSocket, time::timeout};
+use tokio::{
+    net::UdpSocket,
+    time::{sleep, timeout},
+};
 
 use crate::bencoding::Value;
 use rand::seq::SliceRandom;
-use std::{
-    error::Error,
-    fmt,
-    io::Read,
-    str,
-    time::{Duration, SystemTime},
-};
+use std::{error::Error, fmt, io::Read, str, time::Duration};
 
 static UDP_TIMEOUT: Duration = Duration::from_secs(15);
+static UDP_RETRY_COOLOFF_SEC: u64 = 15;
+static UDP_MAX_RETRIES: u32 = 3; // according to https://www.bittorrent.org/beps/bep_0015.html it should be 8, but it is way too much
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct Peer {
@@ -181,15 +180,41 @@ impl TrackerClient {
         downloaded: u64,
         left: u64,
         event: Event,
-    ) -> Result<Response, Box<dyn Error>> {
+    ) -> Result<Response, Box<dyn Error + Sync + Send>> {
         if url.starts_with("http") {
+            log::debug!("trying reaching http tracker {}...", url);
             return self
                 .request_to_http_tracker(url, info_hash, uploaded, downloaded, left, event)
                 .await;
         } else if url.starts_with("udp") {
-            return self
-                .request_to_udp_tracker(url, info_hash, uploaded, downloaded, left, event)
-                .await;
+            let mut attempts = 0;
+            loop {
+                log::debug!("trying reaching udp tracker {}...", url);
+                match self
+                    .request_to_udp_tracker(
+                        url.clone(),
+                        info_hash,
+                        uploaded,
+                        downloaded,
+                        left,
+                        event.clone(),
+                    )
+                    .await
+                {
+                    Ok(r) => return Ok(r),
+                    Err(e) => {
+                        if attempts > UDP_MAX_RETRIES {
+                            return Err(e);
+                        } else {
+                            sleep(Duration::from_secs(
+                                UDP_RETRY_COOLOFF_SEC * 2u64.pow(attempts),
+                            ))
+                            .await;
+                            attempts += 1;
+                        }
+                    }
+                }
+            }
         } else {
             // some torrents are announcing webtorrent websockets with scheme wss://
             return Err(Box::from(format!("scheme of url not supported: {}", url)));
@@ -204,7 +229,7 @@ impl TrackerClient {
         downloaded: u64,
         left: u64,
         event: Event,
-    ) -> Result<Response, Box<dyn Error>> {
+    ) -> Result<Response, Box<dyn Error + Sync + Send>> {
         let mut url = reqwest::Url::parse_with_params(
             url.as_str(),
             &[
@@ -333,7 +358,7 @@ impl TrackerClient {
         downloaded: u64,
         left: u64,
         event: Event,
-    ) -> Result<Response, Box<dyn Error>> {
+    ) -> Result<Response, Box<dyn Error + Sync + Send>> {
         let url = reqwest::Url::parse(&url)?;
         let host = match url.host() {
             Some(h) => h,
@@ -520,7 +545,9 @@ impl TrackerClient {
     }
 }
 
-fn get_peers_wiht_dict_model(peers_values: &Vec<Value>) -> Result<Vec<Peer>, Box<dyn Error>> {
+fn get_peers_wiht_dict_model(
+    peers_values: &Vec<Value>,
+) -> Result<Vec<Peer>, Box<dyn Error + Sync + Send>> {
     let mut peers_list: Vec<Peer> = Vec::new();
     for v in peers_values {
         match v {
@@ -557,7 +584,9 @@ fn get_peers_wiht_dict_model(peers_values: &Vec<Value>) -> Result<Vec<Peer>, Box
     Ok(peers_list)
 }
 
-fn get_peers_wiht_binary_model(peers_bytes: &Vec<u8>) -> Result<Vec<Peer>, Box<dyn Error>> {
+fn get_peers_wiht_binary_model(
+    peers_bytes: &Vec<u8>,
+) -> Result<Vec<Peer>, Box<dyn Error + Sync + Send>> {
     if peers_bytes.len() % 6 != 0 {
         return Err(
             "Peers list is provided in binary model but it is not aligned to 6 bytes".into(),
