@@ -154,7 +154,6 @@ impl TorrentManager {
         let mut dht_manager = DhtManager::new(
             self.listening_torrent_wire_protocol_port,
             self.listening_dht_port,
-            self.own_peer_id.clone(),
             self.dht_nodes.clone(),
         );
         tokio::spawn(async move {
