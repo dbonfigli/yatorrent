@@ -33,7 +33,6 @@ static TO_PEER_CANCEL_CHANNEL_CAPACITY: usize = 1000;
 static PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY: usize = 50000;
 static REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 static MIN_CHOKE_TIME: Duration = Duration::from_secs(60);
-static MIN_UNCHOKED_TO_TRY_DISCOVERING_NEW_PEERS: i32 = 3;
 static NEW_CONNECTION_COOL_OFF_PERIOD: Duration = Duration::from_secs(180);
 
 pub struct Peer {
@@ -536,16 +535,7 @@ impl TorrentManager {
         let tracker_request_interval = tracker_client_mg.tracker_request_interval;
         drop(tracker_client_mg);
         if let Ok(elapsed) = now.duration_since(self.last_tracker_request_time) {
-            let unchoked = self
-                .peers
-                .iter()
-                .fold(0, |acc, (_, p)| if !p.peer_choking { acc + 1 } else { acc });
-            if elapsed > tracker_request_interval
-                // todo: with this we try to get more peers if the current ones we know are not good for downloading, this is not an encouraged strategy
-                || (elapsed > Duration::from_secs(60)
-                    && unchoked < MIN_UNCHOKED_TO_TRY_DISCOVERING_NEW_PEERS
-                    && !self.file_manager.completed())
-            {
+            if elapsed > tracker_request_interval {
                 let event = if self.last_tracker_request_time == SystemTime::UNIX_EPOCH {
                     Event::Started
                 } else {
