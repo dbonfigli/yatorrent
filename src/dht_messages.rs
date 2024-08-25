@@ -3,20 +3,20 @@ use std::{collections::HashMap, error::Error, net::Ipv4Addr};
 
 #[derive(Debug)]
 pub enum KRPCMessage {
-    PingReq(String),                                          // querying nodes id
-    PingOrAnnouncePeerResp(Vec<u8>), // queried nodes id, resps to ping or announce_peer messages cannot be distinghised by themselves without original transaciton id
-    FindNodeReq(Vec<u8>, Vec<u8>),   // querying node id, id of target node
-    FindNodeResp(String, Vec<(String, Ipv4Addr, u16)>), // queried node id, list of (20-byte Node ID in network byte order, IP-address, port)
-    GetPeersReq(Vec<u8>, Vec<u8>), // querying node id, 20-byte infohash of target torrent
-    GetPeersResp(String, Vec<u8>, GetPeersRespValuesOrNodes), // queried nodes id, token for a future announce_peer query, either "values" (list of peers having the info hash) or "nodes" (K nodes in the queried nodes routing table closest to the infohash supplied in the query)
-    AnnouncePeerReq(Vec<u8>, Vec<u8>, u16, Vec<u8>, bool), // querying node id, 20-byte infohash of target torrent, port where we are listeing for torrent wire protocol, token received in response to a previous get_peers query, wether to imply port
-    Error(ErrorType, String),                              // error type, message
+    PingReq([u8; 20]),                                          // querying nodes id
+    PingOrAnnouncePeerResp([u8; 20]), // queried nodes id, resps to ping or announce_peer messages cannot be distinghised by themselves without original transaciton id
+    FindNodeReq([u8; 20], [u8; 20]),  // querying node id, id of target node
+    FindNodeResp([u8; 20], Vec<([u8; 20], Ipv4Addr, u16)>), // queried node id, list of (20-byte Node ID in network byte order, IP-address, port)
+    GetPeersReq([u8; 20], [u8; 20]), // querying node id, 20-byte infohash of target torrent
+    GetPeersResp([u8; 20], Vec<u8>, GetPeersRespValuesOrNodes), // queried nodes id, token for a future announce_peer query, either "values" (list of peers having the info hash) or "nodes" (K nodes in the queried nodes routing table closest to the infohash supplied in the query)
+    AnnouncePeerReq([u8; 20], [u8; 20], u16, Vec<u8>, bool), // querying node id, 20-byte infohash of target torrent, port where we are listeing for torrent wire protocol, token received in response to a previous get_peers query, wether to imply port
+    Error(ErrorType, String),                                // error type, message
 }
 
 #[derive(Debug)]
 pub enum GetPeersRespValuesOrNodes {
-    Nodes(Vec<(String, Ipv4Addr, u16)>), // 20-byte Node ID in network byte order, IP-address, port
-    Values(Vec<(Ipv4Addr, u16)>),        // peer IP-address, peer port
+    Nodes(Vec<([u8; 20], Ipv4Addr, u16)>), // 20-byte Node ID in network byte order, IP-address, port
+    Values(Vec<(Ipv4Addr, u16)>),          // peer IP-address, peer port
 }
 
 #[derive(Debug)]
@@ -61,7 +61,7 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
             h.insert(
                 b"a".to_vec(),
                 Value::Dict(
-                    HashMap::from([(b"id".to_vec(), Value::Str(id.into_bytes()))]),
+                    HashMap::from([(b"id".to_vec(), Value::Str(id.to_vec()))]),
                     0, // this is discarded when creating hashmap bencoded values
                     0, // this is discarded when creating hashmap bencoded values
                 ),
@@ -72,7 +72,7 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
             h.insert(
                 b"r".to_vec(),
                 Value::Dict(
-                    HashMap::from([(b"id".to_vec(), Value::Str(id))]),
+                    HashMap::from([(b"id".to_vec(), Value::Str(id.to_vec()))]),
                     0, // this is discarded when creating hashmap bencoded values
                     0, // this is discarded when creating hashmap bencoded values
                 ),
@@ -85,8 +85,8 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
                 b"a".to_vec(),
                 Value::Dict(
                     HashMap::from([
-                        (b"id".to_vec(), Value::Str(querying_node_id)),
-                        (b"target".to_vec(), Value::Str(target_node_id)),
+                        (b"id".to_vec(), Value::Str(querying_node_id.to_vec())),
+                        (b"target".to_vec(), Value::Str(target_node_id.to_vec())),
                     ]),
                     0, // this is discarded when creating hashmap bencoded values
                     0, // this is discarded when creating hashmap bencoded values
@@ -96,7 +96,7 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
         KRPCMessage::FindNodeResp(queried_node_id, nodes) => {
             let mut compact_node_info = vec![0u8; nodes.len() * 26];
             for (i, (node_id, ip, port)) in nodes.iter().enumerate() {
-                compact_node_info[i..i + 20].copy_from_slice(&node_id.clone().into_bytes());
+                compact_node_info[i..i + 20].copy_from_slice(node_id);
                 compact_node_info[i + 20..i + 24].copy_from_slice(&ip.octets());
                 compact_node_info[i + 24..i + 26].copy_from_slice(&port.to_be_bytes());
             }
@@ -105,7 +105,7 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
                 b"r".to_vec(),
                 Value::Dict(
                     HashMap::from([
-                        (b"id".to_vec(), Value::Str(queried_node_id.into_bytes())),
+                        (b"id".to_vec(), Value::Str(queried_node_id.to_vec())),
                         (b"nodes".to_vec(), Value::Str(compact_node_info)),
                     ]),
                     0, // this is discarded when creating hashmap bencoded values
@@ -120,8 +120,8 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
                 b"a".to_vec(),
                 Value::Dict(
                     HashMap::from([
-                        (b"id".to_vec(), Value::Str(querying_node_id)),
-                        (b"info_hash".to_vec(), Value::Str(target_infohash)),
+                        (b"id".to_vec(), Value::Str(querying_node_id.to_vec())),
+                        (b"info_hash".to_vec(), Value::Str(target_infohash.to_vec())),
                     ]),
                     0, // this is discarded when creating hashmap bencoded values
                     0, // this is discarded when creating hashmap bencoded values
@@ -130,14 +130,14 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
         }
         KRPCMessage::GetPeersResp(queried_node_ip, token, values_or_nodes) => {
             let mut r = HashMap::from([
-                (b"id".to_vec(), Value::Str(queried_node_ip.into_bytes())),
+                (b"id".to_vec(), Value::Str(queried_node_ip.to_vec())),
                 (b"token".to_vec(), Value::Str(token)),
             ]);
             match values_or_nodes {
                 GetPeersRespValuesOrNodes::Nodes(nodes) => {
                     let mut compact_node_info = vec![0u8; nodes.len() * 26];
                     for (i, (node_id, ip, port)) in nodes.iter().enumerate() {
-                        compact_node_info[i..i + 20].copy_from_slice(&node_id.clone().into_bytes());
+                        compact_node_info[i..i + 20].copy_from_slice(node_id);
                         compact_node_info[i + 20..i + 24].copy_from_slice(&ip.octets());
                         compact_node_info[i + 24..i + 26].copy_from_slice(&port.to_be_bytes());
                     }
@@ -162,7 +162,7 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
                 b"a".to_vec(),
                 Value::Dict(
                     HashMap::from([
-                        (b"id".to_vec(), Value::Str(querying_node_id)),
+                        (b"id".to_vec(), Value::Str(querying_node_id.to_vec())),
                         (
                             b"implied_port".to_vec(),
                             if implied_port {
@@ -171,7 +171,7 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
                                 Value::Int(0)
                             },
                         ),
-                        (b"info_hash".to_vec(), Value::Str(info_hash)),
+                        (b"info_hash".to_vec(), Value::Str(info_hash.to_vec())),
                         (b"port".to_vec(), Value::Int(port as i64)),
                         (b"token".to_vec(), Value::Str(token)),
                     ]),
@@ -294,6 +294,11 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Box<dyn
             return Err(Box::from("got krpc message that is a query (y=q) with \"a\" key that is a dict with id key that is not a bencoded string"));
         }
     };
+    // check id is 20b
+    if id_str.len() != 20 {
+        return Err(Box::from("got krpc message that is a query (y=q) with \"a\" key that is a dict with id key that is not a bencoded string of 20 chars"));
+    }
+    let id_arr = id_str[0..20].try_into().unwrap();
 
     // check q existance
     let q = match h.get(&b"q".to_vec()) {
@@ -317,7 +322,7 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Box<dyn
 
     // check q type
     if q_str == b"ping" {
-        return Ok(KRPCMessage::PingOrAnnouncePeerResp(id_str.clone()));
+        return Ok(KRPCMessage::PingOrAnnouncePeerResp(id_arr));
     } else if q_str == b"find_node" {
         // check a contains target
         let target = match a_h.get(&b"target".to_vec()) {
@@ -336,8 +341,13 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Box<dyn
                 return Err(Box::from("got krpc message that is a find_node query (y=q) with \"a\" key that is a dict with target key that is not a bencoded string"));
             }
         };
+        // check target is 20b
+        if target_str.len() != 20 {
+            return Err(Box::from("got krpc message that is a find_node query (y=q) with \"a\" key that is a dict with target key that is not a bencoded string of 20 chars"));
+        }
+        let target_arr = target_str[0..20].try_into().unwrap();
 
-        return Ok(KRPCMessage::FindNodeReq(id_str.clone(), target_str.clone()));
+        return Ok(KRPCMessage::FindNodeReq(id_arr, target_arr));
     } else if q_str == b"get_peers" {
         // check a contains info_hash
         let info_hash = match a_h.get(&b"info_hash".to_vec()) {
@@ -348,7 +358,6 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Box<dyn
                 ));
             }
         };
-
         // check info_hash is a string
         let info_hash_str = match info_hash {
             Value::Str(info_hash_str) => info_hash_str,
@@ -356,11 +365,13 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Box<dyn
                 return Err(Box::from("got krpc message that is a get_peers query (y=q) with \"a\" key that is a dict with info_hash key that is not a bencoded string"));
             }
         };
+        // check info_hash is 20b
+        if info_hash_str.len() != 20 {
+            return Err(Box::from("got krpc message that is a get_peers query (y=q) with \"a\" key that is a dict with info_hash key that is not a bencoded string of 20 chars"));
+        }
+        let info_hash_arr = info_hash_str[0..20].try_into().unwrap();
 
-        return Ok(KRPCMessage::GetPeersReq(
-            id_str.clone(),
-            info_hash_str.clone(),
-        ));
+        return Ok(KRPCMessage::GetPeersReq(id_arr, info_hash_arr));
     } else if q_str == b"announce_peer" {
         // check a contains info_hash
         let info_hash = match a_h.get(&b"info_hash".to_vec()) {
@@ -377,6 +388,11 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Box<dyn
                 return Err(Box::from("got krpc message that is a announce_peer query (y=q) with \"a\" key that is a dict with info_hash key that is not a bencoded string"));
             }
         };
+        // check info_hash is 20b
+        if info_hash_str.len() != 20 {
+            return Err(Box::from("got krpc message that is a announce_peer query (y=q) with \"a\" key that is a dict with info_hash key that is not a bencoded string of 20 chars"));
+        }
+        let info_hash_arr = info_hash_str[0..20].try_into().unwrap();
 
         // check a contains token
         let token = match a_h.get(&b"token".to_vec()) {
@@ -423,8 +439,8 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Box<dyn
         }
 
         return Ok(KRPCMessage::AnnouncePeerReq(
-            id_str.clone(),
-            info_hash_str.clone(),
+            id_arr,
+            info_hash_arr,
             port_int,
             token_str.clone(),
             implied_port,
@@ -474,6 +490,11 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Bo
             return Err(Box::from("got krpc message that is a response (y=r) but but id key in r map is not a bencoded string"));
         }
     };
+    // check id is 20b
+    if id_str.len() != 20 {
+        return Err(Box::from("got krpc message that is a response (y=r) but but id key in r map is not a bencoded string of 20 chars"));
+    }
+    let id_arr = id_str[0..20].try_into().unwrap();
 
     // check token existence
     if let Some(token) = r_h.get(&b"token".to_vec()) {
@@ -496,9 +517,8 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Bo
             }
             let mut nodes = Vec::new();
             for i in (0..nodes_str.len()).step_by(26) {
-                let mut node_id_buf: [u8; 20] = [0; 20];
-                node_id_buf.copy_from_slice(&nodes_str[i..i + 20]);
-                let node_id = force_string(&node_id_buf.to_vec());
+                let mut node_id: [u8; 20] = [0; 20];
+                node_id.copy_from_slice(&nodes_str[i..i + 20]);
                 let mut node_ip_buf: [u8; 4] = [0; 4];
                 node_ip_buf.copy_from_slice(&nodes_str[i + 20..i + 24]);
                 let node_ip = Ipv4Addr::from(node_ip_buf);
@@ -507,13 +527,11 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Bo
                 let node_port = u16::from_be_bytes(node_port_buf);
                 nodes.push((node_id, node_ip, node_port));
             }
-            return Ok(
-                KRPCMessage::GetPeersResp(
-                    force_string(id_str),
-                    token_str.clone(),
-                    GetPeersRespValuesOrNodes::Nodes(nodes),
-                ), // todo really force string here?
-            );
+            return Ok(KRPCMessage::GetPeersResp(
+                id_arr,
+                token_str.clone(),
+                GetPeersRespValuesOrNodes::Nodes(nodes),
+            ));
         } else if let Some(peers_v) = r_h.get(&b"values".to_vec()) {
             let peers_str = match peers_v {
                 Value::Str(peers_str) => peers_str,
@@ -534,13 +552,11 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Bo
                 let peer_port = u16::from_be_bytes(peer_port_buf);
                 peers.push((peer_ip, peer_port));
             }
-            return Ok(
-                KRPCMessage::GetPeersResp(
-                    force_string(id_str),
-                    token_str.clone(),
-                    GetPeersRespValuesOrNodes::Values(peers),
-                ), // todo really force string here?
-            );
+            return Ok(KRPCMessage::GetPeersResp(
+                id_arr,
+                token_str.clone(),
+                GetPeersRespValuesOrNodes::Values(peers),
+            ));
         } else {
             return Err(Box::from("got krpc message that is a response (y=r) and has a token key in the r map but no nodes or values key"));
         }
@@ -557,9 +573,8 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Bo
         }
         let mut nodes = Vec::new();
         for i in (0..nodes_str.len()).step_by(26) {
-            let mut node_id_buf: [u8; 20] = [0; 20];
-            node_id_buf.copy_from_slice(&nodes_str[i..i + 20]);
-            let node_id = force_string(&node_id_buf.to_vec());
+            let mut node_id: [u8; 20] = [0; 20];
+            node_id.copy_from_slice(&nodes_str[i..i + 20]);
             let mut node_ip_buf: [u8; 4] = [0; 4];
             node_ip_buf.copy_from_slice(&nodes_str[i + 20..i + 24]);
             let node_ip = Ipv4Addr::from(node_ip_buf);
@@ -568,12 +583,10 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Bo
             let node_port = u16::from_be_bytes(node_port_buf);
             nodes.push((node_id, node_ip, node_port));
         }
-        return Ok(
-            KRPCMessage::FindNodeResp(force_string(id_str), nodes), // todo really force string here?
-        );
+        return Ok(KRPCMessage::FindNodeResp(id_arr, nodes));
     } else {
         // this is a ping or announce_peer response
-        return Ok(KRPCMessage::PingOrAnnouncePeerResp(id_str.clone()));
+        return Ok(KRPCMessage::PingOrAnnouncePeerResp(id_arr));
     }
 }
 
