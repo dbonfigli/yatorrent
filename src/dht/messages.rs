@@ -37,7 +37,7 @@ impl ErrorType {
         }
     }
 
-    fn from_code(code: i64) -> Result<Self, Box<dyn Error>> {
+    fn from_code(code: i64) -> Result<Self, Box<dyn Error + Sync + Send>> {
         match code {
             201 => Ok(ErrorType::GenericError),
             202 => Ok(ErrorType::ServerError),
@@ -197,7 +197,7 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
 
 pub fn decode_krpc_message(
     data: Vec<u8>,
-) -> Result<(Vec<u8> /* transaction id */, KRPCMessage), Box<dyn Error>> {
+) -> Result<(Vec<u8> /* transaction id */, KRPCMessage), Box<dyn Error + Sync + Send>> {
     let transaction_id;
     let bencoded_data = Value::new(&data);
     match bencoded_data {
@@ -256,7 +256,9 @@ pub fn decode_krpc_message(
     }
 }
 
-fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Box<dyn Error>> {
+fn parse_req_message(
+    h: &HashMap<Vec<u8>, Value>,
+) -> Result<KRPCMessage, Box<dyn Error + Sync + Send>> {
     // check a existance
     let a = match h.get(&b"a".to_vec()) {
         Some(a) => a,
@@ -452,7 +454,9 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Box<dyn
     }
 }
 
-fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Box<dyn Error>> {
+fn parse_response_message(
+    h: &HashMap<Vec<u8>, Value>,
+) -> Result<KRPCMessage, Box<dyn Error + Sync + Send>> {
     // check r existance
     let r = match h.get(&b"r".to_vec()) {
         Some(r) => r,
@@ -590,7 +594,9 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Bo
     }
 }
 
-fn parse_error_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Box<dyn Error>> {
+fn parse_error_message(
+    h: &HashMap<Vec<u8>, Value>,
+) -> Result<KRPCMessage, Box<dyn Error + Sync + Send>> {
     let e = match h.get(&b"e".to_vec()) {
         Some(e) => e,
         None => {

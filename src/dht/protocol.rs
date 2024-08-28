@@ -122,7 +122,7 @@ impl DhtManager {
                             log::warn!("error decoding incoming dht message from {}: {}", addr, e);
                         }
                         Ok((transaction_id, msg)) => {
-                            self.handle_incoming_message(addr, transaction_id, msg);
+                            self.handle_incoming_message(addr, transaction_id, msg, &socket).await;
                         }
                     }
                 }
@@ -150,11 +150,12 @@ impl DhtManager {
         }
     }
 
-    fn handle_incoming_message(
+    async fn handle_incoming_message(
         &mut self,
         addr: SocketAddr,
         transaction_id: Vec<u8>,
         msg: KRPCMessage,
+        socket: &UdpSocket,
     ) {
         log::warn!(
             "got message from {}: tid: {}, msg: {:?}",
@@ -163,7 +164,15 @@ impl DhtManager {
             msg
         );
         match msg {
-            KRPCMessage::PingReq(_) => {}
+            KRPCMessage::PingReq(querying_node_id) => {
+                // todo refresh last seen in routing table, if present
+                self.do_req(
+                    socket,
+                    addr.to_string(),
+                    KRPCMessage::PingOrAnnouncePeerResp(self.own_node_id),
+                )
+                .await;
+            }
             KRPCMessage::PingOrAnnouncePeerResp(queried_node_id) => {
                 if !self.inflght_requests.contains_key(&transaction_id) {
                     log::warn!("got a ping or announce peer resp from {} for an unknown transaction id we didn't perform, ignoring it", addr);
@@ -197,7 +206,9 @@ impl DhtManager {
             KRPCMessage::GetPeersReq(_, _) => {}     // todo
             KRPCMessage::GetPeersResp(_, _, _) => {} // todo
             KRPCMessage::AnnouncePeerReq(_, _, _, _, _) => {} // todo
-            KRPCMessage::Error(_, _) => {}           // todo
+            KRPCMessage::Error(t, msg) => {
+                log::debug!("got dht error message {:?}: {}", t, msg);
+            }
         }
     }
 }
