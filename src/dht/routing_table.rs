@@ -43,6 +43,26 @@ impl Bucket {
         };
     }
 
+    pub fn get(&self, node_id: &[u8; 20]) -> Option<[u8; 20]> {
+        let node_id_big_uint = BigUint::from_bytes_be(node_id);
+        match &self.content {
+            BucketContent::Buckets(b) => {
+                if node_id_big_uint <= b[0].to {
+                    b[0].get(node_id)
+                } else {
+                    b[1].get(node_id)
+                }
+            }
+            BucketContent::Nodes(n) => {
+                if let Ok(i) = n.binary_search(&node_id_big_uint) {
+                    Some(biguint_to_u8_20(&n[i]))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
     pub fn as_vec(&self) -> Vec<[u8; 20]> {
         self.as_vec_in_biguint()
             .iter()
@@ -370,5 +390,26 @@ mod tests {
         let mut expected_closest_nodes = vec![n1, n2, n3, n4, n5, n6, n7, n8];
         expected_closest_nodes.sort();
         assert_eq!(closest_nodes, expected_closest_nodes)
+    }
+
+    #[test]
+    fn test_get() {
+        let mut b = Bucket::new([0; 20]);
+        for i in 0..255 {
+            let mut new_n = [0; 20];
+            new_n[10] = i as u8;
+            b.add(new_n);
+        }
+        let mut target = [0; 20];
+        target[0] = 0b00000001;
+        let ret = b.get(&target);
+        assert_matches!(ret, None);
+
+        let mut target = [0; 20];
+        target[10] = 0b0000100;
+        let ret = b.get(&target);
+        assert_matches!(ret, Some(node_id) => {
+            assert_eq!(node_id, target)
+        });
     }
 }
