@@ -16,7 +16,7 @@ use crate::{
     util::{force_string, pretty_info_hash, start_tick},
 };
 
-use super::messages::KRPCMessage;
+use super::{messages::KRPCMessage, routing_table::Bucket};
 
 // NOTE! we are only supporting IPv4 DHT, i.e. BEP 32 (https://www.bittorrent.org/beps/bep_0032.html) is not implemented
 
@@ -48,6 +48,7 @@ pub struct DhtManager {
     own_node_id: [u8; 20],
     bootstrap_nodes: Vec<String>,
     inflght_requests: HashMap<Vec<u8>, String>, // transaction id -> dest addr
+    routing_table: Bucket,
 }
 
 impl DhtManager {
@@ -71,6 +72,7 @@ impl DhtManager {
             own_node_id,
             bootstrap_nodes,
             inflght_requests: HashMap::new(),
+            routing_table: Bucket::new(own_node_id),
         };
     }
 
@@ -101,7 +103,7 @@ impl DhtManager {
             .await
             .unwrap();
 
-        // bootstrap known nodes by finding node closest to self, and by that updating the routing table
+        // bootstrap initial known nodes by finding node closest to self, and by that updating the routing table
         for i in 0..self.bootstrap_nodes.len() {
             self.do_req(
                 &socket,
@@ -135,10 +137,12 @@ impl DhtManager {
                         }
                         ToDhtManagerMsg::NewNode(addr) => {
                             log::trace!("got NewNode msg from torrent manager: {}", addr);
-                            // ping new dht node to get node id and eventually put it in routing table
-                            let tid = generate_transaction_id().to_vec();
-                            let buf = encode_krpc_message(tid, KRPCMessage::PingReq(self.own_node_id));
-                            let _ = socket.send_to(&buf, addr).await.unwrap();
+                            // bootstrap new dht node to get node id and eventually put it in routing table
+                            self.do_req(
+                                &socket,
+                                addr,
+                                KRPCMessage::FindNodeReq(self.own_node_id, self.own_node_id),
+                            ).await;
                         }
                     }
                 }
@@ -168,22 +172,28 @@ impl DhtManager {
                 self.inflght_requests.remove(&transaction_id);
                 // todo refresh node in routing table
             }
-            KRPCMessage::FindNodeReq(querying_node_it, target_node_id) => {
+            KRPCMessage::FindNodeReq(_querying_node_id, _target_node_id) => {}
+            KRPCMessage::FindNodeResp(queried_node_id, nodes) => {
                 if !self.inflght_requests.contains_key(&transaction_id) {
                     log::warn!(
                         "got a find_node resp for an unknown transaction id we didn't perform"
                     );
                 } else {
-                    self.inflght_requests.remove(&transaction_id);
-                    // todo put queried_node_id in routing table
                     log::warn!(
-                        "find node req: querying_node_it: {} target_node_id: {}",
-                        force_string(&querying_node_it.to_vec()),
-                        force_string(&target_node_id.to_vec())
+                        "find node resp: queried_node_id: {} nodes n.: {}",
+                        force_string(&queried_node_id.to_vec()),
+                        nodes.len(),
+                    );
+                    self.inflght_requests.remove(&transaction_id);
+                    for (node_id, ip, port) in nodes {
+                        self.routing_table.add(node_id);
+                    }
+                    log::warn!(
+                        "current routig table size: {}",
+                        self.routing_table.as_vec().len()
                     );
                 }
             }
-            KRPCMessage::FindNodeResp(_, _) => {}    // todo
             KRPCMessage::GetPeersReq(_, _) => {}     // todo
             KRPCMessage::GetPeersResp(_, _, _) => {} // todo
             KRPCMessage::AnnouncePeerReq(_, _, _, _, _) => {} // todo
