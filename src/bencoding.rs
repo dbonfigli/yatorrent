@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::str;
 
+use crate::util::force_string;
+
 type IndexOfError = usize;
 
 #[derive(PartialEq, Debug, Clone)]
@@ -39,6 +41,40 @@ pub enum Value {
     Int(i64),
     List(Vec<Value>),
     Dict(HashMap<Vec<u8>, Value>, usize, usize), //hash, startIndex, endIndex (index of next char not comprising the dict, similar to range)
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Value::Error(e) => {
+                write!(f, "{:?}", e)
+            }
+            Value::Str(s) => {
+                write!(f, "{}", force_string(s))
+            }
+            Value::Int(i) => write!(f, "{}", i),
+            Value::List(l) => {
+                write!(
+                    f,
+                    "[{}]",
+                    l.iter()
+                        .map(|i| format!("{}", i))
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            }
+            Value::Dict(h, _, _) => {
+                write!(
+                    f,
+                    "{{ {} }}",
+                    h.iter()
+                        .map(|(k, v)| format!("{}: {}", force_string(k), v))
+                        .collect::<Vec<String>>()
+                        .join("; ")
+                )
+            }
+        }
+    }
 }
 
 impl Value {
