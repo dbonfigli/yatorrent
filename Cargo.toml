@@ -15,3 +15,4 @@ env_logger = "0.11.5"
 size = "0.4.1"
 trait-variant = "0.1.2"
 clap = { version = "4.5.16", features = ["derive", "env"] }
+num-bigint = "0.4.6"
