@@ -322,7 +322,7 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage, Box<dyn
 
     // check q type
     if q_str == b"ping" {
-        return Ok(KRPCMessage::PingOrAnnouncePeerResp(id_arr));
+        return Ok(KRPCMessage::PingReq(id_arr));
     } else if q_str == b"find_node" {
         // check a contains target
         let target = match a_h.get(&b"target".to_vec()) {
