@@ -1,5 +1,6 @@
-use std::str::FromStr;
+use std::{net::Ipv4Addr, str::FromStr, time::SystemTime};
 
+use derivative::Derivative;
 use num_bigint::BigUint;
 
 #[derive(PartialEq, Debug)]
@@ -10,15 +11,48 @@ pub struct Bucket {
     own_node_id: BigUint,
 }
 
+#[derive(Derivative, Debug, Clone)]
+#[derivative(PartialOrd, Ord, PartialEq, Eq)]
+pub struct Node {
+    pub id: BigUint,
+
+    #[derivative(PartialOrd = "ignore", Ord = "ignore", PartialEq = "ignore")]
+    pub addr: Ipv4Addr,
+    #[derivative(PartialOrd = "ignore", Ord = "ignore", PartialEq = "ignore")]
+    pub port: u16,
+    #[derivative(PartialOrd = "ignore", Ord = "ignore", PartialEq = "ignore")]
+    pub last_seen: SystemTime,
+}
+
+impl Node {
+    pub fn new(node_id: [u8; 20], addr: Ipv4Addr, port: u16) -> Self {
+        Node {
+            id: BigUint::from_bytes_be(&node_id),
+            addr,
+            port,
+            last_seen: SystemTime::now(),
+        }
+    }
+
+    fn new_fake(node_id: [u8; 20]) -> Self {
+        Node {
+            id: BigUint::from_bytes_be(&node_id),
+            addr: Ipv4Addr::new(127, 0, 0, 1),
+            port: 8000,
+            last_seen: SystemTime::UNIX_EPOCH,
+        }
+    }
+}
+
 #[derive(PartialEq, Debug)]
 pub enum BucketContent {
-    Buckets(Vec<Bucket>), // max 2
-    Nodes(Vec<BigUint>),  // max 8
+    Buckets(Vec<Bucket>), // always 2
+    Nodes(Vec<Node>),     // max 8
 }
 
 static MAX_NODES_PER_BUCKET: usize = 8;
 
-fn biguint_to_u8_20(n: &BigUint) -> [u8; 20] {
+pub fn biguint_to_u8_20(n: &BigUint) -> [u8; 20] {
     let mut vec = n.to_bytes_be();
     while vec.len() < 20 {
         vec.insert(0, 0);
@@ -34,28 +68,28 @@ fn biguint_to_u8_20(n: &BigUint) -> [u8; 20] {
 }
 
 impl Bucket {
-    pub fn new(own_node_id: [u8; 20]) -> Self {
+    pub fn new(own_node_id: &[u8; 20]) -> Self {
         return Bucket {
             from: BigUint::from_str("0").unwrap(),
             to: BigUint::from_str("2").unwrap().pow(160) - BigUint::from_str("1").unwrap(),
             content: BucketContent::Nodes(Vec::new()),
-            own_node_id: BigUint::from_bytes_be(&own_node_id),
+            own_node_id: BigUint::from_bytes_be(own_node_id),
         };
     }
 
-    pub fn get(&self, node_id: &[u8; 20]) -> Option<[u8; 20]> {
-        let node_id_big_uint = BigUint::from_bytes_be(node_id);
-        match &self.content {
+    pub fn get_mut(&mut self, node_id: &[u8; 20]) -> Option<&mut Node> {
+        let fake_requesting_node = Node::new_fake(node_id.clone());
+        match &mut self.content {
             BucketContent::Buckets(b) => {
-                if node_id_big_uint <= b[0].to {
-                    b[0].get(node_id)
+                if fake_requesting_node.id <= b[0].to {
+                    b[0].get_mut(node_id)
                 } else {
-                    b[1].get(node_id)
+                    b[1].get_mut(node_id)
                 }
             }
             BucketContent::Nodes(n) => {
-                if let Ok(i) = n.binary_search(&node_id_big_uint) {
-                    Some(biguint_to_u8_20(&n[i]))
+                if let Ok(i) = n.binary_search(&fake_requesting_node) {
+                    Some(&mut n[i])
                 } else {
                     None
                 }
@@ -63,18 +97,11 @@ impl Bucket {
         }
     }
 
-    pub fn as_vec(&self) -> Vec<[u8; 20]> {
-        self.as_vec_in_biguint()
-            .iter()
-            .map(|n| biguint_to_u8_20(n))
-            .collect()
-    }
-
-    fn as_vec_in_biguint(&self) -> Vec<BigUint> {
+    pub fn as_vec(&self) -> Vec<Node> {
         match &self.content {
             BucketContent::Buckets(b) => {
-                let mut joined = b[0].as_vec_in_biguint();
-                let mut right = b[1].as_vec_in_biguint();
+                let mut joined = b[0].as_vec();
+                let mut right = b[1].as_vec();
                 joined.append(&mut right);
                 joined
             }
@@ -82,23 +109,22 @@ impl Bucket {
         }
     }
 
-    pub fn closest_nodes(&self, node_id: &[u8; 20]) -> Vec<[u8; 20]> {
-        let node_id_big_uint = BigUint::from_bytes_be(node_id);
-        let ret_in_biguint = self.closest_nodes_in_biguint(&node_id_big_uint);
-        ret_in_biguint.iter().map(|n| biguint_to_u8_20(n)).collect()
+    pub fn closest_nodes(&self, node_id: &[u8; 20]) -> Vec<Node> {
+        let fake_requesting_node = Node::new_fake(node_id.clone());
+        self.closest_nodes_by_node(&fake_requesting_node)
     }
 
     // todo: optimize this
-    fn closest_nodes_in_biguint(&self, node_id: &BigUint) -> Vec<BigUint> {
+    fn closest_nodes_by_node(&self, node: &Node) -> Vec<Node> {
         match &self.content {
             BucketContent::Buckets(b) => {
-                let mut joined = b[0].closest_nodes_in_biguint(node_id);
-                let mut right = b[1].closest_nodes_in_biguint(node_id);
+                let mut joined = b[0].closest_nodes_by_node(node);
+                let mut right = b[1].closest_nodes_by_node(node);
                 joined.append(&mut right);
                 // select 8 of the closest to node_id
                 let mut nodes_id_and_distances = Vec::new(); // (node_id, distance)
                 for i in joined.iter() {
-                    nodes_id_and_distances.push((i, distance(i, &node_id)));
+                    nodes_id_and_distances.push((i, distance(&i.id, &node.id)));
                 }
                 nodes_id_and_distances.sort_by_key(|(_, distance)| distance.clone());
                 nodes_id_and_distances[0..8]
@@ -110,44 +136,42 @@ impl Bucket {
         }
     }
 
-    pub fn remove(&mut self, node_id: [u8; 20]) {
-        let node_id_big_uint = BigUint::from_bytes_be(&node_id);
+    pub fn remove(&mut self, node: &Node) {
         match &mut self.content {
             BucketContent::Buckets(b) => {
-                if node_id_big_uint <= b[0].to {
-                    b[0].remove(node_id);
+                if node.id <= b[0].to {
+                    b[0].remove(node);
                 } else {
-                    b[1].remove(node_id);
+                    b[1].remove(node);
                 }
             }
             BucketContent::Nodes(n) => {
-                if let Ok(idx) = n.binary_search(&node_id_big_uint) {
+                if let Ok(idx) = n.binary_search(&node) {
                     n.remove(idx);
                 }
             }
         }
     }
 
-    pub fn add(&mut self, node_id: [u8; 20]) {
-        let node_id_big_uint = BigUint::from_bytes_be(&node_id);
-        if node_id_big_uint == self.own_node_id {
+    pub fn add(&mut self, node: Node) {
+        if node.id == self.own_node_id {
             return;
         }
         match &mut self.content {
             BucketContent::Buckets(b) => {
-                if node_id_big_uint <= b[0].to {
-                    b[0].add(node_id);
+                if node.id <= b[0].to {
+                    b[0].add(node);
                 } else {
-                    b[1].add(node_id);
+                    b[1].add(node);
                 }
             }
             BucketContent::Nodes(n) => {
-                if n.contains(&node_id_big_uint) {
+                if n.contains(&node) {
                     return;
                 }
                 if n.len() < MAX_NODES_PER_BUCKET {
                     // insert ordered
-                    n.push(node_id_big_uint);
+                    n.push(node);
                     n.sort();
                 } else if (
                     // if our node id falls withing this bucket
@@ -161,11 +185,11 @@ impl Bucket {
                     let mut left_bucket_content = left_bucket_content.to_vec();
                     let mut right_bucket_content = right_bucket_content.to_vec();
                     let ((a, b), (c, d)) = split(&self.from, &self.to);
-                    if node_id_big_uint <= b {
-                        left_bucket_content.push(node_id_big_uint);
+                    if node.id <= b {
+                        left_bucket_content.push(node);
                         left_bucket_content.sort();
                     } else {
-                        right_bucket_content.push(node_id_big_uint);
+                        right_bucket_content.push(node);
                         right_bucket_content.sort();
                     }
                     let left_bucket = Bucket {
@@ -203,9 +227,9 @@ fn distance(i: &BigUint, j: &BigUint) -> BigUint {
 mod tests {
     use crate::dht::routing_table::{split, BucketContent};
     use num_bigint::BigUint;
-    use std::str::FromStr;
+    use std::{net::Ipv4Addr, str::FromStr, time::SystemTime};
 
-    use super::Bucket;
+    use super::{Bucket, Node};
 
     #[test]
     fn test_split_1() {
@@ -268,33 +292,67 @@ mod tests {
     }
 
     #[test]
-    fn test_add_remove() {
-        let max_node_id =
-            BigUint::from_str("2").unwrap().pow(160) - BigUint::from_str("1").unwrap();
+    fn test_comparison_with_derivative() {
+        let n1 = Node {
+            id: BigUint::from_str("1").unwrap(),
+            addr: Ipv4Addr::new(127, 0, 0, 1),
+            port: 8080,
+            last_seen: SystemTime::UNIX_EPOCH,
+        };
 
-        let mut b = Bucket::new([0; 20]);
+        let n2 = Node {
+            id: BigUint::from_str("1").unwrap(),
+            addr: Ipv4Addr::new(162, 168, 0, 1),
+            port: 8081,
+            last_seen: SystemTime::now(),
+        };
+
+        let n3 = Node {
+            id: BigUint::from_str("2").unwrap(),
+            addr: Ipv4Addr::new(162, 168, 0, 1),
+            port: 80,
+            last_seen: SystemTime::now(),
+        };
+
+        let n4 = Node {
+            id: BigUint::from_str("3").unwrap(),
+            addr: Ipv4Addr::new(162, 168, 0, 254),
+            port: 8082,
+            last_seen: SystemTime::now(),
+        };
+
+        assert!(n1 == n2);
+        assert!(n1 <= n2);
+        assert!(n2 < n3);
+        assert!(n1 < n3);
+        assert!(n3 < n4);
+    }
+
+    #[test]
+    fn test_add_remove() {
+        let mut b = Bucket::new(&[0; 20]);
         let mut new_n_1 = [0; 20];
         new_n_1[10] = 1;
-        b.add(new_n_1);
+        b.add(Node::new_fake(new_n_1));
         assert_eq!(b, {
             Bucket {
                 from: BigUint::from_str("0").unwrap(),
                 to: BigUint::from_str("2").unwrap().pow(160) - BigUint::from_str("1").unwrap(),
-                content: BucketContent::Nodes(vec![BigUint::from_bytes_be(&new_n_1)]),
+                content: BucketContent::Nodes(vec![Node::new_fake(new_n_1)]),
                 own_node_id: BigUint::from_bytes_be(&[0; 20]),
             }
         });
 
         let mut new_n_2 = [0; 20];
         new_n_2[0] = 1;
-        b.add(new_n_2);
+        b.add(Node::new_fake(new_n_2));
         assert_eq!(b, {
             Bucket {
                 from: BigUint::from_str("0").unwrap(),
                 to: BigUint::from_str("2").unwrap().pow(160) - BigUint::from_str("1").unwrap(),
                 content: BucketContent::Nodes(vec![
-                    BigUint::from_bytes_be(&new_n_1),
-                    BigUint::from_bytes_be(&new_n_2),
+                    Node::new_fake(new_n_1),
+                    Node::new_fake(new_n_2),
                 ]),
                 own_node_id: BigUint::from_bytes_be(&[0; 20]),
             }
@@ -302,15 +360,15 @@ mod tests {
 
         let mut new_n_3 = [0; 20];
         new_n_3[19] = 1;
-        b.add(new_n_3);
+        b.add(Node::new_fake(new_n_3));
         assert_eq!(b, {
             Bucket {
                 from: BigUint::from_str("0").unwrap(),
                 to: BigUint::from_str("2").unwrap().pow(160) - BigUint::from_str("1").unwrap(),
                 content: BucketContent::Nodes(vec![
-                    BigUint::from_bytes_be(&new_n_3),
-                    BigUint::from_bytes_be(&new_n_1),
-                    BigUint::from_bytes_be(&new_n_2),
+                    Node::new_fake(new_n_3),
+                    Node::new_fake(new_n_1),
+                    Node::new_fake(new_n_2),
                 ]),
                 own_node_id: BigUint::from_bytes_be(&[0; 20]),
             }
@@ -319,7 +377,7 @@ mod tests {
         for i in 0..5 {
             let mut new_n = [0; 20];
             new_n[19] = 10 + i;
-            b.add(new_n);
+            b.add(Node::new_fake(new_n));
             assert_matches!(b.content, BucketContent::Nodes(ref n_vec) => {
                 assert_eq!(n_vec.len(), 4 + i as usize)
             });
@@ -327,7 +385,7 @@ mod tests {
 
         let mut new_n_4 = [0; 20];
         new_n_4[18] = 1;
-        b.add(new_n_4);
+        b.add(Node::new_fake(new_n_4));
         assert_matches!(b.content, BucketContent::Buckets(ref b_vec) => {
             assert_matches!(b_vec[0].content, BucketContent::Nodes(ref c_vec) => {
                 assert_eq!(c_vec.len(), 5)
@@ -337,7 +395,7 @@ mod tests {
             });
         });
 
-        b.remove(new_n_4);
+        b.remove(&Node::new_fake(new_n_4));
         assert_matches!(b.content, BucketContent::Buckets(ref b_vec) => {
             assert_matches!(b_vec[0].content, BucketContent::Nodes(ref c_vec) => {
                 assert_eq!(c_vec.len(), 4)
@@ -350,11 +408,11 @@ mod tests {
 
     #[test]
     fn test_closest_nodes() {
-        let mut b = Bucket::new([0; 20]);
+        let mut b = Bucket::new(&[0; 20]);
         for i in 0..255 {
             let mut new_n = [0; 20];
             new_n[10] = i as u8;
-            b.add(new_n);
+            b.add(Node::new_fake(new_n));
         }
         let mut target = [0; 20];
         target[0] = 0b00000001;
@@ -365,27 +423,35 @@ mod tests {
 
         let mut n1 = [0; 20];
         n1[10] = 0b00000001;
+        let n1 = Node::new_fake(n1);
         assert!(b_as_vec.contains(&n1));
         let mut n2 = [0; 20];
         n2[10] = 0b00000010;
+        let n2 = Node::new_fake(n2);
         assert!(b_as_vec.contains(&n2));
         let mut n3 = [0; 20];
         n3[10] = 0b00000011;
+        let n3 = Node::new_fake(n3);
         assert!(b_as_vec.contains(&n3));
         let mut n4 = [0; 20];
         n4[10] = 0b00000100;
+        let n4 = Node::new_fake(n4);
         assert!(b_as_vec.contains(&n4));
         let mut n5 = [0; 20];
         n5[10] = 0b00000101;
+        let n5 = Node::new_fake(n5);
         assert!(b_as_vec.contains(&n5));
         let mut n6 = [0; 20];
         n6[10] = 0b00000110;
+        let n6 = Node::new_fake(n6);
         assert!(b_as_vec.contains(&n6));
         let mut n7 = [0; 20];
         n7[10] = 0b00000111;
+        let n7 = Node::new_fake(n7);
         assert!(b_as_vec.contains(&n7));
         let mut n8 = [0; 20];
         n8[10] = 0b00001000;
+        let n8 = Node::new_fake(n8);
         assert!(b_as_vec.contains(&n8));
         let mut expected_closest_nodes = vec![n1, n2, n3, n4, n5, n6, n7, n8];
         expected_closest_nodes.sort();
@@ -394,22 +460,22 @@ mod tests {
 
     #[test]
     fn test_get() {
-        let mut b = Bucket::new([0; 20]);
+        let mut b = Bucket::new(&[0; 20]);
         for i in 0..255 {
             let mut new_n = [0; 20];
             new_n[10] = i as u8;
-            b.add(new_n);
+            b.add(Node::new_fake(new_n));
         }
         let mut target = [0; 20];
         target[0] = 0b00000001;
-        let ret = b.get(&target);
+        let ret = b.get_mut(&target);
         assert_matches!(ret, None);
 
         let mut target = [0; 20];
         target[10] = 0b0000100;
-        let ret = b.get(&target);
-        assert_matches!(ret, Some(node_id) => {
-            assert_eq!(node_id, target)
+        let ret = b.get_mut(&target);
+        assert_matches!(ret, Some(node) => {
+            assert_eq!(*node, Node::new_fake(target))
         });
     }
 }
