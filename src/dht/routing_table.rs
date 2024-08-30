@@ -21,7 +21,7 @@ pub struct Node {
     #[derivative(PartialOrd = "ignore", Ord = "ignore", PartialEq = "ignore")]
     pub port: u16,
     #[derivative(PartialOrd = "ignore", Ord = "ignore", PartialEq = "ignore")]
-    pub last_seen: SystemTime,
+    pub last_changed: SystemTime,
 }
 
 impl Node {
@@ -30,7 +30,7 @@ impl Node {
             id: BigUint::from_bytes_be(&node_id),
             addr,
             port,
-            last_seen: SystemTime::now(),
+            last_changed: SystemTime::now(),
         }
     }
 
@@ -39,7 +39,7 @@ impl Node {
             id: BigUint::from_bytes_be(&node_id),
             addr: Ipv4Addr::new(127, 0, 0, 1),
             port: 8000,
-            last_seen: SystemTime::UNIX_EPOCH,
+            last_changed: SystemTime::UNIX_EPOCH,
         }
     }
 }
@@ -47,7 +47,7 @@ impl Node {
 #[derive(PartialEq, Debug)]
 pub enum BucketContent {
     Buckets(Vec<Bucket>), // always 2
-    Nodes(Vec<Node>),     // max 8
+    Nodes(Vec<Node>),     // max MAX_NODES_PER_BUCKET
 }
 
 static MAX_NODES_PER_BUCKET: usize = 8;
@@ -121,13 +121,14 @@ impl Bucket {
                 let mut joined = b[0].closest_nodes_by_node(node);
                 let mut right = b[1].closest_nodes_by_node(node);
                 joined.append(&mut right);
-                // select 8 of the closest to node_id
+                // select N of the closest to node_id
                 let mut nodes_id_and_distances = Vec::new(); // (node_id, distance)
                 for i in joined.iter() {
-                    nodes_id_and_distances.push((i, distance(&i.id, &node.id)));
+                    nodes_id_and_distances.push((i, distance_biguint(&i.id, &node.id)));
                 }
                 nodes_id_and_distances.sort_by_key(|(_, distance)| distance.clone());
-                nodes_id_and_distances[0..8]
+                nodes_id_and_distances.truncate(MAX_NODES_PER_BUCKET);
+                nodes_id_and_distances
                     .iter()
                     .map(|(node_id, _)| (*node_id).clone())
                     .collect()
@@ -153,6 +154,7 @@ impl Bucket {
         }
     }
 
+    // add a node, if present, refresh last_seen
     pub fn add(&mut self, node: Node) {
         if node.id == self.own_node_id {
             return;
@@ -166,7 +168,8 @@ impl Bucket {
                 }
             }
             BucketContent::Nodes(n) => {
-                if n.contains(&node) {
+                if let Ok(i) = n.binary_search(&node) {
+                    n[i].last_changed = SystemTime::now();
                     return;
                 }
                 if n.len() < MAX_NODES_PER_BUCKET {
@@ -219,8 +222,12 @@ fn split(i: &BigUint, j: &BigUint) -> ((BigUint, BigUint), (BigUint, BigUint)) {
     );
 }
 
-fn distance(i: &BigUint, j: &BigUint) -> BigUint {
+fn distance_biguint(i: &BigUint, j: &BigUint) -> BigUint {
     i ^ j
+}
+
+pub fn distance(i: &[u8; 20], j: &[u8; 20]) -> BigUint {
+    distance_biguint(&BigUint::from_bytes_be(i), &BigUint::from_bytes_be(j))
 }
 
 #[cfg(test)]
@@ -297,28 +304,28 @@ mod tests {
             id: BigUint::from_str("1").unwrap(),
             addr: Ipv4Addr::new(127, 0, 0, 1),
             port: 8080,
-            last_seen: SystemTime::UNIX_EPOCH,
+            last_changed: SystemTime::UNIX_EPOCH,
         };
 
         let n2 = Node {
             id: BigUint::from_str("1").unwrap(),
             addr: Ipv4Addr::new(162, 168, 0, 1),
             port: 8081,
-            last_seen: SystemTime::now(),
+            last_changed: SystemTime::now(),
         };
 
         let n3 = Node {
             id: BigUint::from_str("2").unwrap(),
             addr: Ipv4Addr::new(162, 168, 0, 1),
             port: 80,
-            last_seen: SystemTime::now(),
+            last_changed: SystemTime::now(),
         };
 
         let n4 = Node {
             id: BigUint::from_str("3").unwrap(),
             addr: Ipv4Addr::new(162, 168, 0, 254),
             port: 8082,
-            last_seen: SystemTime::now(),
+            last_changed: SystemTime::now(),
         };
 
         assert!(n1 == n2);

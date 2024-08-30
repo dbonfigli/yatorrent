@@ -1,7 +1,7 @@
 use crate::{bencoding::Value, util::force_string};
 use std::{collections::HashMap, error::Error, net::Ipv4Addr};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum KRPCMessage {
     PingReq([u8; 20]),                                          // querying nodes id
     PingOrAnnouncePeerResp([u8; 20]), // queried nodes id, resps to ping or announce_peer messages cannot be distinghised by themselves without original transaciton id
@@ -13,13 +13,13 @@ pub enum KRPCMessage {
     Error(ErrorType, String),                                // error type, message
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum GetPeersRespValuesOrNodes {
     Nodes(Vec<([u8; 20], Ipv4Addr, u16)>), // 20-byte Node ID in network byte order, IP-address, port
     Values(Vec<(Ipv4Addr, u16)>),          // peer IP-address, peer port
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ErrorType {
     GenericError,
     ServerError,
@@ -467,7 +467,7 @@ fn parse_response_message(
         }
     };
 
-    // check r is a doct
+    // check r is a dict
     let r_h = match r {
         Value::Dict(r_h, _, _) => r_h,
         _ => {
@@ -503,6 +503,12 @@ fn parse_response_message(
     // check token existence
     if let Some(token) = r_h.get(&b"token".to_vec()) {
         // this is a get_peer response
+        // todo:
+        // with http://bittorrent.org/beps/bep_0033.html#changed-announce-accounting the new semantic for get_peers allow for not having a token:
+        // """"
+        // Tokens may be omitted under certain conditions (see changed announce accounting). If a node does not return a token it indicates that it currently cannot accept announces for this infohash
+        // """"
+        // this breaks this parsing
         let token_str = match token {
             Value::Str(token_str) => token_str,
             _ => {
