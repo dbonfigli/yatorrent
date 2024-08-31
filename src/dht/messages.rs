@@ -543,22 +543,28 @@ fn parse_response_message(
                 GetPeersRespValuesOrNodes::Nodes(nodes),
             ));
         } else if let Some(peers_v) = r_h.get(&b"values".to_vec()) {
-            let peers_str = match peers_v {
-                Value::Str(peers_str) => peers_str,
+            let mut peers = Vec::new();
+            let peers_list = match peers_v {
+                Value::List(peers_list) => peers_list,
                 _ => {
-                    return Err(Box::from("got krpc message that is a response (y=r) and has a values key in the r map that is not a string"));
+                    return Err(Box::from("got krpc message that is a response (y=r) and has a values key in the r map that is not a list"));
                 }
             };
-            if peers_str.len() % 6 != 0 {
-                return Err(Box::from("got krpc message that is a response (y=r) and has a values key in the r map that is not a bencoded string with lenght divisible by 6"));
-            }
-            let mut peers = Vec::new();
-            for i in (0..peers_str.len()).step_by(6) {
+            for peer in peers_list {
+                let peer_str = match peer {
+                    Value::Str(peer_str) => peer_str,
+                    _ => {
+                        return Err(Box::from("got krpc message that is a response (y=r) and has a values list with a value that is not a bencoded string"));
+                    }
+                };
+                if peer_str.len() % 6 != 0 {
+                    return Err(Box::from("got krpc message that is a response (y=r) and has a values list with a value in the r map that is not a bencoded string with lenght divisible by 6"));
+                }
                 let mut peer_ip_buf: [u8; 4] = [0; 4];
-                peer_ip_buf.copy_from_slice(&peers_str[i..i + 4]);
+                peer_ip_buf.copy_from_slice(&peer_str[0..4]);
                 let peer_ip = Ipv4Addr::from(peer_ip_buf);
                 let mut peer_port_buf: [u8; 2] = [0; 2];
-                peer_port_buf.copy_from_slice(&peers_str[i + 4..i + 6]);
+                peer_port_buf.copy_from_slice(&peer_str[4..6]);
                 let peer_port = u16::from_be_bytes(peer_port_buf);
                 peers.push((peer_ip, peer_port));
             }
