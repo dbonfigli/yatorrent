@@ -97,7 +97,7 @@ impl Bucket {
         }
     }
 
-    pub fn as_vec(&self) -> Vec<Node> {
+    pub fn as_vec(&self) -> Vec<&Node> {
         match &self.content {
             BucketContent::Buckets(b) => {
                 let mut joined = b[0].as_vec();
@@ -105,7 +105,13 @@ impl Bucket {
                 joined.append(&mut right);
                 joined
             }
-            BucketContent::Nodes(n) => n.clone(),
+            BucketContent::Nodes(nodes) => {
+                let mut ret = Vec::new();
+                for n in nodes.iter() {
+                    ret.push(n);
+                }
+                return ret;
+            }
         }
     }
 
@@ -451,47 +457,45 @@ mod tests {
         let mut closest_nodes = b.closest_nodes(&target);
         closest_nodes.sort();
 
-        let b_as_vec = b.as_vec();
-
-        let mut n1 = [0; 20];
-        n1[10] = 0b00000001;
-        let n1 = Node::new_fake(n1);
-        assert!(b_as_vec.contains(&n1));
-        let mut n2 = [0; 20];
-        n2[10] = 0b00000010;
-        let n2 = Node::new_fake(n2);
-        assert!(b_as_vec.contains(&n2));
-        let mut n3 = [0; 20];
-        n3[10] = 0b00000011;
-        let n3 = Node::new_fake(n3);
-        assert!(b_as_vec.contains(&n3));
-        let mut n4 = [0; 20];
-        n4[10] = 0b00000100;
-        let n4 = Node::new_fake(n4);
-        assert!(b_as_vec.contains(&n4));
-        let mut n5 = [0; 20];
-        n5[10] = 0b00000101;
-        let n5 = Node::new_fake(n5);
-        assert!(b_as_vec.contains(&n5));
-        let mut n6 = [0; 20];
-        n6[10] = 0b00000110;
-        let n6 = Node::new_fake(n6);
-        assert!(b_as_vec.contains(&n6));
-        let mut n7 = [0; 20];
-        n7[10] = 0b00000111;
-        let n7 = Node::new_fake(n7);
-        assert!(b_as_vec.contains(&n7));
-        let mut n8 = [0; 20];
-        n8[10] = 0b00001000;
-        let n8 = Node::new_fake(n8);
-        assert!(b_as_vec.contains(&n8));
+        let mut n1h = [0; 20];
+        n1h[10] = 0b00000001;
+        let n1 = Node::new_fake(n1h);
+        assert_matches!(b.get_mut(&n1h), Some(_));
+        let mut n2h = [0; 20];
+        n2h[10] = 0b00000010;
+        let n2 = Node::new_fake(n2h);
+        assert_matches!(b.get_mut(&n2h), Some(_));
+        let mut n3h = [0; 20];
+        n3h[10] = 0b00000011;
+        let n3 = Node::new_fake(n3h);
+        assert_matches!(b.get_mut(&n3h), Some(_));
+        let mut n4h = [0; 20];
+        n4h[10] = 0b00000100;
+        let n4 = Node::new_fake(n4h);
+        assert_matches!(b.get_mut(&n4h), Some(_));
+        let mut n5h = [0; 20];
+        n5h[10] = 0b00000101;
+        let n5 = Node::new_fake(n5h);
+        assert_matches!(b.get_mut(&n5h), Some(_));
+        let mut n6h = [0; 20];
+        n6h[10] = 0b00000110;
+        let n6 = Node::new_fake(n6h);
+        assert_matches!(b.get_mut(&n6h), Some(_));
+        let mut n7h = [0; 20];
+        n7h[10] = 0b00000111;
+        let n7 = Node::new_fake(n7h);
+        assert_matches!(b.get_mut(&n7h), Some(_));
+        let mut n8h = [0; 20];
+        n8h[10] = 0b00001000;
+        let n8 = Node::new_fake(n8h);
+        assert_matches!(b.get_mut(&n8h), Some(_));
         let mut expected_closest_nodes = vec![n1, n2, n3, n4, n5, n6, n7, n8];
         expected_closest_nodes.sort();
         assert_eq!(closest_nodes, expected_closest_nodes)
     }
 
     #[test]
-    fn test_get() {
+    fn test_get_mut() {
         let mut b = Bucket::new(&[0; 20]);
         for i in 0..255 {
             let mut new_n = [0; 20];
