@@ -76,7 +76,8 @@ struct GetPeersRequest {
     inflight_requests: usize,
     queried_nodes: HashSet<[u8; 20]>, // nodes for which we asked a get_peers request
     replying_nodes: Vec<([u8; 20], Ipv4Addr, u16, Vec<u8>)>, // list of nodes for which we got replies, that we can use in later announce_peer requests
-    discovered_peers: HashSet<(Ipv4Addr, u16)>,              // lits of peers we discovered
+    replying_nodes_with_peers: usize,
+    discovered_peers: HashSet<(Ipv4Addr, u16)>, // lits of peers we discovered
 }
 
 struct FindNodeRequest {
@@ -385,6 +386,7 @@ impl DhtManager {
                 .map(|n| biguint_to_u8_20(&n.id))
                 .collect(),
             replying_nodes: Vec::new(),
+            replying_nodes_with_peers: 0,
             discovered_peers: HashSet::new(),
         };
         self.inflight_get_peers_requests
@@ -634,6 +636,7 @@ impl DhtManager {
                 // act on response: peers or nodes
                 match get_peers_resp_values_or_nodes {
                     GetPeersRespValuesOrNodes::Values(peers) => {
+                        get_peers_req.replying_nodes_with_peers += peers.len();
                         for p in peers {
                             get_peers_req.discovered_peers.insert(p);
                         }
@@ -799,12 +802,13 @@ impl DhtManager {
             }
 
             log::info!(
-                "get_peers request ended: total sent requests: {} not replied: {}, replied: {}, discovered peers: {}, routing table size: {}",
+                "get_peers request ended: routing table size: {}, total sent requests: {} not replied: {}, replied: {}, replied with peers: {}, discovered peers: {}",
+                self.routing_table.as_mut_vec().len(), // todo optimize this
                 req.total_requests,
                 req.inflight_requests,
                 req.replying_nodes.len(),
+                req.replying_nodes_with_peers,
                 req.discovered_peers.len(),
-                self.routing_table.as_mut_vec().len(), // todo optimize this
             );
 
             // finally send discovered peers to torrent manager

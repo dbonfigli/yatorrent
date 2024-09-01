@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use std::{error::Error, iter, path::Path};
@@ -10,7 +11,7 @@ use size::{Size, Style};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
-use crate::dht::protocol::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMsg};
+use crate::dht::dht_manager::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMsg};
 use crate::manager::peer::{self, PeerAddr, PeersToManagerMsg, ToPeerCancelMsg, ToPeerMsg};
 use crate::persistence::piece::Piece;
 use crate::torrent_protocol::wire_protocol::Message;
@@ -26,6 +27,8 @@ use super::peer::PeerError;
 
 static CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS: usize = 100;
 static CONNECTED_PEERS_TO_START_NEW_PEER_CONNECTIONS: usize = 80;
+static MAX_CONNECTED_PEERS_TO_ASK_DHT_FOR_MORE: usize = 10;
+static DHT_NEW_PEER_COOL_OFF_PERIOD: Duration = Duration::from_secs(10);
 static KEEP_ALIVE_FREQ: Duration = Duration::from_secs(90);
 static MAX_OUTSTANDING_REQUESTS_PER_PEER: usize = 500;
 static MAX_OUTSTANDING_PIECES: usize = 100;
@@ -104,6 +107,7 @@ pub struct TorrentManager {
     completed_sent_to_tracker: bool,
     listening_dht_port: u16,
     dht_nodes: Vec<String>,
+    last_get_peers_requested_time: SystemTime,
 }
 
 impl TorrentManager {
@@ -142,6 +146,7 @@ impl TorrentManager {
             completed_sent_to_tracker: false,
             listening_dht_port,
             dht_nodes: metainfo.nodes,
+            last_get_peers_requested_time: SystemTime::UNIX_EPOCH,
         }
     }
 
@@ -163,9 +168,6 @@ impl TorrentManager {
                 .start(to_dht_manager_rx, dht_to_torrent_manager_tx)
                 .await;
         });
-        let _ = to_dht_manager_tx
-            .send(ToDhtManagerMsg::GetNewPeers(self.info_hash))
-            .await; // todo remove this
 
         // start incoming peer connections handler
         let (ok_to_accept_connection_tx, ok_to_accept_connection_rx) = mpsc::channel(10);
@@ -214,8 +216,8 @@ impl TorrentManager {
             tokio::select! {
                 Some(msg) = peers_to_torrent_manager_rx.recv() => {
                     match msg {
-                        PeersToManagerMsg::Error(peer_addr) => {
-                            self.peer_error(peer_addr, ok_to_accept_connection_tx.clone()).await;
+                        PeersToManagerMsg::Error(peer_addr, error_type) => {
+                            self.peer_error(peer_addr, error_type, ok_to_accept_connection_tx.clone()).await;
                         }
                         PeersToManagerMsg::Receive(peer_addr, msg) => {
                             self.receive(peer_addr, msg, piece_completion_status_channel_tx.clone(), peers_to_torrent_manager_tx.capacity(), to_dht_manager_tx.clone()).await;
@@ -226,7 +228,7 @@ impl TorrentManager {
                     }
                 }
                 Some(()) = tick_rx.recv() => {
-                    self.tick(peers_to_torrent_manager_tx.clone()).await;
+                    self.tick(peers_to_torrent_manager_tx.clone(), to_dht_manager_tx.clone()).await;
                 }
 
                 Some(DhtToTorrentManagerMsg::NewPeer(ip, port)) = dht_to_torrent_manager_rx.recv() => {
@@ -478,7 +480,11 @@ impl TorrentManager {
         }
     }
 
-    async fn tick(&mut self, peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>) {
+    async fn tick(
+        &mut self,
+        peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
+        to_dht_manager_tx: Sender<ToDhtManagerMsg>,
+    ) {
         self.log_stats(peers_to_torrent_manager_tx.capacity());
 
         // connect to new peers
@@ -573,6 +579,19 @@ impl TorrentManager {
         // remove requests that have not been fulfilled for some time,
         // most probably they have been silently dropped by the peer even if it is still alive and not choked
         self.remove_stale_requests();
+
+        // ash DHT manager for new peers if we need this
+        if self.peers.len() < MAX_CONNECTED_PEERS_TO_ASK_DHT_FOR_MORE
+            && now
+                .duration_since(self.last_get_peers_requested_time)
+                .unwrap()
+                > DHT_NEW_PEER_COOL_OFF_PERIOD
+        {
+            self.last_get_peers_requested_time = now;
+            let _ = to_dht_manager_tx
+                .send(ToDhtManagerMsg::GetNewPeers(self.info_hash))
+                .await;
+        }
 
         // send piece requests
         self.assign_piece_reqs().await;
