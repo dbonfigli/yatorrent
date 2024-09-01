@@ -154,60 +154,75 @@ impl Bucket {
         }
     }
 
-    // add a node, if present, refresh last_seen
-    pub fn add(&mut self, node: Node) {
+    // add a node, if present, refresh last_seen, return true if the node was added anew to the routing table
+    pub fn add(&mut self, node: Node) -> bool {
         if node.id == self.own_node_id {
-            return;
+            return false;
         }
         match &mut self.content {
             BucketContent::Buckets(b) => {
                 if node.id <= b[0].to {
-                    b[0].add(node);
+                    return b[0].add(node);
                 } else {
-                    b[1].add(node);
+                    return b[1].add(node);
                 }
             }
-            BucketContent::Nodes(n) => {
-                if let Ok(i) = n.binary_search(&node) {
-                    n[i].last_changed = SystemTime::now();
-                    return;
+            BucketContent::Nodes(bucket_nodes) => {
+                if let Ok(i) = bucket_nodes.binary_search(&node) {
+                    // the node is already present, refresh last changed
+                    bucket_nodes[i].last_changed = SystemTime::now();
+                    return false;
                 }
-                if n.len() < MAX_NODES_PER_BUCKET {
-                    // insert ordered
-                    n.push(node);
-                    n.sort();
-                } else if (
-                    // if our node id falls withing this bucket
-                    self.from <= self.own_node_id && self.own_node_id <= self.to
-                ) && (
-                    // and there is space to split the bucket
-                    self.to.clone() - self.from.clone() > BigUint::from_str("16").unwrap()
-                ) {
-                    // split this bucket in 2, insert new node
-                    let (left_bucket_content, right_bucket_content) = n.split_at(n.len() / 2);
-                    let mut left_bucket_content = left_bucket_content.to_vec();
-                    let mut right_bucket_content = right_bucket_content.to_vec();
+                if bucket_nodes.len() < MAX_NODES_PER_BUCKET {
+                    // there is space in the bucket, insert ordered
+                    bucket_nodes.push(node);
+                    bucket_nodes.sort();
+                    return true;
+                } else if
+                // if our node id falls withing this bucket
+                self.from <= self.own_node_id && self.own_node_id <= self.to {
+                    // split the bucket in 2
                     let ((a, b), (c, d)) = split(&self.from, &self.to);
-                    if node.id <= b {
-                        left_bucket_content.push(node);
-                        left_bucket_content.sort();
-                    } else {
-                        right_bucket_content.push(node);
-                        right_bucket_content.sort();
+                    let mut left_content = Vec::new();
+                    let mut right_content = Vec::new();
+
+                    // add the previously existing nodes to the new buckets
+                    for n in bucket_nodes {
+                        if n.id <= b {
+                            left_content.push(n.clone());
+                        } else {
+                            right_content.push(n.clone());
+                        }
                     }
-                    let left_bucket = Bucket {
+                    left_content.sort();
+                    right_content.sort();
+
+                    // create the 2 new buckets
+                    let mut left_bucket = Bucket {
                         from: a,
                         to: b,
-                        content: BucketContent::Nodes(left_bucket_content),
+                        content: BucketContent::Nodes(left_content),
                         own_node_id: self.own_node_id.clone(),
                     };
-                    let right_bucket = Bucket {
+                    let mut right_bucket = Bucket {
                         from: c,
                         to: d,
-                        content: BucketContent::Nodes(right_bucket_content),
+                        content: BucketContent::Nodes(right_content),
                         own_node_id: self.own_node_id.clone(),
                     };
-                    self.content = BucketContent::Buckets(vec![left_bucket, right_bucket])
+
+                    // add the new node
+                    let added = if node.id <= left_bucket.to {
+                        left_bucket.add(node)
+                    } else {
+                        right_bucket.add(node)
+                    };
+
+                    // update content of this bucket
+                    self.content = BucketContent::Buckets(vec![left_bucket, right_bucket]);
+                    return added;
+                } else {
+                    return false;
                 }
             }
         }
@@ -339,7 +354,7 @@ mod tests {
     fn test_add_remove() {
         let mut b = Bucket::new(&[0; 20]);
         let mut new_n_1 = [0; 20];
-        new_n_1[10] = 1;
+        new_n_1[19] = 10;
         b.add(Node::new_fake(new_n_1));
         assert_eq!(b, {
             Bucket {
@@ -351,7 +366,7 @@ mod tests {
         });
 
         let mut new_n_2 = [0; 20];
-        new_n_2[0] = 1;
+        new_n_2[19] = 20;
         b.add(Node::new_fake(new_n_2));
         assert_eq!(b, {
             Bucket {
@@ -366,7 +381,7 @@ mod tests {
         });
 
         let mut new_n_3 = [0; 20];
-        new_n_3[19] = 1;
+        new_n_3[19] = 5;
         b.add(Node::new_fake(new_n_3));
         assert_eq!(b, {
             Bucket {
@@ -383,7 +398,7 @@ mod tests {
 
         for i in 0..5 {
             let mut new_n = [0; 20];
-            new_n[19] = 10 + i;
+            new_n[18] = 10 + i;
             b.add(Node::new_fake(new_n));
             assert_matches!(b.content, BucketContent::Nodes(ref n_vec) => {
                 assert_eq!(n_vec.len(), 4 + i as usize)
@@ -391,24 +406,34 @@ mod tests {
         }
 
         let mut new_n_4 = [0; 20];
-        new_n_4[18] = 1;
+        new_n_4[0] = 255; // so that it falls in the other first bucket
         b.add(Node::new_fake(new_n_4));
         assert_matches!(b.content, BucketContent::Buckets(ref b_vec) => {
             assert_matches!(b_vec[0].content, BucketContent::Nodes(ref c_vec) => {
-                assert_eq!(c_vec.len(), 5)
+                assert_eq!(c_vec.len(), 8)
             });
             assert_matches!(b_vec[1].content, BucketContent::Nodes(ref c_vec) => {
-                assert_eq!(c_vec.len(), 4)
+                assert_eq!(c_vec.len(), 1)
             });
         });
 
         b.remove(&Node::new_fake(new_n_4));
         assert_matches!(b.content, BucketContent::Buckets(ref b_vec) => {
             assert_matches!(b_vec[0].content, BucketContent::Nodes(ref c_vec) => {
-                assert_eq!(c_vec.len(), 4)
+                assert_eq!(c_vec.len(), 8)
             });
             assert_matches!(b_vec[1].content, BucketContent::Nodes(ref c_vec) => {
-                assert_eq!(c_vec.len(), 4)
+                assert_eq!(c_vec.len(), 0)
+            });
+        });
+
+        b.remove(&Node::new_fake(new_n_3));
+        assert_matches!(b.content, BucketContent::Buckets(ref b_vec) => {
+            assert_matches!(b_vec[0].content, BucketContent::Nodes(ref c_vec) => {
+                assert_eq!(c_vec.len(), 7)
+            });
+            assert_matches!(b_vec[1].content, BucketContent::Nodes(ref c_vec) => {
+                assert_eq!(c_vec.len(), 0)
             });
         });
     }
