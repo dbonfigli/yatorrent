@@ -1,3 +1,3 @@
 mod messages;
-pub mod protocol;
+pub mod dht_manager;
 mod routing_table;
