@@ -767,7 +767,7 @@ impl TorrentManager {
         self.downloaded_bytes_previous_poll = self.downloaded_bytes;
         self.last_bandwidth_poll = now;
         log::info!(
-            "left: {}, pieces: {}/{} | Up: {}/s, Down: {}/s (tot.: {}, {}), wasted: {} | peers known: {}, connected: {}, unchoked: {} | pending peers_to_torrent_manager msgs: {}/{}",
+            "left: {}, pieces: {}/{} | Up: {}/s, Down: {}/s (tot.: {}, {}), wasted: {} | peers known: {} (bad: {}), connected: {}, unchoked: {} | pending peers_to_torrent_manager msgs: {}/{}",
             Size::from_bytes(self.file_manager.bytes_left()),
             self.file_manager.completed_pieces(),
             self.file_manager.num_pieces(),
@@ -778,6 +778,7 @@ impl TorrentManager {
             Size::from_bytes(self.file_manager.wasted_bytes).format().with_style(Style::Abbreviated),
             advertised_peers_len,
             self.peers.len(),
+            self.bad_peers.len(),
             self.peers.iter()
             .fold(0, |acc, (_,p)| if !p.peer_choking { acc + 1 } else { acc }),
             PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY - peers_to_torrent_manager_channel_capacity,
