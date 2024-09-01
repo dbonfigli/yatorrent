@@ -3,7 +3,7 @@ use std::{net::Ipv4Addr, str::FromStr, time::SystemTime};
 use derivative::Derivative;
 use num_bigint::BigUint;
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub struct Bucket {
     pub from: BigUint,
     pub to: BigUint,
@@ -21,7 +21,7 @@ pub struct Node {
     #[derivative(PartialOrd = "ignore", Ord = "ignore", PartialEq = "ignore")]
     pub port: u16,
     #[derivative(PartialOrd = "ignore", Ord = "ignore", PartialEq = "ignore")]
-    pub last_changed: SystemTime,
+    pub last_replied: SystemTime,
     #[derivative(PartialOrd = "ignore", Ord = "ignore", PartialEq = "ignore")]
     pub last_pinged: SystemTime,
 }
@@ -32,7 +32,7 @@ impl Node {
             id: BigUint::from_bytes_be(&node_id),
             addr,
             port,
-            last_changed: SystemTime::now(),
+            last_replied: SystemTime::now(),
             last_pinged: SystemTime::UNIX_EPOCH,
         }
     }
@@ -42,15 +42,15 @@ impl Node {
             id: BigUint::from_bytes_be(&node_id),
             addr: Ipv4Addr::new(127, 0, 0, 1),
             port: 8000,
-            last_changed: SystemTime::UNIX_EPOCH,
+            last_replied: SystemTime::UNIX_EPOCH,
             last_pinged: SystemTime::UNIX_EPOCH,
         }
     }
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum BucketContent {
-    Buckets(Vec<Bucket>), // always 2
+    Buckets(Vec<Bucket>), // _always_ 2
     Nodes(Vec<Node>),     // max MAX_NODES_PER_BUCKET
 }
 
@@ -101,17 +101,19 @@ impl Bucket {
         }
     }
 
-    pub fn as_vec(&self) -> Vec<&Node> {
-        match &self.content {
+    pub fn as_mut_vec(&mut self) -> Vec<&mut Node> {
+        match &mut self.content {
             BucketContent::Buckets(b) => {
-                let mut joined = b[0].as_vec();
-                let mut right = b[1].as_vec();
+                // use split to circumvent double mutable borrowing
+                let (b1, b2) = b.split_at_mut(1);
+                let mut joined = b1[0].as_mut_vec();
+                let mut right = b2[0].as_mut_vec();
                 joined.append(&mut right);
                 joined
             }
             BucketContent::Nodes(nodes) => {
                 let mut ret = Vec::new();
-                for n in nodes.iter() {
+                for n in nodes.iter_mut() {
                     ret.push(n);
                 }
                 return ret;
@@ -180,7 +182,7 @@ impl Bucket {
             BucketContent::Nodes(bucket_nodes) => {
                 if let Ok(i) = bucket_nodes.binary_search(&node) {
                     // the node is already present, refresh last changed
-                    bucket_nodes[i].last_changed = SystemTime::now();
+                    bucket_nodes[i].last_replied = SystemTime::now();
                     return false;
                 }
                 if bucket_nodes.len() < MAX_NODES_PER_BUCKET {
@@ -329,7 +331,7 @@ mod tests {
             id: BigUint::from_str("1").unwrap(),
             addr: Ipv4Addr::new(127, 0, 0, 1),
             port: 8080,
-            last_changed: SystemTime::UNIX_EPOCH,
+            last_replied: SystemTime::UNIX_EPOCH,
             last_pinged: SystemTime::now(),
         };
 
@@ -337,7 +339,7 @@ mod tests {
             id: BigUint::from_str("1").unwrap(),
             addr: Ipv4Addr::new(162, 168, 0, 1),
             port: 8081,
-            last_changed: SystemTime::now(),
+            last_replied: SystemTime::now(),
             last_pinged: SystemTime::UNIX_EPOCH,
         };
 
@@ -345,7 +347,7 @@ mod tests {
             id: BigUint::from_str("2").unwrap(),
             addr: Ipv4Addr::new(162, 168, 0, 1),
             port: 80,
-            last_changed: SystemTime::now(),
+            last_replied: SystemTime::now(),
             last_pinged: SystemTime::UNIX_EPOCH,
         };
 
@@ -353,7 +355,7 @@ mod tests {
             id: BigUint::from_str("3").unwrap(),
             addr: Ipv4Addr::new(162, 168, 0, 254),
             port: 8082,
-            last_changed: SystemTime::now(),
+            last_replied: SystemTime::now(),
             last_pinged: SystemTime::UNIX_EPOCH,
         };
 
