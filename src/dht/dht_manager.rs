@@ -13,6 +13,8 @@ use tokio::{
     sync::mpsc::{self, Receiver, Sender},
 };
 
+use rand::Rng;
+
 use crate::{
     dht::{
         messages::{
@@ -42,8 +44,11 @@ static WELL_KNOWN_BOOTSTRAP_NODES: &[&str] = &[
     "dht.aelitis.com:6881",
 ];
 
-fn generate_transaction_id() -> [u8; 2] {
-    [rand::random(), rand::random()]
+fn generate_transaction_id() -> [u8; 3] {
+    const CHARSET: &[u8] = b"0123456789";
+    let mut rng = rand::thread_rng();
+    let mut one_char = || CHARSET[rng.gen_range(0..CHARSET.len())] as u8;
+    [one_char(), one_char(), one_char()]
 }
 
 pub enum ToDhtManagerMsg {
@@ -469,7 +474,7 @@ impl DhtManager {
                         .do_req(
                             socket,
                             addr.to_string(),
-                            KRPCMessage::PingReq(querying_node_id),
+                            KRPCMessage::PingReq(self.own_node_id),
                             None,
                         )
                         .await;
@@ -765,12 +770,12 @@ impl DhtManager {
                     );
                     return;
                 }
-                let inflight_req = self
+                let inflight_req: (String, SystemTime, KRPCMessage, Option<[u8; 20]>) = self
                     .sender
                     .inflight_requests
                     .remove(&transaction_id)
                     .unwrap();
-                log::debug!("got dht error respose for transaction id {} from {}; our message was: {:?}, error type: {:?}, error message: {}", force_string(&transaction_id), addr, inflight_req.1, error_type, msg);
+                log::debug!("got dht error respose for transaction id {} from {}; our message sent was: {:?}, error type: {:?}, error message: {}", force_string(&transaction_id), addr, inflight_req.2, error_type, msg);
             }
         }
     }
