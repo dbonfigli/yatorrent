@@ -22,6 +22,8 @@ pub struct Node {
     pub port: u16,
     #[derivative(PartialOrd = "ignore", Ord = "ignore", PartialEq = "ignore")]
     pub last_changed: SystemTime,
+    #[derivative(PartialOrd = "ignore", Ord = "ignore", PartialEq = "ignore")]
+    pub last_pinged: SystemTime,
 }
 
 impl Node {
@@ -31,6 +33,7 @@ impl Node {
             addr,
             port,
             last_changed: SystemTime::now(),
+            last_pinged: SystemTime::UNIX_EPOCH,
         }
     }
 
@@ -40,6 +43,7 @@ impl Node {
             addr: Ipv4Addr::new(127, 0, 0, 1),
             port: 8000,
             last_changed: SystemTime::UNIX_EPOCH,
+            last_pinged: SystemTime::UNIX_EPOCH,
         }
     }
 }
@@ -326,6 +330,7 @@ mod tests {
             addr: Ipv4Addr::new(127, 0, 0, 1),
             port: 8080,
             last_changed: SystemTime::UNIX_EPOCH,
+            last_pinged: SystemTime::now(),
         };
 
         let n2 = Node {
@@ -333,6 +338,7 @@ mod tests {
             addr: Ipv4Addr::new(162, 168, 0, 1),
             port: 8081,
             last_changed: SystemTime::now(),
+            last_pinged: SystemTime::UNIX_EPOCH,
         };
 
         let n3 = Node {
@@ -340,6 +346,7 @@ mod tests {
             addr: Ipv4Addr::new(162, 168, 0, 1),
             port: 80,
             last_changed: SystemTime::now(),
+            last_pinged: SystemTime::UNIX_EPOCH,
         };
 
         let n4 = Node {
@@ -347,6 +354,7 @@ mod tests {
             addr: Ipv4Addr::new(162, 168, 0, 254),
             port: 8082,
             last_changed: SystemTime::now(),
+            last_pinged: SystemTime::UNIX_EPOCH,
         };
 
         assert!(n1 == n2);
