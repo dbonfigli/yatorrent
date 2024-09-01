@@ -502,7 +502,7 @@ fn parse_response_message(
 
     // check token existence
     if let Some(token) = r_h.get(&b"token".to_vec()) {
-        // this is a get_peer response
+        // this is a get_peers response
         // todo:
         // with http://bittorrent.org/beps/bep_0033.html#changed-announce-accounting the new semantic for get_peers allow for not having a token:
         // """"

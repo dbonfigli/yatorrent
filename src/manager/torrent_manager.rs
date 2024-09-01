@@ -149,7 +149,7 @@ impl TorrentManager {
         self.file_manager.log_file_completion_stats();
 
         // start dht manager
-        let (to_dht_manager_tx, to_dht_manager_rx) = mpsc::channel(10);
+        let (to_dht_manager_tx, to_dht_manager_rx) = mpsc::channel(1000);
         let (dht_to_torrent_manager_tx, dht_to_torrent_manager_rx) = mpsc::channel(1000);
         let mut dht_manager = DhtManager::new(
             self.listening_torrent_wire_protocol_port,
@@ -219,7 +219,7 @@ impl TorrentManager {
                             self.receive(peer_addr, msg, piece_completion_status_channel_tx.clone(), peers_to_torrent_manager_tx.capacity(), to_dht_manager_tx.clone()).await;
                         }
                         PeersToManagerMsg::NewPeer(tcp_stream) => {
-                            self.new_peer(tcp_stream, peers_to_torrent_manager_tx.clone(), ok_to_accept_connection_tx.clone()).await;
+                            self.new_peer(tcp_stream, peers_to_torrent_manager_tx.clone(), ok_to_accept_connection_tx.clone(), to_dht_manager_tx.clone()).await;
                         }
                     }
                 }
@@ -667,9 +667,24 @@ impl TorrentManager {
         tcp_stream: TcpStream,
         peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
         ok_to_accept_connection_tx: Sender<bool>,
+        to_dht_manager_tx: Sender<ToDhtManagerMsg>,
     ) {
         let peer_addr = match tcp_stream.peer_addr() {
-            Ok(s) => s.to_string(),
+            Ok(s) => {
+                // send to dht manager the fact that we know a new good peer
+                let peer_port = s.port();
+                if let IpAddr::V4(peer_addr) = s.ip() {
+                    to_dht_manager_tx
+                        .send(ToDhtManagerMsg::ConnectedToNewPeer(
+                            self.info_hash,
+                            peer_addr,
+                            peer_port,
+                        ))
+                        .await
+                        .unwrap();
+                }
+                s.to_string()
+            }
             Err(e) => {
                 log::trace!(
                     "new peer initialization failed because we could not get peer_addr: {}",

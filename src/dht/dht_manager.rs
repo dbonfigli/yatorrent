@@ -49,6 +49,7 @@ fn generate_transaction_id() -> [u8; 2] {
 pub enum ToDhtManagerMsg {
     GetNewPeers([u8; 20]), // info hash
     NewNode(String),       // addr of new node, i.e. "host:port" string
+    ConnectedToNewPeer([u8; 20], Ipv4Addr, u16),
 }
 
 pub enum DhtToTorrentManagerMsg {
@@ -73,7 +74,7 @@ struct GetPeersRequest {
     start_time: SystemTime,
     total_requests: usize,
     inflight_requests: usize,
-    queried_nodes: HashSet<[u8; 20]>, // nodes for which we asked a get_peer request
+    queried_nodes: HashSet<[u8; 20]>, // nodes for which we asked a get_peers request
     replying_nodes: Vec<([u8; 20], Ipv4Addr, u16, Vec<u8>)>, // list of nodes for which we got replies, that we can use in later announce_peer requests
     discovered_peers: HashSet<(Ipv4Addr, u16)>,              // lits of peers we discovered
 }
@@ -90,7 +91,7 @@ struct FindNodeRequest {
 }
 
 struct MessageSender {
-    // transaction id -> dest addr, req time, message, optinal info hash or random id the request related to, in case it was a get_peer or find_node request
+    // transaction id -> dest addr, req time, message, optinal info hash or random id the request related to, in case it was a get_peers or find_node request
     inflight_requests: HashMap<Vec<u8>, (String, SystemTime, KRPCMessage, Option<[u8; 20]>)>,
 }
 
@@ -199,7 +200,7 @@ impl DhtManager {
                     }
                 }
                 Some(()) = tick_rx.recv() => {
-                    log::info!("routing table size: {}, inflight requests: {}, inflight get_peer requests: {}, inflight find_nodes_requests: {}",
+                    log::debug!("routing table size: {}, inflight requests: {}, inflight get_peers requests: {}, inflight find_nodes_requests: {}",
                     self.routing_table.as_mut_vec().len(), // todo: optimize this
                     self.sender.inflight_requests.len(), self.inflight_get_peers_requests.len(), self.inflight_find_node_requests.len());
                     self.handle_ticker(&dht_to_torrent_manager_tx, &socket).await;
@@ -219,6 +220,20 @@ impl DhtManager {
                                 KRPCMessage::PingReq(self.own_node_id),
                                 None
                             ).await;
+                        }
+                        ToDhtManagerMsg::ConnectedToNewPeer(info_hash, addr, port) => {
+                            log::trace!("got ConnectedToNewPeer msg from torrent manager: {}", addr);
+                            let peer_info = (addr, port);
+                            match self.known_peers.get_mut(&info_hash) {
+                                Some(s) => {
+                                    s.insert(peer_info, SystemTime::now());
+                                }
+                                None => {
+                                    let mut s = HashMap::new();
+                                    s.insert(peer_info, SystemTime::now());
+                                    self.known_peers.insert(info_hash, s);
+                                }
+                            }
                         }
                     }
                 }
@@ -244,7 +259,7 @@ impl DhtManager {
             .map(|(k, _)| *k)
             .collect();
         for info_hash in expired_get_peers_requests {
-            self.end_get_peer_search(&info_hash, dht_to_torrent_manager_tx, socket)
+            self.end_get_peers_search(&info_hash, dht_to_torrent_manager_tx, socket)
                 .await;
         }
 
@@ -361,7 +376,7 @@ impl DhtManager {
                 .await;
         }
 
-        let get_peer_request = GetPeersRequest {
+        let get_peers_request = GetPeersRequest {
             start_time: SystemTime::now(),
             total_requests: closest_nodes.len(),
             inflight_requests: closest_nodes.len(),
@@ -373,7 +388,7 @@ impl DhtManager {
             discovered_peers: HashSet::new(),
         };
         self.inflight_get_peers_requests
-            .insert(info_hash, get_peer_request);
+            .insert(info_hash, get_peers_request);
     }
 
     async fn handle_incoming_message(
@@ -549,7 +564,9 @@ impl DhtManager {
                 // response
                 match self.known_peers.get(&info_hash) {
                     Some(peers) => {
-                        let resp_peers_info = peers.iter().map(|(k, _v)| *k).collect();
+                        let mut resp_peers_info: Vec<(Ipv4Addr, u16)> =
+                            peers.iter().map(|(k, _v)| *k).collect();
+                        resp_peers_info.truncate(8000); // do not overflow a single udp packet. todo: do a better calculation
                         self.sender
                             .do_req(
                                 socket,
@@ -557,7 +574,7 @@ impl DhtManager {
                                 KRPCMessage::GetPeersResp(
                                     self.own_node_id,
                                     token.to_vec(),
-                                    GetPeersRespValuesOrNodes::Values(resp_peers_info), // todo we need to also add our own peers we know outside of dht
+                                    GetPeersRespValuesOrNodes::Values(resp_peers_info),
                                 ),
                                 None,
                             )
@@ -622,7 +639,7 @@ impl DhtManager {
                         }
                         if get_peers_req.inflight_requests == 0 {
                             // search is over, let's push results
-                            self.end_get_peer_search(&info_hash, dht_to_torrent_manager_tx, socket)
+                            self.end_get_peers_search(&info_hash, dht_to_torrent_manager_tx, socket)
                                 .await;
                         }
                     }
@@ -751,7 +768,7 @@ impl DhtManager {
         }
     }
 
-    async fn end_get_peer_search(
+    async fn end_get_peers_search(
         &mut self,
         info_hash: &[u8; 20],
         dht_to_torrent_manager_tx: &Sender<DhtToTorrentManagerMsg>,
@@ -777,8 +794,8 @@ impl DhtManager {
                     .await;
             }
 
-            log::error!(
-                "get_peer request ended: total sent requests: {} not replied: {}, replied: {}, discovered peers: {}",
+            log::info!(
+                "get_peers request ended: total sent requests: {} not replied: {}, replied: {}, discovered peers: {}",
                 req.total_requests,
                 req.inflight_requests,
                 req.replying_nodes.len(),
@@ -796,7 +813,7 @@ impl DhtManager {
 
     async fn end_find_node_search(&mut self, random_id: &[u8; 20]) {
         if let Some(req) = self.inflight_find_node_requests.remove(random_id) {
-            log::error!(
+            log::debug!(
                 "find_node request for {} ended: total sent requests: {} not replied: {}, discovered nodes: {}, probed nodes for routing table addition: {}",
                 force_string(&req.node_id_to_find.to_vec()),
                 req.total_requests,
