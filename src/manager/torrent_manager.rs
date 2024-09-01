@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime};
 use std::{error::Error, iter, path::Path};
 
 use rand::seq::SliceRandom;
-use rand::{thread_rng, Rng};
+use rand::Rng;
 use size::{Size, Style};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -833,7 +833,7 @@ fn assign_piece(piece_idx: usize, peers: &HashMap<String, Peer>) -> Option<Strin
         })
         .collect::<Vec<(&String, &Peer, usize, usize)>>();
 
-    possible_peers.shuffle(&mut thread_rng());
+    possible_peers.shuffle(&mut rand::thread_rng());
 
     possible_peers.sort_by(|a, b| {
         if a.2 < b.2 {

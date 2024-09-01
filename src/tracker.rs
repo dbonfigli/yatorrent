@@ -1,4 +1,3 @@
-use rand::{thread_rng, Rng};
 use reqwest::ClientBuilder;
 use tokio::{
     net::UdpSocket,
@@ -387,7 +386,7 @@ impl TrackerClient {
         }
 
         // send connect
-        let transaction_id: u32 = thread_rng().gen::<u32>();
+        let transaction_id: u32 = rand::random::<u32>();
         let mut send_connect_buf = [0u8; 16];
         send_connect_buf[0..8].copy_from_slice(&(0x41727101980u64.to_be_bytes()));
         send_connect_buf[8..12].copy_from_slice(&(0u32.to_be_bytes()));
@@ -441,7 +440,7 @@ impl TrackerClient {
         let mut announce_buf = [0u8; 98];
         announce_buf[0..8].copy_from_slice(&connection_id.to_be_bytes());
         announce_buf[8..12].copy_from_slice(&(1u32).to_be_bytes()); // action: announce
-        let transaction_id: u32 = thread_rng().gen::<u32>();
+        let transaction_id: u32 = rand::random::<u32>();
         announce_buf[12..16].copy_from_slice(&transaction_id.to_be_bytes());
         announce_buf[16..36].copy_from_slice(&info_hash);
         announce_buf[36..56].copy_from_slice(self.peer_id.as_bytes());
