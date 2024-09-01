@@ -639,8 +639,12 @@ impl DhtManager {
                         }
                         if get_peers_req.inflight_requests == 0 {
                             // search is over, let's push results
-                            self.end_get_peers_search(&info_hash, dht_to_torrent_manager_tx, socket)
-                                .await;
+                            self.end_get_peers_search(
+                                &info_hash,
+                                dht_to_torrent_manager_tx,
+                                socket,
+                            )
+                            .await;
                         }
                     }
                     GetPeersRespValuesOrNodes::Nodes(nodes) => {
@@ -795,11 +799,12 @@ impl DhtManager {
             }
 
             log::info!(
-                "get_peers request ended: total sent requests: {} not replied: {}, replied: {}, discovered peers: {}",
+                "get_peers request ended: total sent requests: {} not replied: {}, replied: {}, discovered peers: {}, routing table size: {}",
                 req.total_requests,
                 req.inflight_requests,
                 req.replying_nodes.len(),
-                req.discovered_peers.len()
+                req.discovered_peers.len(),
+                self.routing_table.as_mut_vec().len(), // todo optimize this
             );
 
             // finally send discovered peers to torrent manager

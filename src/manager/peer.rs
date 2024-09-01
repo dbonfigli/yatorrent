@@ -25,9 +25,16 @@ pub enum ToPeerMsg {
 pub type PeerAddr = String;
 
 pub enum PeersToManagerMsg {
-    Error(PeerAddr),
+    Error(PeerAddr, PeerError),
     Receive(PeerAddr, Message),
     NewPeer(TcpStream),
+}
+
+#[derive(PartialEq)]
+pub enum PeerError {
+    HandshakeError,
+    Timeout,
+    Others,
 }
 
 pub type ToPeerCancelMsg = (u32, u32, u32, SystemTime); // piece_idx, begin, lenght, cancel time
@@ -77,7 +84,7 @@ pub async fn connect_to_new_peer(
                     log::trace!("timed out completing handshake with peer {}", dest);
                     send_to_torrent_manager(
                         &peers_to_torrent_manager_tx,
-                        PeersToManagerMsg::Error(peer_addr),
+                        PeersToManagerMsg::Error(peer_addr, PeerError::HandshakeError),
                     )
                     .await;
                 }
@@ -85,7 +92,7 @@ pub async fn connect_to_new_peer(
                     log::trace!("error out completing handshake with peer {}", e);
                     send_to_torrent_manager(
                         &peers_to_torrent_manager_tx,
-                        PeersToManagerMsg::Error(peer_addr),
+                        PeersToManagerMsg::Error(peer_addr, PeerError::HandshakeError),
                     )
                     .await;
                 }
@@ -284,7 +291,7 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
                 log::trace!("did not receive anything (not even keep-alive messages) from peer in 3 minutes {}", peer_addr);
                 send_to_torrent_manager(
                     &peers_to_torrent_manager_tx,
-                    PeersToManagerMsg::Error(peer_addr),
+                    PeersToManagerMsg::Error(peer_addr, PeerError::Timeout),
                 )
                 .await;
                 break;
@@ -293,7 +300,7 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
                 log::trace!("receive failed with peer {}: {}", peer_addr, e);
                 send_to_torrent_manager(
                     &peers_to_torrent_manager_tx,
-                    PeersToManagerMsg::Error(peer_addr),
+                    PeersToManagerMsg::Error(peer_addr, PeerError::Others),
                 )
                 .await;
                 break;
@@ -355,7 +362,7 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                         log::trace!("timeout sending message to peer {}", peer_addr);
                         send_to_torrent_manager(
                             &peers_to_torrent_manager_tx,
-                            PeersToManagerMsg::Error(peer_addr),
+                            PeersToManagerMsg::Error(peer_addr, PeerError::Others),
                         )
                         .await;
                         break;
@@ -364,7 +371,7 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                         log::trace!("sending failed with peer {}: {}", peer_addr, e);
                         send_to_torrent_manager(
                             &peers_to_torrent_manager_tx,
-                            PeersToManagerMsg::Error(peer_addr),
+                            PeersToManagerMsg::Error(peer_addr, PeerError::Others),
                         )
                         .await;
                         break;

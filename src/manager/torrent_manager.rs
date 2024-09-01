@@ -22,6 +22,8 @@ use crate::{
     tracker::{Event, Response, TrackerClient},
 };
 
+use super::peer::PeerError;
+
 static CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS: usize = 100;
 static CONNECTED_PEERS_TO_START_NEW_PEER_CONNECTIONS: usize = 80;
 static KEEP_ALIVE_FREQ: Duration = Duration::from_secs(90);
@@ -455,14 +457,22 @@ impl TorrentManager {
         }
     }
 
-    async fn peer_error(&mut self, peer_addr: String, ok_to_accept_connection_tx: Sender<bool>) {
+    async fn peer_error(
+        &mut self,
+        peer_addr: String,
+        error_type: PeerError,
+        ok_to_accept_connection_tx: Sender<bool>,
+    ) {
         log::debug!("removing errored peer {}", peer_addr);
         if let Some(removed_peer) = self.peers.remove(&peer_addr) {
             for (piece_idx, _) in removed_peer.requested_pieces {
                 self.outstanding_piece_assigments.remove(&piece_idx);
             }
         }
-        self.bad_peers.insert(peer_addr);
+        if error_type == PeerError::HandshakeError {
+            // todo: understand other error cases that are not recoverable and should stop trying again on this peer
+            self.bad_peers.insert(peer_addr);
+        }
         if self.peers.len() < CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS {
             ok_to_accept_connection_tx.send(true).await.unwrap();
         }
@@ -481,7 +491,10 @@ impl TorrentManager {
             let possible_peers = possible_peers
                 .iter()
                 .filter(|(k, (_, last_connection_attempt))| {
+                    // avoid selecting peers we are already connected to
                     !self.peers.contains_key(*k)
+                    // avoid selecting peers we know are bad
+                    && !self.bad_peers.contains(*k)
                         // use peers we didn't try to connect to recently
                         // this cooloff time is also important to avoid new connections to peers we attempted few secs ago
                         // and for which a connection attempt is still inflight
@@ -498,7 +511,6 @@ impl TorrentManager {
                 .collect();
             // todo:
             // * better algorithm to select new peers
-            // * avoid selecting bad peers?
             for (_, (peer, _)) in candidates_for_new_connections.iter() {
                 tokio::spawn(peer::connect_to_new_peer(
                     peer.ip.clone(),
