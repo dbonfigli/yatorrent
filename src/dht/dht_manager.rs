@@ -131,11 +131,11 @@ impl MessageSender {
         let buf = encode_krpc_message(tid.to_vec(), msg.clone());
         self.inflight_requests.insert(
             tid.to_vec(),
-            (dest.clone(), SystemTime::now(), msg, related_info),
+            (dest.clone(), SystemTime::now(), msg.clone(), related_info),
         );
         if let Err(e) = socket.send_to(&buf, dest.clone()).await {
             // don't care if we cannot send it, due to roting issues or others (if it was for buffer full, send_to would block)
-            log::debug!("could not send dht message to {}: {}", dest, e);
+            log::debug!("could not send dht message {:?} to {}: {}", msg, dest, e);
         };
     }
 }
@@ -506,6 +506,10 @@ impl DhtManager {
                     .add(Node::new(queried_node_id, ipv4addr, port));
 
                 for (node_id, addr, port) in nodes {
+                    if addr == Ipv4Addr::new(0, 0, 0, 0) || port == 0{
+                        // sometimes it happens that replies contain invalid addresses
+                        continue;
+                    }
                     find_node_req.total_discovered_nodes += 1;
 
                     // ping newly discovered nodes to eventually put them in the routing table
