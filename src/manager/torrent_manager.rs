@@ -29,6 +29,7 @@ static CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS: usize = 100;
 static CONNECTED_PEERS_TO_START_NEW_PEER_CONNECTIONS: usize = 80;
 static MAX_CONNECTED_PEERS_TO_ASK_DHT_FOR_MORE: usize = 10;
 static DHT_NEW_PEER_COOL_OFF_PERIOD: Duration = Duration::from_secs(60);
+static DHT_BOOTSTRAP_TIME: Duration = Duration::from_secs(30);
 static KEEP_ALIVE_FREQ: Duration = Duration::from_secs(90);
 static MAX_OUTSTANDING_REQUESTS_PER_PEER: usize = 500;
 static MAX_OUTSTANDING_PIECES: usize = 100;
@@ -146,7 +147,8 @@ impl TorrentManager {
             completed_sent_to_tracker: false,
             listening_dht_port,
             dht_nodes: metainfo.nodes,
-            last_get_peers_requested_time: SystemTime::UNIX_EPOCH,
+            last_get_peers_requested_time: SystemTime::now() - DHT_NEW_PEER_COOL_OFF_PERIOD
+                + DHT_BOOTSTRAP_TIME, // try to wait a bit before the first request, in hope that the dht has been bootstrapped, so that we don't waste time for the first request with an empty routing table
         }
     }
 
