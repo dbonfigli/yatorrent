@@ -816,7 +816,7 @@ async fn tracker_request(
         .await
     {
         Err(e) => {
-            log::debug!("could not perform request to tracker: {}", e);
+            log::error!("could not perform request to tracker: {}", e);
             return Err(Box::from(e.to_string()));
         }
         Ok(Response::Failure(msg)) => {
@@ -825,7 +825,7 @@ async fn tracker_request(
         }
         Ok(Response::Ok(ok_response)) => {
             if let Some(msg) = ok_response.warning_message.clone() {
-                log::warn!("tracker sent a warning: {}", msg);
+                log::error!("tracker sent a warning: {}", msg);
             }
             log::trace!(
                 "tracker request succeeded, tracker response:\n{:?}",
