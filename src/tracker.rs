@@ -233,6 +233,7 @@ impl TrackerClient {
         let mut url = reqwest::Url::parse_with_params(
             url.as_str(),
             &[
+                ("key", self.peer_id.clone()), // some trackers want this otherwise they will reply "This tracker requires support for the "key" announce paramater. Please update or change your client.". todo: still i could not find the related BEP
                 ("peer_id", self.peer_id.clone()),
                 ("port", self.listening_port.to_string()),
                 ("uploaded", uploaded.to_string()),
