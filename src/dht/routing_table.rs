@@ -3,6 +3,8 @@ use std::{net::Ipv4Addr, str::FromStr, time::SystemTime};
 use derivative::Derivative;
 use num_bigint::BigUint;
 
+pub static K_FACTOR: usize = 20;
+
 #[derive(PartialEq, Debug, Clone)]
 pub struct Bucket {
     pub from: BigUint,
@@ -53,8 +55,6 @@ pub enum BucketContent {
     Buckets(Vec<Bucket>), // _always_ 2
     Nodes(Vec<Node>),     // max MAX_NODES_PER_BUCKET
 }
-
-static MAX_NODES_PER_BUCKET: usize = 8;
 
 pub fn biguint_to_u8_20(n: &BigUint) -> [u8; 20] {
     let mut vec = n.to_bytes_be();
@@ -139,7 +139,7 @@ impl Bucket {
                     nodes_id_and_distances.push((i, distance_biguint(&i.id, &node.id)));
                 }
                 nodes_id_and_distances.sort_by_key(|(_, distance)| distance.clone());
-                nodes_id_and_distances.truncate(MAX_NODES_PER_BUCKET);
+                nodes_id_and_distances.truncate(K_FACTOR);
                 nodes_id_and_distances
                     .iter()
                     .map(|(node_id, _)| (*node_id).clone())
@@ -185,7 +185,7 @@ impl Bucket {
                     bucket_nodes[i].last_replied = SystemTime::now();
                     return false;
                 }
-                if bucket_nodes.len() < MAX_NODES_PER_BUCKET {
+                if bucket_nodes.len() < K_FACTOR {
                     // there is space in the bucket, insert ordered
                     bucket_nodes.push(node);
                     bucket_nodes.sort();

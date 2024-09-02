@@ -20,7 +20,7 @@ use crate::{
         messages::{
             decode_krpc_message, encode_krpc_message, ErrorType, GetPeersRespValuesOrNodes,
         },
-        routing_table::{biguint_to_u8_20, distance, Node},
+        routing_table::{biguint_to_u8_20, distance, Node, K_FACTOR},
     },
     util::{force_string, pretty_info_hash, start_tick},
 };
@@ -29,12 +29,10 @@ use super::{messages::KRPCMessage, routing_table::Bucket};
 
 // NOTE! we are only supporting IPv4 DHT, i.e. BEP 32 (https://www.bittorrent.org/beps/bep_0032.html) is not implemented
 
-static K_FACTOR: usize = 8;
-
-static INFLIGHT_FIND_NODE_TIMEOUT: Duration = Duration::from_secs(25);
-static INFLIGHT_GET_PEERS_TIMEOUT: Duration = Duration::from_secs(25);
+static INFLIGHT_FIND_NODE_TIMEOUT: Duration = Duration::from_secs(12);
+static INFLIGHT_GET_PEERS_TIMEOUT: Duration = Duration::from_secs(12);
 static INFLIGHT_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
-static ROUTING_TABLE_REFRESH_TIME: Duration = Duration::from_secs(120);
+static ROUTING_TABLE_REFRESH_TIME: Duration = Duration::from_secs(60);
 
 static WELL_KNOWN_BOOTSTRAP_NODES: &[&str] = &[
     "dht.libtorrent.org:25401",

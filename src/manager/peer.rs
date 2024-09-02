@@ -75,6 +75,14 @@ pub async fn connect_to_new_peer(
                         "connecting to new peer failed because we could not get peer addr: {}",
                         e
                     );
+                    send_to_torrent_manager(
+                        &peers_to_torrent_manager_tx,
+                        PeersToManagerMsg::Error(
+                            format!("{}:{}", host, port),
+                            PeerError::HandshakeError,
+                        ),
+                    )
+                    .await;
                     return;
                 }
             };
