@@ -98,7 +98,7 @@ pub struct TorrentManager {
     listening_torrent_wire_protocol_port: u16,
     peers: HashMap<PeerAddr, Peer>,
     advertised_peers: Arc<Mutex<HashMap<PeerAddr, (tracker::Peer, SystemTime)>>>, // peer addr -> (peer, last connection attempt)
-    bad_peers: HashSet<PeerAddr>,
+    bad_peers: HashSet<PeerAddr>, // todo: remove old bad peers after a while?
     last_bandwidth_poll: SystemTime,
     uploaded_bytes: u64,
     downloaded_bytes: u64,
@@ -827,10 +827,13 @@ async fn tracker_request(
             if let Some(msg) = ok_response.warning_message.clone() {
                 log::error!("tracker sent a warning: {}", msg);
             }
-            log::trace!(
-                "tracker request succeeded, tracker response:\n{:?}",
-                ok_response
+            log::info!(
+                "tracker request succeeded: seeders: {}; leechers: {}; peers provided: {}",
+                ok_response.complete,
+                ok_response.incomplete,
+                ok_response.peers.len()
             );
+            log::trace!("full tracker response:\n{:?}", ok_response);
 
             Ok((tracker_client, ok_response.peers))
         }
