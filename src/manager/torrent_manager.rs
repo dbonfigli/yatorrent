@@ -28,7 +28,7 @@ use super::peer::PeerError;
 static CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS: usize = 100;
 static CONNECTED_PEERS_TO_START_NEW_PEER_CONNECTIONS: usize = 80;
 static MAX_CONNECTED_PEERS_TO_ASK_DHT_FOR_MORE: usize = 10;
-static DHT_NEW_PEER_COOL_OFF_PERIOD: Duration = Duration::from_secs(10);
+static DHT_NEW_PEER_COOL_OFF_PERIOD: Duration = Duration::from_secs(60);
 static KEEP_ALIVE_FREQ: Duration = Duration::from_secs(90);
 static MAX_OUTSTANDING_REQUESTS_PER_PEER: usize = 500;
 static MAX_OUTSTANDING_PIECES: usize = 100;

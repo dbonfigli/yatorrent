@@ -34,7 +34,7 @@ static K_FACTOR: usize = 8;
 static INFLIGHT_FIND_NODE_TIMEOUT: Duration = Duration::from_secs(25);
 static INFLIGHT_GET_PEERS_TIMEOUT: Duration = Duration::from_secs(25);
 static INFLIGHT_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
-static ROUTING_TABLE_REFRESH_TIME: Duration = Duration::from_secs(60);
+static ROUTING_TABLE_REFRESH_TIME: Duration = Duration::from_secs(120);
 
 static WELL_KNOWN_BOOTSTRAP_NODES: &[&str] = &[
     "dht.libtorrent.org:25401",
@@ -320,6 +320,7 @@ impl DhtManager {
         // every 1m randomly find new nodes - this is out of official bep05 specs, we do this to have a bigger routing table - maybe remove this
         if now.duration_since(self.last_routing_table_refresh).unwrap() > ROUTING_TABLE_REFRESH_TIME
         {
+            self.last_routing_table_refresh = now;
             let mut random_id: [u8; 20] = [0u8; 20];
             for i in 0..20 {
                 random_id[i] = rand::random();
@@ -506,7 +507,7 @@ impl DhtManager {
                     .add(Node::new(queried_node_id, ipv4addr, port));
 
                 for (node_id, addr, port) in nodes {
-                    if addr == Ipv4Addr::new(0, 0, 0, 0) || port == 0{
+                    if addr == Ipv4Addr::new(0, 0, 0, 0) || port == 0 {
                         // sometimes it happens that replies contain invalid addresses
                         continue;
                     }
