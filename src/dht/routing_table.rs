@@ -3,7 +3,7 @@ use std::{net::Ipv4Addr, str::FromStr, time::SystemTime};
 use derivative::Derivative;
 use num_bigint::BigUint;
 
-pub static K_FACTOR: usize = 20;
+pub static K_FACTOR: usize = 8; // maybe we can extend this to 20, like other clients
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct Bucket {

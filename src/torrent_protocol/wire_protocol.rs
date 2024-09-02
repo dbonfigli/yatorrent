@@ -1,5 +1,7 @@
 use std::{error::Error, fmt};
 
+use crate::bencoding::Value;
+
 #[derive(Debug)]
 pub enum Message {
     KeepAlive,
@@ -13,6 +15,7 @@ pub enum Message {
     Piece(u32, u32, Box<Vec<u8>>), // index, begin, block of data
     Cancel(u32, u32, u32),         // index, begin, length
     Port(u16),                     // port number
+    Extended(u8, Value),           // Extension Protocol id, bencoded message
 }
 
 impl fmt::Display for Message {
@@ -72,6 +75,13 @@ impl fmt::Display for Message {
             }
             Message::Port(p) => {
                 write!(f, "port {}", p)
+            }
+            Message::Extended(id, value) => {
+                write!(
+                    f,
+                    "extension message: extension id: {}, value: {}",
+                    id, value
+                )
             }
         }
     }

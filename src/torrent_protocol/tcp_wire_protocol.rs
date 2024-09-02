@@ -7,8 +7,11 @@ use tokio::{
     net::TcpStream,
 };
 
-use crate::torrent_protocol::wire_protocol::{
-    Message, Protocol, ProtocolError, ProtocolReadHalf, ProtocolWriteHalf,
+use crate::{
+    bencoding::Value,
+    torrent_protocol::wire_protocol::{
+        Message, Protocol, ProtocolError, ProtocolReadHalf, ProtocolWriteHalf,
+    },
 };
 
 impl Protocol for TcpStream {
@@ -29,6 +32,7 @@ impl Protocol for TcpStream {
                 let mut buf: [u8; 68] = [0; 68];
                 buf[0] = 19;
                 buf[1..20].copy_from_slice(b"BitTorrent protocol");
+                buf[25] = 0x10; // send support for Extension Protocol
                 buf[27] = 1u8; // send support for DHT
                 buf[28..48].copy_from_slice(&info_hash);
                 buf[48..68].copy_from_slice(&peer_id);
@@ -207,6 +211,19 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                     return Ok(());
                 }
             }
+            Message::Extended(id, value) => {
+                let encoded_value = value.encode();
+                let mut buf = vec![0; 6 + encoded_value.len()];
+                buf[0..4].copy_from_slice(&(2 + encoded_value.len() as u32).to_be_bytes());
+                buf[4] = 20; // extension protocol magic number
+                buf[5] = id;
+                buf[6..].copy_from_slice(&encoded_value);
+                if let Err(e) = self.write_all(&buf).await {
+                    return Err(e.into());
+                } else {
+                    return Ok(());
+                }
+            }
         }
     }
 }
@@ -323,6 +340,21 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                     return Err(e.into());
                 }
                 return Ok(Message::Port(u16::from_be_bytes(buf)));
+            }
+            // extension message
+            20 => {
+                let mut buf: [u8; 1] = [0; 1];
+                if let Err(e) = self.read_exact(&mut buf).await {
+                    return Err(e.into());
+                }
+                let extended_message_id = buf[0]; // i.e. id of the extension. 0 means this message is an extension handshake
+                let payload_extended_message_size: usize = (size_message - 2).try_into()?;
+                let mut buf = Box::new(vec![0; payload_extended_message_size]);
+                if let Err(e) = self.read_exact(&mut buf).await {
+                    return Err(e.into());
+                }
+                let extended_message = Value::new(&buf);
+                return Ok(Message::Extended(extended_message_id, extended_message));
             }
             unknown_message_id => {
                 return Err(ProtocolError::new(

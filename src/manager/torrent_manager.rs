@@ -23,6 +23,8 @@ use crate::{
     tracker::{Event, Response, TrackerClient},
 };
 
+use crate::bencoding::Value::{Dict, Int, Str};
+
 use super::peer::PeerError;
 
 static CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS: usize = 100;
@@ -31,7 +33,7 @@ static MAX_CONNECTED_PEERS_TO_ASK_DHT_FOR_MORE: usize = 10;
 static DHT_NEW_PEER_COOL_OFF_PERIOD: Duration = Duration::from_secs(15);
 static DHT_BOOTSTRAP_TIME: Duration = Duration::from_secs(5);
 static KEEP_ALIVE_FREQ: Duration = Duration::from_secs(90);
-static MAX_OUTSTANDING_REQUESTS_PER_PEER: usize = 500;
+static MAX_OUTSTANDING_REQUESTS_PER_PEER: usize = 500; // can be retrieved per peer if it supports extensions, dict key "reqq", seen: deluge: 2000, qbittorrent: 500, transmission: 500, utorrent: 255, freebox bittorrent 2: 768, maybe variable
 static MAX_OUTSTANDING_PIECES: usize = 100;
 static BLOCK_SIZE_B: u64 = 16384;
 static TO_PEER_CHANNEL_CAPACITY: usize = 2000;
@@ -53,6 +55,7 @@ pub struct Peer {
     to_peer_cancel_tx: Sender<ToPeerCancelMsg>,
     outstanding_block_requests: HashMap<(u32, u32, u32), SystemTime>, // (piece idx, block begin, data len) -> request time
     requested_pieces: HashMap<usize, Piece>, // piece idx -> piece status with all the requested fragments
+    ut_pex_id: u8,
 }
 
 impl Peer {
@@ -75,6 +78,7 @@ impl Peer {
             to_peer_cancel_tx,
             outstanding_block_requests: HashMap::new(),
             requested_pieces: HashMap::new(),
+            ut_pex_id: 0, // i.e. no support for pex on this peer, initially
         };
     }
 
@@ -456,6 +460,66 @@ impl TorrentManager {
                             peer_ip_addr, port
                         )))
                         .await;
+                }
+                Message::Extended(extension_id, value) => {
+                    if extension_id == 0 {
+                        // this is an extension handshake
+                        if let Dict(d, _, _) = value {
+                            if let Some(Dict(m, _, _)) = d.get(&b"m".to_vec()) {
+                                if let Some(Int(ut_pex_id)) = m.get(&b"ut_pex".to_vec()) {
+                                    // this peer support the PEX extension, registered at number ut_pex_id
+                                    peer.ut_pex_id = *ut_pex_id as u8;
+                                }
+                            }
+                        }
+                    } else if peer.ut_pex_id == extension_id {
+                        // this is an ut_pex extended message
+                        if let Dict(d, _, _) = value {
+                            if let Some(Str(compact_contacts_info)) = d.get(&b"added".to_vec()) {
+                                // we don't support flags, dropped or ipv6 fields ATM
+                                if compact_contacts_info.len() % 6 != 0 {
+                                    log::debug!("got a PEX message with an \"added\" field that is not divisible by 6, ignoring this message");
+                                } else {
+                                    for i in (0..compact_contacts_info.len()).step_by(6) {
+                                        let mut peer_ip_buf: [u8; 4] = [0; 4];
+                                        peer_ip_buf
+                                            .copy_from_slice(&compact_contacts_info[i..i + 4]);
+                                        let ip = [
+                                            (peer_ip_buf[0]).to_string(),
+                                            (peer_ip_buf[1]).to_string(),
+                                            (peer_ip_buf[2]).to_string(),
+                                            peer_ip_buf[3].to_string(),
+                                        ]
+                                        .join(".");
+                                        let mut peer_port_buf: [u8; 2] = [0; 2];
+                                        peer_port_buf
+                                            .copy_from_slice(&compact_contacts_info[i + 4..i + 6]);
+                                        let port = u16::from_be_bytes(peer_port_buf);
+                                        log::debug!(
+                                            "adding peer advertised by {} from PEX: {}:{}",
+                                            peer_addr,
+                                            ip,
+                                            port
+                                        );
+                                        let p = tracker::Peer {
+                                            peer_id: None,
+                                            ip: ip.clone(),
+                                            port,
+                                        };
+                                        let mut advertised_peers_mg =
+                                            self.advertised_peers.lock().unwrap();
+                                        advertised_peers_mg.insert(
+                                            format!("{}:{}", ip, port),
+                                            (p, SystemTime::UNIX_EPOCH),
+                                        );
+                                        drop(advertised_peers_mg);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        log::debug!("got an extension message from {} but id was not recognized as an extension we registered: {}", peer_addr, extension_id);
+                    }
                 }
             }
         }

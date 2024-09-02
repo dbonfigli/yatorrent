@@ -10,6 +10,7 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 
+use crate::bencoding::Value;
 use crate::torrent_protocol::wire_protocol::{
     Message, Protocol, ProtocolReadHalf, ProtocolWriteHalf,
 };
@@ -285,11 +286,34 @@ async fn handshake(
     log::trace!("bitfield sent to peer {}", peer_addr);
 
     // if peer supports DHT, send port
-    if reserved[7] & 1u8 == 1 {
+    if reserved[7] & 1u8 != 0 {
         write
             .send(Message::Port(tcp_wire_protocol_listening_port))
             .await?;
         log::trace!("port sent to peer {}", peer_addr);
+    }
+
+    // if peer supports extensions, send PEX support
+    if reserved[5] & 0x10 != 0 {
+        let extension_handshake = Value::Dict(
+            HashMap::from([(
+                b"m".to_vec(),
+                Value::Dict(
+                    HashMap::from([(
+                        b"ut_pex".to_vec(),
+                        Value::Int(1), // we always register 1 as ut_pex extension since we don't support others ATM
+                    )]),
+                    0,
+                    0,
+                ),
+            )]),
+            0,
+            0,
+        );
+        write
+            .send(Message::Extended(0, extension_handshake))
+            .await?;
+        log::trace!("extension handshake sent to peer {}", peer_addr);
     }
 
     let stream = read.unsplit(write);
