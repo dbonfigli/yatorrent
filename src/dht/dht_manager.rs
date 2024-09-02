@@ -770,12 +770,12 @@ impl DhtManager {
                     );
                     return;
                 }
-                let inflight_req: (String, SystemTime, KRPCMessage, Option<[u8; 20]>) = self
+                let inflight_req = self
                     .sender
                     .inflight_requests
                     .remove(&transaction_id)
                     .unwrap();
-                log::debug!("got dht error respose for transaction id {} from {}; our message sent was: {:?}, error type: {:?}, error message: {}", force_string(&transaction_id), addr, inflight_req.2, error_type, msg);
+                log::trace!("got dht error respose for transaction id {} from {}; our message sent was: {:?}, error type: {:?}, error message: {}", force_string(&transaction_id), addr, inflight_req.2, error_type, msg);
             }
         }
     }
