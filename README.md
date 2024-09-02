@@ -4,7 +4,7 @@ A command line torrent client written in rust, implementing the [Torrent protoco
 * [Multitracker Metadata Extension](http://bittorrent.org/beps/bep_0012.html);
 * [UDP Tracker Protocol for BitTorrent](http://bittorrent.org/beps/bep_0015.html);
 * [DHT Protocol](http://bittorrent.org/beps/bep_0005.html);
-* [Peer Exchange (PEX)](https://www.bittorrent.org/beps/bep_0011.html) (and with it, the [Extension Protocol](http://bittorrent.org/beps/bep_0010.html)), please not that the support is partial (we are not sending messages, just discovering peers for ourself);
+* [Peer Exchange (PEX)](https://www.bittorrent.org/beps/bep_0011.html) (and with it, the [Extension Protocol](http://bittorrent.org/beps/bep_0010.html)), please note that the support is partial (we are not sending messages, just discovering peers for ourself);
 
 This is a didactic project I created purely to learn rust, it is far from feature complete or production ready, albeit working: it has been tested to saturate a 200Mb/s internet connection with low cpu usage.
 
