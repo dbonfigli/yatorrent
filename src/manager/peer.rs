@@ -53,9 +53,19 @@ pub async fn connect_to_new_peer(
     match timeout(DEFAULT_TIMEOUT, TcpStream::connect(dest.clone())).await {
         Err(_elapsed) => {
             log::trace!("timed out connecting to peer {}", dest);
+            send_to_torrent_manager(
+                &peers_to_torrent_manager_tx,
+                PeersToManagerMsg::Error(format!("{}:{}", host, port), PeerError::HandshakeError),
+            )
+            .await;
         }
         Ok(Err(e)) => {
             log::trace!("error initiating connection to peer {}: {}", dest, e);
+            send_to_torrent_manager(
+                &peers_to_torrent_manager_tx,
+                PeersToManagerMsg::Error(format!("{}:{}", host, port), PeerError::HandshakeError),
+            )
+            .await;
         }
         Ok(Ok(tcp_stream)) => {
             let peer_addr = match tcp_stream.peer_addr() {

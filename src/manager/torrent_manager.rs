@@ -233,9 +233,9 @@ impl TorrentManager {
 
                 Some(DhtToTorrentManagerMsg::NewPeer(ip, port)) = dht_to_torrent_manager_rx.recv() => {
                     let p = tracker::Peer{peer_id: None, ip: ip.to_string(), port: port};
-                    let mut possible_peers_mg = self.advertised_peers.lock().unwrap();
-                    possible_peers_mg.insert(format!("{}:{}", ip, port), (p, SystemTime::UNIX_EPOCH));
-                    drop(possible_peers_mg);
+                    let mut advertised_peers_mg = self.advertised_peers.lock().unwrap();
+                    advertised_peers_mg.insert(format!("{}:{}", ip, port), (p, SystemTime::UNIX_EPOCH));
+                    drop(advertised_peers_mg);
                 }
                 else => break,
             }
@@ -777,8 +777,8 @@ impl TorrentManager {
             Size::from_bytes(self.downloaded_bytes).format().with_style(Style::Abbreviated),
             Size::from_bytes(self.file_manager.wasted_bytes).format().with_style(Style::Abbreviated),
             advertised_peers_len,
-            self.peers.len(),
             self.bad_peers.len(),
+            self.peers.len(),
             self.peers.iter()
             .fold(0, |acc, (_,p)| if !p.peer_choking { acc + 1 } else { acc }),
             PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY - peers_to_torrent_manager_channel_capacity,
