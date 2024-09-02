@@ -97,20 +97,15 @@ impl Value {
     }
 }
 
-// strangely bittorrent client with version "lt" (old version of libtorrent? could not find the message in the code at https://github.com/arvidn/libtorrent) wants the t key in the dict for dht requests before anything else, otherwise we get the error:
-// { v: <non_utf-8>lt\r\x80; e: [203, No transaction ID]; y: e }
+// keys must be byte strings and must appear in lexicographical order - libtorrent is very strict on this
 fn encode_dict(d: &HashMap<Vec<u8>, Value>) -> Vec<u8> {
+    let mut keys: Vec<_> = d.keys().collect();
+    keys.sort();
     let mut v = b"d".to_vec();
-    if let Some(t_val) = d.get(&b"t".to_vec()) {
-        v.append(&mut encode_str(&b"t".to_vec()));
-        v.append(&mut t_val.encode());
+    for k in keys {
+        v.append(&mut encode_str(k));
+        v.append(&mut d.get(k).unwrap().encode());
     }
-    d.into_iter().for_each(|entry| {
-        if *entry.0 != b"t".to_vec() {
-            v.append(&mut encode_str(entry.0));
-            v.append(&mut entry.1.encode());
-        }
-    });
     v.push(b'e');
     v
 }
