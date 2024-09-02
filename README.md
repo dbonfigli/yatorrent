@@ -25,6 +25,7 @@ Options:
   -t, --torrent-file <TORRENT_FILE>  Path to the .torrent file [env: TORRENT_FILE=]
   -b, --base-path <BASE_PATH>        Optional base path where files are downloaded (directory will be created if it does not exist) [env: BASE_PATH=] [default: <current directory>]
   -p, --port <PORT>                  Optional listening port [env: PORT=] [default: 8000]
+  -d, --dht-port <DHT_PORT>          Optional listening port for DHT protocol [env: DHT_PORT=] [default: 8001]
   -l, --log-level <LOG_LEVEL>        Optional log level [env: LOG_LEVEL=] [default: info] [possible values: trace, debug, info, warn, error]
   -h, --help                         Print help
   -V, --version                      Print version
@@ -41,4 +42,5 @@ Things yet to be implemented / todos:
 * remove not interested peers if we are also not interested
 * avoid re-requesting blocks after receiving choke message for awhile - requested blocks could still come
 * text-based UI / ncourses
+* [Peer Exchange (PEX)](https://www.bittorrent.org/beps/bep_0011.html) (and with it, the [Extension Protocol](http://bittorrent.org/beps/bep_0010.html))
 * [uTorrent transport protocol](http://bittorrent.org/beps/bep_0029.html)
