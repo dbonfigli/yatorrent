@@ -144,9 +144,18 @@ impl Metainfo {
                     }
                 }
             }
+            Some(Value::Str(url_v)) => {
+                if let Ok(url) = str::from_utf8(&url_v) {
+                    url_list.push(url.to_string());
+                } else {
+                    return Err(Box::from(
+                        "The .torrent file \"url-list\" has an element that is not an UTF-8 string",
+                    ));
+                }
+            }
             Some(_) => {
                 return Err(Box::from(
-                    "The .torrent file has a \"url-list\" field but it does not contain a list",
+                    "The .torrent file has a \"url-list\" field but it does not contain a list or string",
                 ));
             }
         }
