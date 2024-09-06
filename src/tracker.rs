@@ -594,25 +594,23 @@ fn get_peers_wiht_binary_model(
         );
     }
     let mut peers_list: Vec<Peer> = Vec::new();
-    if peers_bytes.len() > 0 {
-        for i in (0..=(peers_bytes.len() - 1)).step_by(6) {
-            let peer_ip_bytes = &peers_bytes[i..i + 4];
-            let ip = [
-                (peer_ip_bytes[0]).to_string(),
-                (peer_ip_bytes[1]).to_string(),
-                (peer_ip_bytes[2]).to_string(),
-                peer_ip_bytes[3].to_string(),
-            ]
-            .join(".");
-            let peer_port_bytes = &peers_bytes[i + 4..i + 6];
-            let port = peer_port_bytes[0] as u16 * 256 + peer_port_bytes[1] as u16;
+    for i in (0..peers_bytes.len()).step_by(6) {
+        let peer_ip_bytes = &peers_bytes[i..i + 4];
+        let ip = [
+            (peer_ip_bytes[0]).to_string(),
+            (peer_ip_bytes[1]).to_string(),
+            (peer_ip_bytes[2]).to_string(),
+            peer_ip_bytes[3].to_string(),
+        ]
+        .join(".");
+        let peer_port_bytes = &peers_bytes[i + 4..i + 6];
+        let port = peer_port_bytes[0] as u16 * 256 + peer_port_bytes[1] as u16;
 
-            peers_list.push(Peer {
-                peer_id: Option::None,
-                ip,
-                port,
-            });
-        }
+        peers_list.push(Peer {
+            peer_id: Option::None,
+            ip,
+            port,
+        });
     }
     Ok(peers_list)
 }
