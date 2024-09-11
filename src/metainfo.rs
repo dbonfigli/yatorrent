@@ -1,8 +1,8 @@
 use crate::{bencoding::Value, util::pretty_info_hash};
+use anyhow::{bail, Result};
 use sha1::{Digest, Sha1};
 use size::{Size, Style};
-use std::{error::Error, fmt, str};
-use Result;
+use std::{fmt, str};
 
 #[derive(PartialEq, Debug)]
 pub struct Metainfo {
@@ -62,14 +62,10 @@ impl fmt::Display for Metainfo {
 }
 
 impl Metainfo {
-    pub fn new(v: &Value, source: &Vec<u8>) -> Result<Self, Box<dyn Error>> {
+    pub fn new(v: &Value, source: &Vec<u8>) -> Result<Self> {
         let torrent_map = match v {
             Value::Dict(m, _, _) => m,
-            _ => {
-                return Err(Box::from(
-                    "The .torrent file is invalid: it does not contain a dict",
-                ))
-            }
+            _ => bail!("The .torrent file is invalid: it does not contain a dict"),
         };
 
         // announce / announce-list
@@ -86,41 +82,33 @@ impl Metainfo {
                                 if let Ok(a) = str::from_utf8(&announce_vec) {
                                     tier_list.push(a.to_string());
                                 } else {
-                                    return Err(Box::from("The .torrent file \"announce-list\" has an element in a tier list that is not an UTF-8 string"));
+                                    bail!("The .torrent file \"announce-list\" has an element in a tier list that is not an UTF-8 string");
                                 }
                             } else {
-                                return Err(Box::from(
-                                        "The .torrent file \"announce-list\" has an element in a tier list that is not a string"),
-                                    );
+                                bail!("The .torrent file \"announce-list\" has an element in a tier list that is not a string");
                             }
                         }
                         if tier_list.len() == 0 {
-                            return Err(Box::from(
-                                "The .torrent file \"announce-list\" has a tier list without elements"),
-                            );
+                            bail!("The .torrent file \"announce-list\" has a tier list without elements");
                         }
                         announces.push(tier_list);
                     } else {
-                        return Err(Box::from(
-                            "The .torrent file \"announce-list\" does not contain a list of lists",
-                        ));
+                        bail!(
+                            "The .torrent file \"announce-list\" does not contain a list of lists"
+                        );
                     }
                 }
             }
-            Some(_) => {
-                return Err(Box::from("The .torrent file has a \"announce-list\" field but it does not contain a list"));
-            }
+            Some(_) => bail!(
+                "The .torrent file has a \"announce-list\" field but it does not contain a list"
+            ),
         }
 
         if announces.len() == 0 {
             match torrent_map.get(&b"announce".to_vec()) {
                 Some(Value::Str(announce_vec)) => match str::from_utf8(&announce_vec) {
                     Ok(a) => announces.push(vec![a.to_string()]),
-                    _ => {
-                        return Err(Box::from(
-                            "The .torrent file \"announce\" is not an UTF8 string",
-                        ))
-                    }
+                    _ => bail!("The .torrent file \"announce\" is not an UTF8 string"),
                 },
                 _ => {}
             };
@@ -135,12 +123,10 @@ impl Metainfo {
                         if let Ok(url) = str::from_utf8(&url_v) {
                             url_list.push(url.to_string());
                         } else {
-                            return Err(Box::from("The .torrent file \"url-list\" has an element that is not an UTF-8 string"));
+                            bail!("The .torrent file \"url-list\" has an element that is not an UTF-8 string");
                         }
                     } else {
-                        return Err(Box::from(
-                            "The .torrent file \"url-list\" has an element that is not a string",
-                        ));
+                        bail!("The .torrent file \"url-list\" has an element that is not a string");
                     }
                 }
             }
@@ -148,16 +134,10 @@ impl Metainfo {
                 if let Ok(url) = str::from_utf8(&url_v) {
                     url_list.push(url.to_string());
                 } else {
-                    return Err(Box::from(
-                        "The .torrent file \"url-list\" has an element that is not an UTF-8 string",
-                    ));
+                    bail!("The .torrent file \"url-list\" has an element that is not an UTF-8 string");
                 }
             }
-            Some(_) => {
-                return Err(Box::from(
-                    "The .torrent file has a \"url-list\" field but it does not contain a list or string",
-                ));
-            }
+            Some(_) => bail!( "The .torrent file has a \"url-list\" field but it does not contain a list or string")
         }
 
         let mut node_list = Vec::new();
@@ -167,42 +147,32 @@ impl Metainfo {
                 for node_host_port_list_value in l {
                     if let Value::List(node_host_port_list) = node_host_port_list_value {
                         if node_host_port_list.len() != 2 {
-                            return Err(Box::from(
-                                "The .torrent file \"nodes\" has an element that is a list of size other than 2",
-                            ));
+                            bail!("The .torrent file \"nodes\" has an element that is a list of size other than 2");
                         }
                         let node_host;
                         if let Value::Str(node_host_vec) = node_host_port_list[0].clone() {
                             if let Ok(host) = str::from_utf8(&node_host_vec) {
                                 node_host = host.to_string();
                             } else {
-                                return Err(Box::from("The .torrent file \"nodes\" has a host that is not an UTF-8 string"));
+                                bail!("The .torrent file \"nodes\" has a host that is not an UTF-8 string");
                             }
                         } else {
-                            return Err(Box::from(
-                                "The .torrent file \"nodes\" has a host that is not a string",
-                            ));
+                            bail!("The .torrent file \"nodes\" has a host that is not a string");
                         }
                         let node_port;
                         if let Value::Int(node_port_int) = node_host_port_list[1].clone() {
                             node_port = node_port_int;
                         } else {
-                            return Err(Box::from(
-                                "The .torrent file \"nodes\" has a port that is not a number",
-                            ));
+                            bail!("The .torrent file \"nodes\" has a port that is not a number");
                         }
                         node_list.push(format!("{}:{}", node_host, node_port));
                     } else {
-                        return Err(Box::from(
-                            "The .torrent file \"nodes\" has an element that is not a list",
-                        ));
+                        bail!("The .torrent file \"nodes\" has an element that is not a list");
                     }
                 }
             }
             Some(_) => {
-                return Err(Box::from(
-                    "The .torrent file has a \"nodes\" field but it does not contain a list",
-                ));
+                bail!("The .torrent file has a \"nodes\" field but it does not contain a list")
             }
         }
 
@@ -212,50 +182,32 @@ impl Metainfo {
                 a,
                 Sha1::digest(&source[*s..*e]).as_slice().try_into().unwrap(),
             ),
-            _ => {
-                return Err(Box::from(
-                    "The .torrent file does not contain a valid \"info\"",
-                ))
-            }
+            _ => bail!("The .torrent file does not contain a valid \"info\""),
         };
 
         // file / dir name
         let name_string = match info_dict.get(&b"name".to_vec()) {
             Some(Value::Str(name_vec)) => match str::from_utf8(name_vec) {
                 Ok(a) => a.to_string(),
-                _ => {
-                    return Err(Box::from(
-                        "The .torrent file \"info.name\" kv is not an UTF8 string",
-                    ))
-                }
+                _ => bail!("The .torrent file \"info.name\" kv is not an UTF8 string"),
             },
-            _ => {
-                return Err(Box::from(
-                    "The .torrent file does not contain a valid \"info.name\"",
-                ))
-            }
+            _ => bail!("The .torrent file does not contain a valid \"info.name\""),
         };
 
         // piece length
         let piece_length_i64_value = match info_dict.get(&b"piece length".to_vec()) {
             Some(Value::Int(a)) => a,
-            _ => {
-                return Err(Box::from(
-                    "The .torrent file does not contain a valid \"info.piece length\"",
-                ))
-            }
+            _ => bail!("The .torrent file does not contain a valid \"info.piece length\""),
         };
         if *piece_length_i64_value < 0 {
-            return Err(Box::from(
-                "The .torrent file \"info.piece length\" kv cannot be < 0",
-            ));
+            bail!("The .torrent file \"info.piece length\" kv cannot be < 0");
         }
 
         // pieces
         let pieces_vec = match info_dict.get(&b"pieces".to_vec()) {
             Some(Value::Str(pieces_byte_vec)) => {
                 if pieces_byte_vec.len() % 20 != 0 {
-                    return Err(Box::from("The .torrent file contains \"info.pieces\" that is not a string of length divisible by 20"));
+                    bail!("The .torrent file contains \"info.pieces\" that is not a string of length divisible by 20");
                 }
                 let mut pieces_vec = Vec::new();
                 for p in (0..pieces_byte_vec.len()).step_by(20) {
@@ -265,20 +217,14 @@ impl Metainfo {
                 }
                 pieces_vec
             }
-            _ => {
-                return Err(Box::from(
-                    "The .torrent file does not contain a valid \"info.pieces\"",
-                ))
-            }
+            _ => bail!("The .torrent file does not contain a valid \"info.pieces\""),
         };
 
         // file / files
         let metainfo_file;
         if let Some(Value::Int(a)) = info_dict.get(&b"length".to_vec()) {
             if *a < 0 {
-                return Err(Box::from(
-                    "The .torrent file \"info.length\" kv cannot be < 0",
-                ));
+                bail!("The .torrent file \"info.length\" kv cannot be < 0");
             }
             metainfo_file = MetainfoFile::SingleFile(MetainfoSingleFile {
                 name: name_string,
@@ -287,38 +233,35 @@ impl Metainfo {
         } else if let Some(Value::List(files_list)) = info_dict.get(&b"files".to_vec()) {
             let mut files = Vec::new();
             for f in files_list {
-                let entry =
-                    match f {
-                        Value::Dict(a, _, _) => a,
-                        _ => return Err(Box::from(
-                            "The .torrent file \"info.files\" kv has an entry that is not a dict",
-                        )),
-                    };
+                let entry = match f {
+                    Value::Dict(a, _, _) => a,
+                    _ => {
+                        bail!("The .torrent file \"info.files\" kv has an entry that is not a dict")
+                    }
+                };
 
                 // lenght
                 let entry_length = match entry.get(&b"length".to_vec()) {
                     Some(Value::Int(a)) => a,
-                    _ => return Err(Box::from("The .torrent file \"info.files\" kv has an entry that has no valid \"length\"")),
+                    _ => bail!("The .torrent file \"info.files\" kv has an entry that has no valid \"length\""),
                 };
                 if *entry_length < 0 {
-                    return Err(Box::from("The .torrent file \"info.files\" kv has an entry with \"length\" that is < 0"));
+                    bail!("The .torrent file \"info.files\" kv has an entry with \"length\" that is < 0");
                 }
 
                 // path
                 let entry_path_value_list = match entry.get(&b"path".to_vec()) {
                     Some(Value::List(a)) => a,
-                    _ => return Err(Box::from(
-                        "The .torrent file \"info.files\" kv has an entry that has no valid \"path\""),
-                    ),
+                    _ => bail!("The .torrent file \"info.files\" kv has an entry that has no valid \"path\""),
                 };
                 let mut entry_path_list = Vec::new();
                 for e in entry_path_value_list {
                     let p = match e {
                         Value::Str(a) => match str::from_utf8(a) {
                             Ok(a) => a.to_string(),
-                            _ => return Err(Box::from("The .torrent file \"info.files\" kv has an entry with \"path\" with an element that is not an UTF8 string")),
+                            _ => bail!("The .torrent file \"info.files\" kv has an entry with \"path\" with an element that is not an UTF8 string"),
                         }
-                        _ => return Err(Box::from("The .torrent file \"info.files\" kv has an entry with \"path\" with an element that is not a string")),
+                        _ => bail!("The .torrent file \"info.files\" kv has an entry with \"path\" with an element that is not a string"),
                     };
                     entry_path_list.push(p);
                 }
@@ -333,7 +276,7 @@ impl Metainfo {
                 files: files,
             })
         } else {
-            return Err(Box::from("The .torrent file does not contain either a valid \"info.length\" or a \"info.files\""));
+            bail!("The .torrent file does not contain either a valid \"info.length\" or a \"info.files\"");
         }
 
         Ok(Metainfo {

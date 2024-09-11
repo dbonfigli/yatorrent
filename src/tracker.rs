@@ -5,8 +5,9 @@ use tokio::{
 };
 
 use crate::bencoding::Value;
+use anyhow::{bail, Result};
 use rand::seq::SliceRandom;
-use std::{error::Error, fmt, io::Read, str, time::Duration};
+use std::{fmt, io::Read, str, time::Duration};
 
 static UDP_TIMEOUT: Duration = Duration::from_secs(15);
 static UDP_RETRY_COOLOFF_SEC: u64 = 15;
@@ -116,7 +117,7 @@ impl TrackerClient {
         downloaded: u64,
         left: u64,
         event: Event,
-    ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+    ) -> Result<Response> {
         let mut error_message = Vec::new();
         for tier_idx in 0..self.trackers_url.len() {
             for tracker_idx in 0..self.trackers_url[tier_idx].len() {
@@ -169,7 +170,7 @@ impl TrackerClient {
         if error_message.len() == 0 {
             error_message.push("no trackers in list".to_string());
         }
-        return Err(Box::from(error_message.join("; ")));
+        bail!(error_message.join("; "));
     }
 
     async fn request_to_tracker(
@@ -180,7 +181,7 @@ impl TrackerClient {
         downloaded: u64,
         left: u64,
         event: Event,
-    ) -> Result<Response, Box<dyn Error + Sync + Send>> {
+    ) -> Result<Response> {
         if url.starts_with("http") {
             log::debug!("trying reaching http tracker {}...", url);
             return self
@@ -217,7 +218,7 @@ impl TrackerClient {
             }
         } else {
             // some torrents are announcing webtorrent websockets with scheme wss://
-            return Err(Box::from(format!("scheme of url not supported: {}", url)));
+            bail!("scheme of url not supported: {}", url);
         }
     }
 
@@ -229,7 +230,7 @@ impl TrackerClient {
         downloaded: u64,
         left: u64,
         event: Event,
-    ) -> Result<Response, Box<dyn Error + Sync + Send>> {
+    ) -> Result<Response> {
         let mut url = reqwest::Url::parse_with_params(
             url.as_str(),
             &[
@@ -268,12 +269,12 @@ impl TrackerClient {
             .collect()
         {
             Ok(b) => b,
-            Err(e) => return Err(Box::from(format!("error on http request: {}", e))),
+            Err(e) => bail!("error on http request: {}", e),
         };
 
         let response_map = match Value::new(&body) {
             Value::Dict(m, _, _) => m,
-            _ => return Err("The server response was not a valid bencoded map".into()),
+            _ => bail!("The server response was not a valid bencoded map"),
         };
 
         if let Some(Value::Str(failure_reason_vec)) = response_map.get(&b"failure reason".to_vec())
@@ -281,7 +282,7 @@ impl TrackerClient {
             if let Ok(f) = str::from_utf8(&failure_reason_vec) {
                 return Ok(Response::Failure(f.to_string()));
             } else {
-                return Err("Failure reason key provided in bencoded dict response but it is not an UTF8 string".into());
+                bail!("Failure reason key provided in bencoded dict response but it is not an UTF8 string");
             }
         }
 
@@ -289,7 +290,7 @@ impl TrackerClient {
         let warning_message = match response_map.get(&b"warning message".to_vec()) {
             Some(Value::Str(warning_message_vec)) => match str::from_utf8(&warning_message_vec) {
                 Ok(w) => Option::Some(w.to_string()),
-                _ => return Err("Warining message key provided in bencoded dict response but it is not an UTF8 string".into()),
+                _ => bail!("Warining message key provided in bencoded dict response but it is not an UTF8 string"),
             }
             _ => Option::None
         };
@@ -297,7 +298,7 @@ impl TrackerClient {
         // interval
         let interval = match response_map.get(&b"interval".to_vec()) {
             Some(Value::Int(i)) => *i,
-            _ => return Err("Interval key not provided in bencoded dict response or provided but it is not a number".into()),
+            _ => bail!("Interval key not provided in bencoded dict response or provided but it is not a number"),
         };
 
         // min interval
@@ -310,10 +311,7 @@ impl TrackerClient {
         let tracker_id = match response_map.get(&b"tracker id".to_vec()) {
             Some(Value::Str(tracker_id_vec)) => match str::from_utf8(&tracker_id_vec) {
                 Ok(w) => Option::Some(w.to_string()),
-                _ => return Err(
-                    "Tracker id key provided in bencoded dict response but it is not an UTF8 string"
-                        .into(),
-                ),
+                _ => bail!("Tracker id key provided in bencoded dict response but it is not an UTF8 string"),
             },
             _ => Option::None,
         };
@@ -321,23 +319,20 @@ impl TrackerClient {
         // complete
         let complete = match response_map.get(&b"complete".to_vec()) {
             Some(Value::Int(i)) => *i,
-            _ => return Err("Complete key not provided in bencoded dict response or provided but it is not a number".into()),
+            _ => bail!("Complete key not provided in bencoded dict response or provided but it is not a number"),
         };
 
         // incomplete
         let incomplete = match response_map.get(&b"incomplete".to_vec()) {
             Some(Value::Int(i)) => *i,
-            _ => return Err("Incomplete key not provided in bencoded dict response or provided but it is not a number".into()),
+            _ => bail!("Incomplete key not provided in bencoded dict response or provided but it is not a number"),
         };
 
         // peers
         let peers = match response_map.get(&b"peers".to_vec()) {
             Some(Value::List(peers_list)) => get_peers_wiht_dict_model(peers_list)?,
             Some(Value::Str(peers_bytes)) => get_peers_wiht_binary_model(peers_bytes)?,
-            _ => return Err(
-                "Peers key not provided in bencoded dict or provided but it was not a list or string"
-                    .into(),
-            ),
+            _ => bail!("Peers key not provided in bencoded dict or provided but it was not a list or string"),
         };
 
         Ok(Response::Ok(OkResponse {
@@ -359,31 +354,21 @@ impl TrackerClient {
         downloaded: u64,
         left: u64,
         event: Event,
-    ) -> Result<Response, Box<dyn Error + Sync + Send>> {
+    ) -> Result<Response> {
         let url = reqwest::Url::parse(&url)?;
         let host = match url.host() {
             Some(h) => h,
-            None => {
-                return Err(Box::from(format!(
-                    "udp tracker url did not contain host: {}",
-                    url
-                )));
-            }
+            None => bail!("udp tracker url did not contain host: {}", url),
         };
         let port = match url.port() {
             Some(p) => p,
-            None => {
-                return Err(Box::from(format!(
-                    "udp tracker url did not contain port: {}",
-                    url
-                )));
-            }
+            None => bail!("udp tracker url did not contain port: {}", url),
         };
 
         let dest_addr = format!("{}:{}", host, port);
         let socket = UdpSocket::bind("0.0.0.0:0").await?;
         if let Err(e) = socket.connect(dest_addr).await {
-            return Err(Box::from(e));
+            bail!(e);
         }
 
         // send connect
@@ -393,25 +378,17 @@ impl TrackerClient {
         send_connect_buf[8..12].copy_from_slice(&(0u32.to_be_bytes()));
         send_connect_buf[12..16].copy_from_slice(&(transaction_id.to_be_bytes()));
         if let Err(e) = socket.send(&send_connect_buf).await {
-            return Err(Box::from(e));
+            bail!(e);
         }
 
         // receive connect response
         let mut recv_connect_buf = [0u8; 16];
         match timeout(UDP_TIMEOUT, socket.recv(&mut recv_connect_buf)).await {
-            Err(_elapsed) => {
-                return Err(Box::from(
-                    "timed out receiving connect response from udp tracker",
-                ));
-            }
-            Ok(Err(e)) => {
-                return Err(Box::from(e));
-            }
+            Err(_elapsed) => bail!("timed out receiving connect response from udp tracker"),
+            Ok(Err(e)) => bail!(e),
             Ok(Ok(bytes_recv)) => {
                 if bytes_recv != recv_connect_buf.len() {
-                    return Err(Box::from(
-                        "received less than 16 bytes on recv connect from udp tracker",
-                    ));
+                    bail!("received less than 16 bytes on recv connect from udp tracker");
                 }
             }
         }
@@ -420,17 +397,14 @@ impl TrackerClient {
         action_buf.copy_from_slice(&recv_connect_buf[0..4]);
         let action = u32::from_be_bytes(action_buf);
         if action != 0 {
-            return Err(Box::from(format!(
-                "got connect response from udp tracker but received action was not 0 (i.e.: connect): {}",
-                action
-            )));
+            bail!("got connect response from udp tracker but received action was not 0 (i.e.: connect): {}", action);
         }
 
         let mut transaction_id_buf = [0u8; 4];
         transaction_id_buf.copy_from_slice(&recv_connect_buf[4..8]);
         let recv_transaction_id = u32::from_be_bytes(transaction_id_buf);
         if recv_transaction_id != transaction_id {
-            return Err(Box::from(format!("got connect response from udp tracker but received transaction_id {} was different from the request ({})", recv_transaction_id, transaction_id )));
+            bail!("got connect response from udp tracker but received transaction_id {} was different from the request ({})", recv_transaction_id, transaction_id);
         }
 
         let mut connection_id_buf = [0u8; 8];
@@ -458,42 +432,31 @@ impl TrackerClient {
         announce_buf[92..96].copy_from_slice(&(-1i32).to_be_bytes());
         announce_buf[96..98].copy_from_slice(&port.to_be_bytes());
         if let Err(e) = socket.send(&announce_buf).await {
-            return Err(Box::from(e));
+            bail!(e);
         }
 
         // receive announce response
         let mut recv_announce_buf = [0u8; 65535]; // max udp datagram size
         match timeout(UDP_TIMEOUT, socket.recv(&mut recv_announce_buf)).await {
-            Err(_elapsed) => {
-                return Err(Box::from(
-                    "timed out receiving announce response from udp tracker",
-                ));
-            }
-            Ok(Err(e)) => {
-                return Err(Box::from(e));
-            }
+            Err(_elapsed) => bail!("timed out receiving announce response from udp tracker"),
+            Ok(Err(e)) => bail!(e),
             Ok(Ok(bytes_recv)) => {
                 if bytes_recv < 16 {
-                    return Err(Box::from(
-                        "received less than 16 bytes on recv announce from udp tracker",
-                    ));
+                    bail!("received less than 16 bytes on recv announce from udp tracker");
                 }
 
                 let mut action_buf = [0u8; 4];
                 action_buf.copy_from_slice(&recv_announce_buf[0..4]);
                 let action = u32::from_be_bytes(action_buf);
                 if action != 1 {
-                    return Err(Box::from(format!(
-                        "got announce response from udp tracker but received action was not 1 (i.e.: announce): {}",
-                        action
-                    )));
+                    bail!("got announce response from udp tracker but received action was not 1 (i.e.: announce): {}", action);
                 }
 
                 let mut transaction_id_buf = [0u8; 4];
                 transaction_id_buf.copy_from_slice(&recv_announce_buf[4..8]);
                 let recv_transaction_id = u32::from_be_bytes(transaction_id_buf);
                 if recv_transaction_id != transaction_id {
-                    return Err(Box::from(format!("got announce response from udp tracker but received transaction_id {} was different from the request ({})", recv_transaction_id, transaction_id )));
+                    bail!("got announce response from udp tracker but received transaction_id {} was different from the request ({})", recv_transaction_id, transaction_id);
                 }
 
                 let mut interval_buf = [0u8; 4];
@@ -511,7 +474,7 @@ impl TrackerClient {
                 let mut peers = Vec::new();
                 let address_len = 4; // todo check if we are using ipv6
                 if (bytes_recv - 20) % 6 != 0 {
-                    return Err(Box::from(format!("gor announce response but size is not valid: addresses field is not divisible by 6: {}", bytes_recv - 20)));
+                    bail!("gor announce response but size is not valid: addresses field is not divisible by 6: {}", bytes_recv - 20);
                 }
                 for i in (20..bytes_recv).step_by(address_len + 2) {
                     let mut address_buf = [0u8; 4];
@@ -546,9 +509,7 @@ impl TrackerClient {
     }
 }
 
-fn get_peers_wiht_dict_model(
-    peers_values: &Vec<Value>,
-) -> Result<Vec<Peer>, Box<dyn Error + Sync + Send>> {
+fn get_peers_wiht_dict_model(peers_values: &Vec<Value>) -> Result<Vec<Peer>> {
     let mut peers_list: Vec<Peer> = Vec::new();
     for v in peers_values {
         match v {
@@ -557,7 +518,7 @@ fn get_peers_wiht_dict_model(
                 let peer_id = match peer_dic.get(&b"peer id".to_vec()) {
                     Some(Value::Str(peer_id_vec)) => match str::from_utf8(&peer_id_vec) {
                         Ok(w) => Option::Some(w.to_string()),
-                        _ => return Err("Peer id key provided in list of peers in bencoded dict response but it is not an UTF8 string".into()),
+                        _ => bail!("Peer id key provided in list of peers in bencoded dict response but it is not an UTF8 string"),
                     }
                     _ => Option::None
                 };
@@ -566,32 +527,28 @@ fn get_peers_wiht_dict_model(
                 let ip = match peer_dic.get(&b"ip".to_vec()) {
                     Some(Value::Str(ip_vec)) => match str::from_utf8(&ip_vec) {
                         Ok(i) => i.to_string(),
-                        _ => return Err("Ip key provided in list of peers in bencoded dict response but it is not an UTF8 string".into()),
+                        _ => bail!("Ip key provided in list of peers in bencoded dict response but it is not an UTF8 string"),
                     }
-                    _ => return Err("Ip key not provided in list of peers in bencoded dict response or provided but it is not a string".into()),
+                    _ => bail!("Ip key not provided in list of peers in bencoded dict response or provided but it is not a string"),
                 };
 
                 // port
                 let port = match peer_dic.get(&b"port".to_vec()) {
                     Some(Value::Int(port_vec)) => u16::try_from(*port_vec)?,
-                    _ => return Err("Port key not provided in list of peers in bencoded dict response or provided but it is not a valid number".into()),
+                    _ => bail!("Port key not provided in list of peers in bencoded dict response or provided but it is not a valid number"),
                 };
 
                 peers_list.push(Peer { peer_id, ip, port });
             }
-            _ => return Err("Peers list contains a value that is not a dic".into()),
+            _ => bail!("Peers list contains a value that is not a dic"),
         };
     }
     Ok(peers_list)
 }
 
-fn get_peers_wiht_binary_model(
-    peers_bytes: &Vec<u8>,
-) -> Result<Vec<Peer>, Box<dyn Error + Sync + Send>> {
+fn get_peers_wiht_binary_model(peers_bytes: &Vec<u8>) -> Result<Vec<Peer>> {
     if peers_bytes.len() % 6 != 0 {
-        return Err(
-            "Peers list is provided in binary model but it is not aligned to 6 bytes".into(),
-        );
+        bail!("Peers list is provided in binary model but it is not aligned to 6 bytes");
     }
     let mut peers_list: Vec<Peer> = Vec::new();
     for i in (0..peers_bytes.len()).step_by(6) {

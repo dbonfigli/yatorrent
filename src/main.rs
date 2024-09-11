@@ -1,7 +1,7 @@
+use anyhow::Result;
 use clap::Parser;
 use manager::torrent_manager;
 use std::env::current_dir;
-use std::error::Error;
 use std::path::Path;
 use std::process::exit;
 use std::{fmt, fs};
@@ -61,7 +61,7 @@ impl fmt::Display for LogLevels {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<()> {
     let args = Args::parse();
     let base_path = Path::new(&args.base_path);
 

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
-use std::error::Error;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use anyhow::{bail, Result};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::Receiver;
@@ -260,7 +260,7 @@ async fn handshake(
     own_peer_id: String,
     tcp_wire_protocol_listening_port: u16,
     piece_completion_status: Box<Vec<bool>>,
-) -> Result<TcpStream, Box<dyn Error + Send + Sync>> {
+) -> Result<TcpStream> {
     let (peer_protocol, reserved, peer_info_hash, peer_id) = stream
         .handshake(info_hash, own_peer_id.as_bytes().try_into()?)
         .await?;
@@ -274,7 +274,7 @@ async fn handshake(
     );
     if peer_info_hash != info_hash {
         log::debug!("handshake errored: info hash received during handshake does not match to the one we want (own: {}, theirs: {})", pretty_info_hash(info_hash), pretty_info_hash(peer_info_hash));
-        return Err(Box::from("own and their infohash did not match"));
+        bail!("own and their infohash did not match");
     }
 
     // send bitfield

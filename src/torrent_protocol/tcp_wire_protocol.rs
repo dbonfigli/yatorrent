@@ -1,5 +1,5 @@
+use anyhow::{bail, Result};
 use core::str;
-use std::error::Error;
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf},
@@ -19,7 +19,7 @@ impl Protocol for TcpStream {
         &mut self,
         info_hash: [u8; 20],
         peer_id: [u8; 20],
-    ) -> Result<(String, [u8; 8], [u8; 20], [u8; 20]), Box<dyn Error + Send + Sync>> {
+    ) -> Result<(String, [u8; 8], [u8; 20], [u8; 20])> {
         let peer_addr = self.peer_addr()?;
         log::trace!("peer {}: performing handshake", &peer_addr);
 
@@ -37,7 +37,7 @@ impl Protocol for TcpStream {
                 buf[28..48].copy_from_slice(&info_hash);
                 buf[48..68].copy_from_slice(&peer_id);
                 if let Err(e) = write.write_all(&buf).await {
-                    return Err(e.into());
+                    return Err(e);
                 } else {
                     log::trace!("peer {}: full handshake sent", &peer_addr);
                     return Ok(());
@@ -49,12 +49,12 @@ impl Protocol for TcpStream {
 
                 let mut pstr_len_buf: [u8; 1] = [0; 1];
                 if let Err(e) = read.read_exact(&mut pstr_len_buf).await {
-                    return Err(e.into());
+                    return Err(e);
                 }
 
                 let mut pstr_buf: Vec<u8> = vec![0; pstr_len_buf[0].try_into().unwrap()];
                 if let Err(e) = read.read_exact(&mut pstr_buf).await {
-                    return Err(e.into());
+                    return Err(e);
                 }
 
                 let pstr = str::from_utf8(&pstr_buf)
@@ -63,12 +63,12 @@ impl Protocol for TcpStream {
 
                 let mut reserved_buf: [u8; 8] = [0; 8];
                 if let Err(e) = read.read_exact(&mut reserved_buf).await {
-                    return Err(e.into());
+                    return Err(e);
                 }
 
                 let mut info_hash_buf: [u8; 20] = [0; 20];
                 if let Err(e) = read.read_exact(&mut info_hash_buf).await {
-                    return Err(e.into());
+                    return Err(e);
                 }
 
                 log::trace!(
@@ -77,7 +77,7 @@ impl Protocol for TcpStream {
                 );
                 let mut peer_id: [u8; 20] = [0; 20];
                 if let Err(e) = read.read_exact(&mut peer_id).await {
-                    return Err(e.into());
+                    return Err(e);
                 }
 
                 log::trace!("peer {}: full handshake received", &peer_addr);
@@ -86,14 +86,14 @@ impl Protocol for TcpStream {
         );
 
         if let Err(e) = write_result {
-            return Err(e);
+            bail!(e);
         }
-        return read_result;
+        return Ok(read_result?);
     }
 }
 
 impl ProtocolWriteHalf for WriteHalf<TcpStream> {
-    async fn send(&mut self, message: Message) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn send(&mut self, message: Message) -> Result<()> {
         match message {
             Message::KeepAlive => {
                 let buf: [u8; 4] = [0; 4];
@@ -229,7 +229,7 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
 }
 
 impl ProtocolReadHalf for ReadHalf<TcpStream> {
-    async fn receive(&mut self) -> Result<Message, Box<dyn Error + Send + Sync>> {
+    async fn receive(&mut self) -> Result<Message> {
         // get size of  message
         let mut size_message_buf: [u8; 4] = [0; 4];
         if let Err(e) = self.read_exact(&mut size_message_buf).await {

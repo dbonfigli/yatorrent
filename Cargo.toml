@@ -17,3 +17,4 @@ trait-variant = "0.1.2"
 clap = { version = "4.5.16", features = ["derive", "env"] }
 num-bigint = "0.4.6"
 derivative = "2.2.0"
+anyhow = "1.0.87"

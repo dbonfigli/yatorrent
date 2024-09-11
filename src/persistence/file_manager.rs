@@ -1,5 +1,5 @@
+use anyhow::{bail, Result};
 use std::collections::{HashMap, HashSet};
-use std::error::Error;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::{cmp, fs};
@@ -36,11 +36,7 @@ impl FileHandles {
         }
     }
 
-    fn get_file(
-        &mut self,
-        file_path: &PathBuf,
-        open_for_write: bool,
-    ) -> Result<&File, Box<dyn Error>> {
+    fn get_file(&mut self, file_path: &PathBuf, open_for_write: bool) -> Result<&File> {
         if !self.file_handles.contains_key(file_path)
             || (open_for_write && !self.opened_for_write.contains(file_path))
         {
@@ -240,7 +236,7 @@ impl FileManager {
         piece_idx: usize,
         block_begin: u64,
         block_length: u64,
-    ) -> Result<Box<Vec<u8>>, Box<dyn Error>> {
+    ) -> Result<Box<Vec<u8>>> {
         return self.read_piece_block_with_have_piece_check(
             piece_idx,
             block_begin,
@@ -255,27 +251,23 @@ impl FileManager {
         block_begin: u64,
         block_length: u64,
         check_if_have_piece: bool,
-    ) -> Result<Box<Vec<u8>>, Box<dyn Error>> {
+    ) -> Result<Box<Vec<u8>>> {
         if piece_idx >= self.piece_to_files.len() {
-            return Err(Box::from(format!(
+            bail!(
                 "requested to read piece idx {} that is not in range (total pieces: {})",
                 piece_idx,
                 self.piece_to_files.len()
-            )));
+            );
         }
         let piece_length = self.piece_length(piece_idx);
         if piece_length < block_begin + block_length {
-            return Err(Box::from(format!(
-              "requested to read piece idx {} out of range: block_begin {} + block_length {} > piece_length {}",
-              piece_idx,
-              block_begin, block_length, piece_length
-          )));
+            bail!("requested to read piece idx {} out of range: block_begin {} + block_length {} > piece_length {}", piece_idx, block_begin, block_length, piece_length);
         }
         if check_if_have_piece && !self.piece_completion_status[piece_idx] {
-            return Err(Box::from(format!(
+            bail!(
                 "requested to read piece idx {} that we don't have",
                 piece_idx
-            )));
+            );
         }
         let mut block_buf = Box::new(Vec::<u8>::new());
         let mut current_piece_offset = 0;
@@ -321,15 +313,15 @@ impl FileManager {
         piece_idx: usize,
         data: Box<Vec<u8>>,
         block_begin: u64, // position in the piece where to start writing data
-    ) -> Result<bool, Box<dyn Error>> {
+    ) -> Result<bool> {
         // if ok, return if piece is completed / not completed
 
         if piece_idx >= self.num_pieces() {
-            return Err(Box::from(format!(
+            bail!(
                 "cannot write block: piece idx {} would overflow total pieces ({})",
                 piece_idx,
                 self.num_pieces()
-            )));
+            );
         }
 
         // avoid useless writes if we already have the piece
@@ -345,9 +337,7 @@ impl FileManager {
         let piece_len = self.piece_length(piece_idx);
         let data_len = data.len() as u64;
         if block_begin + data_len > piece_len {
-            return Err(Box::from(
-                "cannot write block: data would overflow the piece",
-            ));
+            bail!("cannot write block: data would overflow the piece");
         }
 
         if !self.incomplete_pieces.contains_key(&piece_idx) {
@@ -401,7 +391,7 @@ impl FileManager {
                 .try_into()
                 .unwrap();
             if piece_sha != self.piece_hashes[piece_idx] {
-                return Err(Box::from(format!("the sha of the data we just wrote for piece {} do not match the sha we expect, marking this piece as missing", piece_idx)));
+                bail!("the sha of the data we just wrote for piece {} do not match the sha we expect, marking this piece as missing", piece_idx);
             } else {
                 self.piece_completion_status[piece_idx] = true;
                 self.refresh_completed_files(); //todo: optimize this

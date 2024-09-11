@@ -1,6 +1,7 @@
 use std::{error::Error, fmt};
 
 use crate::bencoding::Value;
+use anyhow::Result;
 
 #[derive(Debug)]
 pub enum Message {
@@ -94,19 +95,19 @@ pub trait LocalProtocol {
         &mut self,
         info_hash: [u8; 20],
         peer_id: [u8; 20],
-    ) -> Result<(String, [u8; 8], [u8; 20], [u8; 20]), Box<dyn Error + Send + Sync>>; // pstr, reserved, info_hash, peer_id
+    ) -> Result<(String, [u8; 8], [u8; 20], [u8; 20])>; // pstr, reserved, info_hash, peer_id
 }
 
 #[trait_variant::make(ProtocolReadHalf: Send)]
 pub trait LocalProtocolReadHalf {
     #[allow(dead_code)]
-    async fn receive(&mut self) -> Result<Message, Box<dyn Error + Send + Sync>>;
+    async fn receive(&mut self) -> Result<Message>;
 }
 
 #[trait_variant::make(ProtocolWriteHalf: Send)]
 pub trait LocalProtocolWriteHalf {
     #[allow(dead_code)]
-    async fn send(&mut self, message: Message) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn send(&mut self, message: Message) -> Result<()>;
 }
 
 #[derive(Debug)]

@@ -1,9 +1,10 @@
+use anyhow::{bail, Result};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
-use std::{error::Error, iter, path::Path};
+use std::{iter, path::Path};
 
 use rand::seq::SliceRandom;
 use rand::Rng;
@@ -868,7 +869,7 @@ async fn tracker_request(
     info_hash: [u8; 20],
     uploaded_bytes: u64,
     downloaded_bytes: u64,
-) -> Result<(TrackerClient, Vec<tracker::Peer>), Box<dyn Error + Sync + Send>> {
+) -> Result<(TrackerClient, Vec<tracker::Peer>)> {
     match tracker_client
         .request(
             info_hash,
@@ -881,11 +882,11 @@ async fn tracker_request(
     {
         Err(e) => {
             log::error!("could not perform request to tracker: {}", e);
-            return Err(Box::from(e.to_string()));
+            bail!(e);
         }
         Ok(Response::Failure(msg)) => {
             log::error!("tracker responded with failure: {}", msg);
-            return Err(Box::from(msg));
+            bail!(msg);
         }
         Ok(Response::Ok(ok_response)) => {
             if let Some(msg) = ok_response.warning_message.clone() {
