@@ -53,7 +53,7 @@ impl Node {
 #[derive(PartialEq, Debug, Clone)]
 pub enum BucketContent {
     Buckets(Vec<Bucket>), // _always_ 2
-    Nodes(Vec<Node>),     // max MAX_NODES_PER_BUCKET
+    Nodes(Vec<Node>),     // max K_FACTOR
 }
 
 pub fn biguint_to_u8_20(n: &BigUint) -> [u8; 20] {
