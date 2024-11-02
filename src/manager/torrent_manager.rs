@@ -100,6 +100,54 @@ impl Peer {
     fn support_pex(&self) -> bool {
         self.ut_pex_id != 0
     }
+
+    async fn send_pex_message(
+        &mut self,
+        peer_addr: &String,
+        added: Vec<String>,
+        dropped: Vec<String>,
+    ) {
+        let mut h = HashMap::new();
+        if added.len() > 0 {
+            h.insert(
+                b"added".to_vec(),
+                Value::Str(ip_port_list_to_compact_format(added)),
+            );
+        }
+        if dropped.len() > 0 {
+            h.insert(
+                b"dropped".to_vec(),
+                Value::Str(ip_port_list_to_compact_format(dropped)),
+            );
+        }
+        self.last_pex_message_sent = SystemTime::now();
+        if h.len() > 0 {
+            let pex_msg = Message::Extended(self.ut_pex_id, Value::Dict(h, 0, 0));
+            log::trace!("sending pex message to peer {}: {}", peer_addr, pex_msg);
+            self.send(ToPeerMsg::Send(pex_msg)).await;
+        }
+    }
+
+    async fn send_requests(&mut self, piece_idx: usize, mut incomplete_piece: Piece) {
+        while self.outstanding_block_requests.len() < MAX_OUTSTANDING_REQUESTS_PER_PEER {
+            if let Some((begin, end)) = incomplete_piece.get_next_fragment(BLOCK_SIZE_B) {
+                let request = (piece_idx as u32, begin as u32, (end - begin + 1) as u32);
+                self.send(ToPeerMsg::Send(Message::Request(
+                    request.0, request.1, request.2,
+                )))
+                .await;
+
+                self.outstanding_block_requests
+                    .insert(request, SystemTime::now());
+                incomplete_piece.add_fragment(begin, end);
+            } else {
+                break;
+            }
+        }
+
+        self.requested_pieces
+            .insert(piece_idx, incomplete_piece.clone());
+    }
 }
 
 pub struct TorrentManager {
@@ -493,9 +541,8 @@ impl TorrentManager {
                                     // this peer supports the PEX extension, registered at number ut_pex_id
                                     peer.ut_pex_id = *ut_pex_id as u8;
                                     // send first peer list
-                                    send_pex_message(
+                                    peer.send_pex_message(
                                         &peer_addr,
-                                        peer,
                                         other_active_peers,
                                         Vec::new(),
                                     )
@@ -725,7 +772,7 @@ impl TorrentManager {
                 .filter(|(_, event_type)| **event_type == PexEvent::Dropped)
                 .map(|(p, _)| (*p).clone())
                 .collect();
-            send_pex_message(peer_addr, peer, added, dropped).await;
+            peer.send_pex_message(peer_addr, added, dropped).await;
         }
 
         // send piece requests
@@ -753,8 +800,7 @@ impl TorrentManager {
         // send requests for new blocks for pieces currently downloading
         for (piece_idx, peer_addr) in self.outstanding_piece_assigments.iter() {
             let peer = self.peers.get_mut(peer_addr).unwrap();
-            send_requests(
-                peer,
+            peer.send_requests(
                 *piece_idx,
                 peer.requested_pieces.get(&piece_idx).unwrap().clone(),
             )
@@ -766,7 +812,7 @@ impl TorrentManager {
             if !self.outstanding_piece_assigments.contains_key(piece_idx) {
                 if let Some(peer_addr) = assign_piece(*piece_idx, &self.peers) {
                     let peer = self.peers.get_mut(&peer_addr).unwrap();
-                    send_requests(peer, *piece_idx, piece.clone()).await;
+                    peer.send_requests(*piece_idx, piece.clone()).await;
                     self.outstanding_piece_assigments
                         .insert(*piece_idx, peer_addr.clone());
                 }
@@ -783,8 +829,7 @@ impl TorrentManager {
             {
                 if let Some(peer_addr) = assign_piece(piece_idx, &self.peers) {
                     let peer = self.peers.get_mut(&peer_addr).unwrap();
-                    send_requests(
-                        peer,
+                    peer.send_requests(
                         piece_idx,
                         Piece::new(self.file_manager.piece_length(piece_idx)),
                     )
@@ -1040,54 +1085,6 @@ fn assign_piece(piece_idx: usize, peers: &HashMap<String, Peer>) -> Option<Strin
         return Some(possible_peers[0].0.clone());
     } else {
         return None;
-    }
-}
-
-async fn send_requests(peer: &mut Peer, piece_idx: usize, mut incomplete_piece: Piece) {
-    while peer.outstanding_block_requests.len() < MAX_OUTSTANDING_REQUESTS_PER_PEER {
-        if let Some((begin, end)) = incomplete_piece.get_next_fragment(BLOCK_SIZE_B) {
-            let request = (piece_idx as u32, begin as u32, (end - begin + 1) as u32);
-            peer.send(ToPeerMsg::Send(Message::Request(
-                request.0, request.1, request.2,
-            )))
-            .await;
-
-            peer.outstanding_block_requests
-                .insert(request, SystemTime::now());
-            incomplete_piece.add_fragment(begin, end);
-        } else {
-            break;
-        }
-    }
-
-    peer.requested_pieces
-        .insert(piece_idx, incomplete_piece.clone());
-}
-
-async fn send_pex_message(
-    peer_addr: &String,
-    peer: &mut Peer,
-    added: Vec<String>,
-    dropped: Vec<String>,
-) {
-    let mut h = HashMap::new();
-    if added.len() > 0 {
-        h.insert(
-            b"added".to_vec(),
-            Value::Str(ip_port_list_to_compact_format(added)),
-        );
-    }
-    if dropped.len() > 0 {
-        h.insert(
-            b"dropped".to_vec(),
-            Value::Str(ip_port_list_to_compact_format(dropped)),
-        );
-    }
-    peer.last_pex_message_sent = SystemTime::now();
-    if h.len() > 0 {
-        let pex_msg = Message::Extended(peer.ut_pex_id, Value::Dict(h, 0, 0));
-        log::trace!("sending pex message to peer {}: {}", peer_addr, pex_msg);
-        peer.send(ToPeerMsg::Send(pex_msg)).await;
     }
 }
 
