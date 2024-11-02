@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use std::{iter, path::Path};
@@ -24,7 +24,7 @@ use crate::{
     tracker::{Event, Response, TrackerClient},
 };
 
-use crate::bencoding::Value::{Dict, Int, Str};
+use crate::bencoding::Value::{self, Dict, Int, Str};
 
 use super::peer::PeerError;
 
@@ -43,6 +43,8 @@ static PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY: usize = 50000;
 static REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 static MIN_CHOKE_TIME: Duration = Duration::from_secs(60);
 static NEW_CONNECTION_COOL_OFF_PERIOD: Duration = Duration::from_secs(180);
+static ADDED_DROPPED_PEER_EVENTS_RETENTION: Duration = Duration::from_secs(90);
+static PEX_MESSAGE_COOLOFF_PERIOD: Duration = Duration::from_secs(60);
 
 pub struct Peer {
     am_choking: bool,
@@ -57,6 +59,7 @@ pub struct Peer {
     outstanding_block_requests: HashMap<(u32, u32, u32), SystemTime>, // (piece idx, block begin, data len) -> request time
     requested_pieces: HashMap<usize, Piece>, // piece idx -> piece status with all the requested fragments
     ut_pex_id: u8,
+    last_pex_message_sent: SystemTime,
 }
 
 impl Peer {
@@ -80,6 +83,7 @@ impl Peer {
             outstanding_block_requests: HashMap::new(),
             requested_pieces: HashMap::new(),
             ut_pex_id: 0, // i.e. no support for pex on this peer, initially
+            last_pex_message_sent: SystemTime::UNIX_EPOCH,
         };
     }
 
@@ -91,6 +95,10 @@ impl Peer {
         let _ = self.to_peer_tx.send(msg).await;
         // ignore errors: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors
         // and the peer is still lingering in self.peers because the control message about the error is not yet been handled
+    }
+
+    fn support_pex(&self) -> bool {
+        self.ut_pex_id != 0
     }
 }
 
@@ -114,6 +122,13 @@ pub struct TorrentManager {
     listening_dht_port: u16,
     dht_nodes: Vec<String>,
     last_get_peers_requested_time: SystemTime,
+    added_dropped_peer_events: Vec<(SystemTime, PeerAddr, PexEvent)>, // time of event, address of peer for this event, pex event. This field is used to support pex
+}
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum PexEvent {
+    Added,
+    Dropped,
 }
 
 impl TorrentManager {
@@ -154,6 +169,7 @@ impl TorrentManager {
             dht_nodes: metainfo.nodes,
             last_get_peers_requested_time: SystemTime::now() - DHT_NEW_PEER_COOL_OFF_PERIOD
                 + DHT_BOOTSTRAP_TIME, // try to wait a bit before the first request, in hope that the dht has been bootstrapped, so that we don't waste time for the first request with an empty routing table
+            added_dropped_peer_events: Vec::new(),
         }
     }
 
@@ -258,6 +274,12 @@ impl TorrentManager {
         to_dht_manager_tx: Sender<ToDhtManagerMsg>,
     ) {
         log::trace!("received message from peer {}: {}", peer_addr, msg);
+        let other_active_peers = self
+            .peers
+            .keys()
+            .filter(|k| peer_addr != **k)
+            .map(|k| k.clone())
+            .collect::<Vec<_>>();
         let now = SystemTime::now();
         if let Some(peer) = self.peers.get_mut(&peer_addr) {
             match msg {
@@ -468,14 +490,23 @@ impl TorrentManager {
                         if let Dict(d, _, _) = value {
                             if let Some(Dict(m, _, _)) = d.get(&b"m".to_vec()) {
                                 if let Some(Int(ut_pex_id)) = m.get(&b"ut_pex".to_vec()) {
-                                    // this peer support the PEX extension, registered at number ut_pex_id
+                                    // this peer supports the PEX extension, registered at number ut_pex_id
                                     peer.ut_pex_id = *ut_pex_id as u8;
+                                    // send first peer list
+                                    send_pex_message(
+                                        &peer_addr,
+                                        peer,
+                                        other_active_peers,
+                                        Vec::new(),
+                                    )
+                                    .await;
                                 }
                             }
                         }
                     } else if peer.ut_pex_id == extension_id {
                         // this is an ut_pex extended message
                         if let Dict(d, _, _) = value {
+                            // todo: should we also use the dropped list? atm we are eager to hoarde all possible peers so we ignore it
                             if let Some(Str(compact_contacts_info)) = d.get(&b"added".to_vec()) {
                                 // we don't support flags, dropped or ipv6 fields ATM
                                 if compact_contacts_info.len() % 6 != 0 {
@@ -533,6 +564,11 @@ impl TorrentManager {
         ok_to_accept_connection_tx: Sender<bool>,
     ) {
         log::debug!("removing errored peer {}", peer_addr);
+        self.added_dropped_peer_events.push((
+            SystemTime::now(),
+            peer_addr.clone(),
+            PexEvent::Dropped,
+        ));
         if let Some(removed_peer) = self.peers.remove(&peer_addr) {
             for (piece_idx, _) in removed_peer.requested_pieces {
                 self.outstanding_piece_assigments.remove(&piece_idx);
@@ -647,7 +683,7 @@ impl TorrentManager {
         // most probably they have been silently dropped by the peer even if it is still alive and not choked
         self.remove_stale_requests();
 
-        // ash DHT manager for new peers if we need this
+        // ask DHT manager for new peers if we need this
         if self.peers.len() < MAX_CONNECTED_PEERS_TO_ASK_DHT_FOR_MORE
             && now
                 .duration_since(self.last_get_peers_requested_time)
@@ -658,6 +694,38 @@ impl TorrentManager {
             let _ = to_dht_manager_tx
                 .send(ToDhtManagerMsg::GetNewPeers(self.info_hash))
                 .await;
+        }
+
+        // remove old added dropped events
+        self.added_dropped_peer_events
+            .retain(|(event_timestamp, _, _)| {
+                now.duration_since(*event_timestamp).unwrap() < ADDED_DROPPED_PEER_EVENTS_RETENTION
+            });
+
+        // send PEX messages
+        for (peer_addr, peer) in self.peers.iter_mut().filter(|(_, p)| {
+            p.support_pex()
+                && now.duration_since(p.last_pex_message_sent).unwrap() > PEX_MESSAGE_COOLOFF_PERIOD
+        }) {
+            let elided_events = self
+                .added_dropped_peer_events
+                .iter()
+                .filter(|(event_timestamp, _, _)| *event_timestamp > peer.last_pex_message_sent)
+                .fold(HashMap::new(), |mut map, (_, addr, event_type)| {
+                    map.insert(addr.clone(), *event_type);
+                    map
+                });
+            let added = elided_events
+                .iter()
+                .filter(|(_, event_type)| **event_type == PexEvent::Added)
+                .map(|(p, _)| (*p).clone())
+                .collect();
+            let dropped = elided_events
+                .iter()
+                .filter(|(_, event_type)| **event_type == PexEvent::Dropped)
+                .map(|(p, _)| (*p).clone())
+                .collect();
+            send_pex_message(peer_addr, peer, added, dropped).await;
         }
 
         // send piece requests
@@ -810,6 +878,8 @@ impl TorrentManager {
             ),
         );
         log::debug!("new peer initialized: {}", peer_addr);
+        self.added_dropped_peer_events
+            .push((SystemTime::now(), peer_addr, PexEvent::Added));
         if self.peers.len() > CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS {
             log::trace!("stop accepting new peers");
             ok_to_accept_connection_tx.send(false).await.unwrap();
@@ -992,4 +1062,46 @@ async fn send_requests(peer: &mut Peer, piece_idx: usize, mut incomplete_piece: 
 
     peer.requested_pieces
         .insert(piece_idx, incomplete_piece.clone());
+}
+
+async fn send_pex_message(
+    peer_addr: &String,
+    peer: &mut Peer,
+    added: Vec<String>,
+    dropped: Vec<String>,
+) {
+    let mut h = HashMap::new();
+    if added.len() > 0 {
+        h.insert(
+            b"added".to_vec(),
+            Value::Str(ip_port_list_to_compact_format(added)),
+        );
+    }
+    if dropped.len() > 0 {
+        h.insert(
+            b"dropped".to_vec(),
+            Value::Str(ip_port_list_to_compact_format(dropped)),
+        );
+    }
+    peer.last_pex_message_sent = SystemTime::now();
+    if h.len() > 0 {
+        let pex_msg = Message::Extended(peer.ut_pex_id, Value::Dict(h, 0, 0));
+        log::trace!("sending pex message to peer {}: {}", peer_addr, pex_msg);
+        peer.send(ToPeerMsg::Send(pex_msg)).await;
+    }
+}
+
+fn ip_port_list_to_compact_format(addrs: Vec<String>) -> Vec<u8> {
+    let mut compact_format: Vec<u8> = Vec::new();
+    for addr in addrs {
+        let ip_port: Vec<_> = addr.split(':').collect();
+        if ip_port.len() != 2 {
+            panic!("addr string was not of the format ip:port");
+        }
+        let ipv4_addr: Ipv4Addr = ip_port[0].parse().expect("addr was not an ipv4");
+        compact_format.append(&mut ipv4_addr.octets().to_vec());
+        let port = ip_port[1].as_bytes();
+        compact_format.append(&mut port.to_vec());
+    }
+    compact_format
 }
