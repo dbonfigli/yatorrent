@@ -8,19 +8,17 @@ pub enum KRPCMessage {
     PingOrAnnouncePeerResp([u8; 20]), // queried nodes id, resps to ping or announce_peer messages cannot be distinghised by themselves without original transaciton id
     FindNodeReq([u8; 20], [u8; 20]),  // querying node id, id of target node
     GetPeersReq([u8; 20], [u8; 20]),  // querying node id, 20-byte infohash of target torrent
-    GetPeersOrFindNodeResp(
-        [u8; 20],                            // target: queried node id or info_hash to look for
-        Option<Vec<u8>>, // token for a future announce_peer query (only if get_peer request)
-        GetPeersOrFindNodeRespValuesOrNodes, // either "nodes" (K nodes in the queried nodes routing table closest to the target - ifno hash or other node id - supplied in the query) or "values" (list of peers having the info hash, only in case of get_peers)
-    ),
+    GetPeersOrFindNodeResp(GetPeersOrFindNodeRespData),
     AnnouncePeerReq([u8; 20], [u8; 20], u16, Vec<u8>, bool), // querying node id, 20-byte infohash of target torrent, port where we are listeing for torrent wire protocol, token received in response to a previous get_peers query, wether to imply port
     Error(ErrorType, String),                                // error type, message
 }
 
 #[derive(Debug, Clone)]
-pub enum GetPeersOrFindNodeRespValuesOrNodes {
-    Nodes(Vec<([u8; 20], Ipv4Addr, u16)>), // 20-byte Node ID in network byte order, IP-address, port
-    Values(Vec<(Ipv4Addr, u16)>),          // peer IP-address, peer port
+pub struct GetPeersOrFindNodeRespData {
+    pub target_id: [u8; 20], // target: queried node id or info_hash to look for
+    pub token: Option<Vec<u8>>, // token for a future announce_peer query (only if get_peer request)
+    pub nodes: Option<Vec<([u8; 20], Ipv4Addr, u16)>>, // 20-byte Node ID in network byte order, IP-address, port
+    pub values: Option<Vec<(Ipv4Addr, u16)>>, // peer IP-address, peer port (only if get_peer request)
 }
 
 #[derive(Debug, Clone)]
@@ -112,33 +110,32 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
                 ),
             );
         }
-        KRPCMessage::GetPeersOrFindNodeResp(target_id, token, values_or_nodes) => {
-            let mut r = HashMap::from([(b"id".to_vec(), Value::Str(target_id.to_vec()))]);
-            match token {
-                Some(token_val) => {
-                    r.insert(b"token".to_vec(), Value::Str(token_val));
-                }
-                None => {}
+        KRPCMessage::GetPeersOrFindNodeResp(resp_data) => {
+            let mut r = HashMap::from([(b"id".to_vec(), Value::Str(resp_data.target_id.to_vec()))]);
+
+            if let Some(token_val) = resp_data.token {
+                r.insert(b"token".to_vec(), Value::Str(token_val));
             }
-            match values_or_nodes {
-                GetPeersOrFindNodeRespValuesOrNodes::Nodes(nodes) => {
-                    let mut compact_node_info = vec![0u8; nodes.len() * 26];
-                    for (i, (node_id, ip, port)) in nodes.iter().enumerate() {
-                        compact_node_info[i..i + 20].copy_from_slice(node_id);
-                        compact_node_info[i + 20..i + 24].copy_from_slice(&ip.octets());
-                        compact_node_info[i + 24..i + 26].copy_from_slice(&port.to_be_bytes());
-                    }
-                    r.insert(b"nodes".to_vec(), Value::Str(compact_node_info));
+
+            if let Some(nodes) = resp_data.nodes {
+                let mut compact_node_info = vec![0u8; nodes.len() * 26];
+                for (i, (node_id, ip, port)) in nodes.iter().enumerate() {
+                    compact_node_info[i..i + 20].copy_from_slice(node_id);
+                    compact_node_info[i + 20..i + 24].copy_from_slice(&ip.octets());
+                    compact_node_info[i + 24..i + 26].copy_from_slice(&port.to_be_bytes());
                 }
-                GetPeersOrFindNodeRespValuesOrNodes::Values(values) => {
-                    let mut compact_peer_info = vec![0u8; values.len() * 6];
-                    for (i, (ip, port)) in values.iter().enumerate() {
-                        compact_peer_info[i..i + 4].copy_from_slice(&ip.octets());
-                        compact_peer_info[i + 4..i + 6].copy_from_slice(&port.to_be_bytes());
-                    }
-                    r.insert(b"values".to_vec(), Value::Str(compact_peer_info));
-                }
+                r.insert(b"nodes".to_vec(), Value::Str(compact_node_info));
             }
+
+            if let Some(values) = resp_data.values {
+                let mut compact_peer_info = vec![0u8; values.len() * 6];
+                for (i, (ip, port)) in values.iter().enumerate() {
+                    compact_peer_info[i..i + 4].copy_from_slice(&ip.octets());
+                    compact_peer_info[i + 4..i + 6].copy_from_slice(&port.to_be_bytes());
+                }
+                r.insert(b"values".to_vec(), Value::Str(compact_peer_info));
+            }
+
             h.insert(b"y".to_vec(), Value::Str(b"r".to_vec()));
             h.insert(b"r".to_vec(), Value::Dict(r, 0, 0));
         }
@@ -185,6 +182,7 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
 pub fn decode_krpc_message(data: Vec<u8>) -> Result<(Vec<u8> /* transaction id */, KRPCMessage)> {
     let transaction_id;
     let bencoded_data = Value::new(&data);
+    log::trace!("decoding krpc message: {}", bencoded_data);
     match bencoded_data {
         Value::Error(e) => bail!(e),
         Value::Str(_) | Value::Int(_) | Value::List(_) => {
@@ -418,7 +416,17 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
     }
     let id_arr = id_str[0..20].try_into().unwrap();
 
-    if let Some(nodes_v) = r_h.get(&b"nodes".to_vec()) {
+    let token_opt;
+    if let Some(token) = r_h.get(&b"token".to_vec()) {
+        match token {
+                Value::Str(token_str) => { token_opt = Some(token_str.clone()) }
+                _ => bail!("got krpc message that is a response (y=r) and has a token key in the r map that is not a bencoded string"),
+            };
+    } else {
+        token_opt = None;
+    };
+
+    let nodes = if let Some(nodes_v) = r_h.get(&b"nodes".to_vec()) {
         let nodes_str = match nodes_v {
                 Value::Str(nodes_str) => nodes_str,
                 _ => bail!("got krpc message that is a response (y=r) and has a nodes key in the r map that is not a bencoded string"),
@@ -438,25 +446,12 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
             let node_port = u16::from_be_bytes(node_port_buf);
             nodes.push((node_id, node_ip, node_port));
         }
+        Some(nodes)
+    } else {
+        None
+    };
 
-        let token_opt;
-        if let Some(token) = r_h.get(&b"token".to_vec()) {
-            match token {
-                    Value::Str(token_str) => { token_opt = Some(token_str.clone()) }
-                    _ => bail!("got krpc message that is a response (y=r) and has a token key in the r map that is not a bencoded string"),
-                };
-        } else {
-            token_opt = None;
-        };
-
-        return Ok(KRPCMessage::GetPeersOrFindNodeResp(
-            id_arr,
-            token_opt,
-            GetPeersOrFindNodeRespValuesOrNodes::Nodes(nodes),
-        ));
-    }
-
-    if let Some(peers_v) = r_h.get(&b"values".to_vec()) {
+    let values = if let Some(peers_v) = r_h.get(&b"values".to_vec()) {
         let mut peers = Vec::new();
         let peers_list = match peers_v {
                 Value::List(peers_list) => peers_list,
@@ -478,25 +473,26 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
             let peer_port = u16::from_be_bytes(peer_port_buf);
             peers.push((peer_ip, peer_port));
         }
+        Some(peers)
+    } else {
+        None
+    };
 
-        let token_opt;
-        if let Some(token) = r_h.get(&b"token".to_vec()) {
-            match token {
-                    Value::Str(token_str) => { token_opt = Some(token_str.clone()) }
-                    _ => bail!("got krpc message that is a response (y=r) and has a token key in the r map that is not a bencoded string"),
-                };
-        } else {
-            token_opt = None;
-        };
-
-        return Ok(KRPCMessage::GetPeersOrFindNodeResp(
-            id_arr,
-            token_opt,
-            GetPeersOrFindNodeRespValuesOrNodes::Values(peers),
-        ));
+    match (&nodes, &values) {
+        // if values nor nodes were there, this is a GetPeersOrFindNodeResp
+        (Some(_), None) | (None, Some(_)) | (Some(_), Some(_)) => {
+            return Ok(KRPCMessage::GetPeersOrFindNodeResp(
+                GetPeersOrFindNodeRespData {
+                    target_id: id_arr,
+                    token: token_opt,
+                    nodes,
+                    values,
+                },
+            ));
+        }
+        // else, it is a PingOrAnnouncePeerResp
+        _ => return Ok(KRPCMessage::PingOrAnnouncePeerResp(id_arr)),
     }
-
-    return Ok(KRPCMessage::PingOrAnnouncePeerResp(id_arr));
 }
 
 fn parse_error_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
