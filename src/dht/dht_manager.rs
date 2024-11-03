@@ -235,7 +235,7 @@ impl DhtManager {
                     log::debug!("routing table size: {}, inflight requests: {}, inflight get_peers requests: {}, inflight find_nodes_requests: {}",
                     self.routing_table.as_mut_vec().len(), // todo: optimize this
                     self.sender.inflight_requests.len(), self.inflight_get_peers_requests.len(), self.inflight_find_node_requests.len());
-                    self.handle_ticker(&dht_to_torrent_manager_tx, &socket).await;
+                    self.handle_ticker(&socket).await;
                 }
                 Some(msg) = to_dht_manager_rx.recv() => {
                     match msg {
@@ -274,11 +274,7 @@ impl DhtManager {
         }
     }
 
-    async fn handle_ticker(
-        &mut self,
-        dht_to_torrent_manager_tx: &Sender<DhtToTorrentManagerMsg>,
-        socket: &UdpSocket,
-    ) {
+    async fn handle_ticker(&mut self, socket: &UdpSocket) {
         let now = SystemTime::now();
 
         // expire inflight requests
@@ -292,8 +288,7 @@ impl DhtManager {
             .map(|(k, _)| *k)
             .collect();
         for info_hash in expired_get_peers_requests {
-            self.end_get_peers_search(&info_hash, dht_to_torrent_manager_tx, socket)
-                .await;
+            self.end_get_peers_search(&info_hash, socket).await;
         }
 
         // end expired find_node requests
@@ -640,13 +635,22 @@ impl DhtManager {
                         if peers.len() > 0 {
                             get_peers_req.replying_nodes_with_peers += 1;
                         }
+
                         for p in peers {
-                            get_peers_req.discovered_peers.insert(p);
+                            match get_peers_req.discovered_peers.get(&p) {
+                                Some(_) => {}
+                                None => {
+                                    get_peers_req.discovered_peers.insert(p);
+                                    // immediatelly send discovered peer to torrent manager
+                                    let _ = dht_to_torrent_manager_tx
+                                        .send(DhtToTorrentManagerMsg::NewPeer(p.0, p.1))
+                                        .await;
+                                }
+                            }
                         }
                         if get_peers_req.inflight_requests == 0 {
-                            // search is over, let's push results
-                            self.end_get_peers_search(&req_id, dht_to_torrent_manager_tx, socket)
-                                .await;
+                            // search is over
+                            self.end_get_peers_search(&req_id, socket).await;
                         }
                     }
 
@@ -844,12 +848,7 @@ impl DhtManager {
         }
     }
 
-    async fn end_get_peers_search(
-        &mut self,
-        info_hash: &[u8; 20],
-        dht_to_torrent_manager_tx: &Sender<DhtToTorrentManagerMsg>,
-        socket: &UdpSocket,
-    ) {
+    async fn end_get_peers_search(&mut self, info_hash: &[u8; 20], socket: &UdpSocket) {
         if let Some(req) = self.inflight_get_peers_requests.remove(info_hash) {
             // send announce_peer to closest K nodes
             for i in 0..cmp::min(req.replying_nodes.len(), K_FACTOR) {
@@ -882,13 +881,6 @@ impl DhtManager {
                 req.replying_nodes_with_peers,
                 req.discovered_peers.len(),
             );
-
-            // finally send discovered peers to torrent manager
-            for (ip, port) in req.discovered_peers {
-                let _ = dht_to_torrent_manager_tx
-                    .send(DhtToTorrentManagerMsg::NewPeer(ip, port))
-                    .await;
-            }
         }
     }
 
