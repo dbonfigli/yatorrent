@@ -42,11 +42,22 @@ static WELL_KNOWN_BOOTSTRAP_NODES: &[&str] = &[
     "dht.aelitis.com:6881",
 ];
 
-fn generate_transaction_id() -> [u8; 3] {
+fn generate_transaction_id() -> [u8; 10] {
     const CHARSET: &[u8] = b"0123456789";
     let mut rng = rand::thread_rng();
     let mut one_char = || CHARSET[rng.gen_range(0..CHARSET.len())] as u8;
-    [one_char(), one_char(), one_char()]
+    [
+        one_char(),
+        one_char(),
+        one_char(),
+        one_char(),
+        one_char(),
+        one_char(),
+        one_char(),
+        one_char(),
+        one_char(),
+        one_char(),
+    ]
 }
 
 pub enum ToDhtManagerMsg {
@@ -132,7 +143,7 @@ impl MessageSender {
             (dest.clone(), SystemTime::now(), msg.clone(), related_info),
         );
         if let Err(e) = socket.send_to(&buf, dest.clone()).await {
-            // don't care if we cannot send it, due to roting issues or others (if it was for buffer full, send_to would block)
+            // don't care if we cannot send it, due to routing issues or others (if it was for buffer full, send_to would block)
             log::debug!("could not send dht message {:?} to {}: {}", msg, dest, e);
         };
     }
@@ -280,29 +291,29 @@ impl DhtManager {
 
         // routing table maintenance
         let mut nodes_to_be_removed = Vec::new();
-        {
-            for n in self.routing_table.as_mut_vec() {
-                // ping nodes if not seen a reply in the last 10 minutes and last pinged less than 2 minutes ago
-                if now.duration_since(n.last_replied).unwrap() > Duration::from_secs(600)
-                    && now.duration_since(n.last_pinged).unwrap() > Duration::from_secs(60)
-                {
-                    n.last_pinged = now;
-                    self.sender
-                        .do_req(
-                            socket,
-                            to_addr_string(&n.addr, n.port),
-                            KRPCMessage::PingReq(self.own_node_id),
-                            None,
-                        )
-                        .await;
-                }
 
-                // accumulate nodes to be removed if not active anymore in the last 15 mins
-                if now.duration_since(n.last_replied).unwrap() > Duration::from_secs(900) {
-                    nodes_to_be_removed.push(n.clone());
-                }
+        for n in self.routing_table.as_mut_vec() {
+            // ping nodes if not seen a reply in the last 10 minutes and last pinged less than 2 minutes ago
+            if now.duration_since(n.last_replied).unwrap() > Duration::from_secs(600)
+                && now.duration_since(n.last_pinged).unwrap() > Duration::from_secs(60)
+            {
+                n.last_pinged = now;
+                self.sender
+                    .do_req(
+                        socket,
+                        to_addr_string(&n.addr, n.port),
+                        KRPCMessage::PingReq(self.own_node_id),
+                        None,
+                    )
+                    .await;
+            }
+
+            // accumulate nodes to be removed if not active anymore in the last 15 mins
+            if now.duration_since(n.last_replied).unwrap() > Duration::from_secs(900) {
+                nodes_to_be_removed.push(n.clone());
             }
         }
+
         for n in nodes_to_be_removed {
             self.routing_table.remove(&n);
             // this is out of official bep05 specs but we do that to replace removed nodes: if we remove a node, we send a find_node with the removed id to the closest nodes
@@ -336,14 +347,6 @@ impl DhtManager {
         for i in 0..20 {
             random_id[i] = rand::random();
         }
-        self.sender
-            .do_req(
-                &socket,
-                to_addr,
-                KRPCMessage::FindNodeReq(self.own_node_id, node_id),
-                Some(random_id),
-            )
-            .await;
 
         let get_node_request = FindNodeRequest {
             node_id_to_find: node_id,
@@ -357,6 +360,15 @@ impl DhtManager {
         };
         self.inflight_find_node_requests
             .insert(random_id, get_node_request);
+
+        self.sender
+            .do_req(
+                &socket,
+                to_addr,
+                KRPCMessage::FindNodeReq(self.own_node_id, node_id),
+                Some(random_id),
+            )
+            .await;
     }
 
     async fn get_peers(&mut self, socket: &UdpSocket, info_hash: [u8; 20]) {
@@ -370,16 +382,6 @@ impl DhtManager {
 
         // perform get_peers request to the closest known good nodes
         let closest_nodes = self.routing_table.closest_nodes(&info_hash);
-        for n in closest_nodes.iter() {
-            self.sender
-                .do_req(
-                    socket,
-                    to_addr_string(&n.addr, n.port),
-                    KRPCMessage::GetPeersReq(self.own_node_id, info_hash),
-                    Some(info_hash),
-                )
-                .await;
-        }
 
         let get_peers_request = GetPeersRequest {
             start_time: SystemTime::now(),
@@ -395,6 +397,17 @@ impl DhtManager {
         };
         self.inflight_get_peers_requests
             .insert(info_hash, get_peers_request);
+
+        for n in closest_nodes.iter() {
+            self.sender
+                .do_req(
+                    socket,
+                    to_addr_string(&n.addr, n.port),
+                    KRPCMessage::GetPeersReq(self.own_node_id, info_hash),
+                    Some(info_hash),
+                )
+                .await;
+        }
     }
 
     async fn handle_incoming_message(
@@ -483,7 +496,7 @@ impl DhtManager {
                 let random_id = match self.sender.inflight_requests.remove(&transaction_id) {
                     Some((_, _, _, Some(random_id))) => random_id,
                     _ => {
-                        log::trace!("got a find_node resp from {} for an expired or unknown transaction id we didn't perform, ignoring it", addr);
+                        log::trace!("got a find_node resp from {} for an expired or unknown transaction id ({}) we didn't perform, ignoring it", addr, force_string(&transaction_id.to_vec()));
                         return;
                     }
                 };
@@ -616,7 +629,7 @@ impl DhtManager {
                 let info_hash = match self.sender.inflight_requests.remove(&transaction_id) {
                     Some((_, _, _, Some(info_hash))) => info_hash,
                     _ => {
-                        log::trace!("got a get_peers resp from {} for an expired or unknown transaction id we didn't perform, ignoring it", addr);
+                        log::trace!("got a get_peers resp from {} for an expired or unknown transaction id ({}) we didn't perform, ignoring it", addr, force_string(&transaction_id.to_vec()));
                         return;
                     }
                 };
