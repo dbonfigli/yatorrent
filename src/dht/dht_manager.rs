@@ -637,15 +637,12 @@ impl DhtManager {
                         }
 
                         for p in peers {
-                            match get_peers_req.discovered_peers.get(&p) {
-                                Some(_) => {}
-                                None => {
-                                    get_peers_req.discovered_peers.insert(p);
-                                    // immediatelly send discovered peer to torrent manager
-                                    let _ = dht_to_torrent_manager_tx
-                                        .send(DhtToTorrentManagerMsg::NewPeer(p.0, p.1))
-                                        .await;
-                                }
+                            if !get_peers_req.discovered_peers.contains(&p) {
+                                get_peers_req.discovered_peers.insert(p);
+                                // immediatelly send discovered peer to torrent manager
+                                let _ = dht_to_torrent_manager_tx
+                                    .send(DhtToTorrentManagerMsg::NewPeer(p.0, p.1))
+                                    .await;
                             }
                         }
                         if get_peers_req.inflight_requests == 0 {
