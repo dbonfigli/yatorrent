@@ -42,22 +42,16 @@ static WELL_KNOWN_BOOTSTRAP_NODES: &[&str] = &[
     "dht.aelitis.com:6881",
 ];
 
+// todo: we should use only 2 chars and all the possible chars here, but this is much more useful during debugging
 fn generate_transaction_id() -> [u8; 10] {
     const CHARSET: &[u8] = b"0123456789";
     let mut rng = rand::thread_rng();
     let mut one_char = || CHARSET[rng.gen_range(0..CHARSET.len())] as u8;
-    [
-        one_char(),
-        one_char(),
-        one_char(),
-        one_char(),
-        one_char(),
-        one_char(),
-        one_char(),
-        one_char(),
-        one_char(),
-        one_char(),
-    ]
+    let mut transaction_id: [u8; 10] = [0u8; 10];
+    for i in 0..10 {
+        transaction_id[i] = one_char();
+    }
+    transaction_id
 }
 
 pub enum ToDhtManagerMsg {
@@ -75,12 +69,12 @@ pub struct DhtManager {
     listening_torrent_wire_protocol_port: u16,
     own_node_id: [u8; 20],
     bootstrap_nodes: Vec<String>,
-    sender: MessageSender,
+    msg_sender: MessageSender,
     routing_table: Bucket,
     token_signing_secret: [u8; 10], // todo: we must rotate this once in a while
-    known_peers: HashMap<[u8; 20], HashMap<(Ipv4Addr, u16), SystemTime>>, // info hash -> hasmap of (ip/port of peers that have it -> last announced); todo: should we expire keys here once in a while / if keys are too many
+    known_peers: HashMap<[u8; 20], HashMap<(Ipv4Addr, u16), SystemTime>>, // info hash -> hashmap of (ip/port of peers that have it -> last announced); todo: should we expire keys here once in a while / if keys are too many
     inflight_get_peers_requests: HashMap<[u8; 20], GetPeersRequest>, // info hash -> GetPeersRequest
-    inflight_find_node_requests: HashMap<[u8; 20], FindNodeRequest>, // node id -> FindNodeRequest
+    inflight_find_node_requests: HashMap<[u8; 20], FindNodeRequest>, // random id -> FindNodeRequest
     last_routing_table_refresh: SystemTime,
 }
 
@@ -100,7 +94,7 @@ struct FindNodeRequest {
     total_requests: usize,
     inflight_requests: usize,
     total_discovered_nodes: usize,
-    requested_to_nodes: HashSet<[u8; 20]>, // nodes for which we asked a find_node request
+    queried_nodes: HashSet<[u8; 20]>, // nodes for which we asked a find_node request
     closest_k_nodes: Vec<([u8; 20], Ipv4Addr, u16)>,
     probed_nodes: HashSet<[u8; 20]>, // nodes we sent a ping to eventually put then in the routing table
 }
@@ -137,14 +131,14 @@ impl MessageSender {
         socket: &UdpSocket,
         dest: String,
         msg: KRPCMessage,
-        related_info: Option<[u8; 20]>,
-        depth: usize,
+        request_id: Option<[u8; 20]>,
+        call_depth: usize,
     ) {
         let tid = generate_transaction_id();
         log::trace!(
             "perform req to {}, depth: {}, tid: {}, msg: {:?}",
             dest.clone(),
-            depth,
+            call_depth,
             force_string(&tid.to_vec()),
             msg
         );
@@ -155,12 +149,12 @@ impl MessageSender {
                 dest.clone(),
                 SystemTime::now(),
                 msg.clone(),
-                related_info,
-                depth,
+                request_id,
+                call_depth,
             ),
         );
         if let Err(e) = socket.send_to(&buf, dest.clone()).await {
-            // don't care if we cannot send it, due to routing issues or others (if it was for buffer full, send_to would block)
+            // don't care if we cannot send it, due to routing issues or others (if it was for buffer full, send_to would have blocked)
             log::debug!("could not send dht message {:?} to {}: {}", msg, dest, e);
         };
     }
@@ -188,7 +182,7 @@ impl DhtManager {
             listening_torrent_wire_protocol_port,
             own_node_id,
             bootstrap_nodes,
-            sender: MessageSender::new(),
+            msg_sender: MessageSender::new(),
             routing_table: Bucket::new(&own_node_id),
             token_signing_secret,
             known_peers: HashMap::new(),
@@ -221,20 +215,20 @@ impl DhtManager {
         let mut msg_buf: [u8; 65535] = [0u8; 65535]; // max udp datagram size
         loop {
             tokio::select! {
-                Ok((msg_size, addr)) = socket.recv_from(&mut msg_buf) => {
+                Ok((msg_size, remote_addr)) = socket.recv_from(&mut msg_buf) => {
                     match decode_krpc_message(msg_buf[0..msg_size].to_vec()) {
                         Err(e) => {
-                            log::trace!("error decoding incoming dht message from {}: {}, udp message was: {:?}", addr, e, msg_buf);
+                            log::trace!("error decoding incoming dht message from {}: {}, udp message was: {:?}", remote_addr, e, msg_buf);
                         }
                         Ok((transaction_id, msg)) => {
-                            self.handle_incoming_message(addr, transaction_id, msg, &socket, &dht_to_torrent_manager_tx).await;
+                            self.handle_incoming_message(remote_addr, &socket, transaction_id, msg, &dht_to_torrent_manager_tx).await;
                         }
                     }
                 }
                 Some(()) = tick_rx.recv() => {
                     log::debug!("routing table size: {}, inflight requests: {}, inflight get_peers requests: {}, inflight find_nodes_requests: {}",
                     self.routing_table.as_mut_vec().len(), // todo: optimize this
-                    self.sender.inflight_requests.len(), self.inflight_get_peers_requests.len(), self.inflight_find_node_requests.len());
+                    self.msg_sender.inflight_requests.len(), self.inflight_get_peers_requests.len(), self.inflight_find_node_requests.len());
                     self.handle_ticker(&socket).await;
                 }
                 Some(msg) = to_dht_manager_rx.recv() => {
@@ -243,28 +237,28 @@ impl DhtManager {
                             log::trace!("got GetNewPeers msg from torrent manager: {}", pretty_info_hash(info_hash));
                             self.get_peers(&socket, info_hash).await;
                         }
-                        ToDhtManagerMsg::NewNode(addr) => {
-                            log::trace!("got NewNode msg from torrent manager: {}", addr);
+                        ToDhtManagerMsg::NewNode(new_node_addr) => {
+                            log::trace!("got NewNode msg from torrent manager: {}", new_node_addr);
                             // ping new dht node as validation to eventually put it in routing table
-                            self.sender.do_req(
+                            self.msg_sender.do_req(
                                 &socket,
-                                addr,
+                                new_node_addr,
                                 KRPCMessage::PingReq(self.own_node_id),
                                 None,
                                 0
                             ).await;
                         }
-                        ToDhtManagerMsg::ConnectedToNewPeer(info_hash, addr, port) => {
-                            log::trace!("got ConnectedToNewPeer msg from torrent manager: {}", addr);
-                            let peer_info = (addr, port);
+                        ToDhtManagerMsg::ConnectedToNewPeer(info_hash, new_peer_addr, new_peer_port) => {
+                            log::trace!("got ConnectedToNewPeer msg from torrent manager: {}", new_peer_addr);
+                            let peer_info = (new_peer_addr, new_peer_port);
                             match self.known_peers.get_mut(&info_hash) {
-                                Some(s) => {
-                                    s.insert(peer_info, SystemTime::now());
+                                Some(peers_for_this_info_hash) => {
+                                    peers_for_this_info_hash.insert(peer_info, SystemTime::now());
                                 }
                                 None => {
-                                    let mut s = HashMap::new();
-                                    s.insert(peer_info, SystemTime::now());
-                                    self.known_peers.insert(info_hash, s);
+                                    let mut peers_for_this_info_hash = HashMap::new();
+                                    peers_for_this_info_hash.insert(peer_info, SystemTime::now());
+                                    self.known_peers.insert(info_hash, peers_for_this_info_hash);
                                 }
                             }
                         }
@@ -278,9 +272,9 @@ impl DhtManager {
         let now = SystemTime::now();
 
         // expire inflight requests
-        self.sender.remove_expired();
+        self.msg_sender.remove_expired();
 
-        // end expired get_peers requests
+        // terminate expired get_peers requests
         let expired_get_peers_requests: Vec<[u8; 20]> = self
             .inflight_get_peers_requests
             .iter()
@@ -291,15 +285,15 @@ impl DhtManager {
             self.end_get_peers_search(&info_hash, socket).await;
         }
 
-        // end expired find_node requests
+        // terminate expired find_node requests
         let expired_find_nodes_requests: Vec<[u8; 20]> = self
             .inflight_find_node_requests
             .iter()
             .filter(|(_, v)| now.duration_since(v.start_time).unwrap() > INFLIGHT_FIND_NODE_TIMEOUT)
             .map(|(k, _)| *k)
             .collect();
-        for random_id in expired_find_nodes_requests {
-            self.end_find_node_search(&random_id).await;
+        for req_id in expired_find_nodes_requests {
+            self.end_find_node_search(&req_id).await;
         }
 
         // routing table maintenance
@@ -311,7 +305,7 @@ impl DhtManager {
                 && now.duration_since(n.last_pinged).unwrap() > Duration::from_secs(60)
             {
                 n.last_pinged = now;
-                self.sender
+                self.msg_sender
                     .do_req(
                         socket,
                         to_addr_string(&n.addr, n.port),
@@ -368,14 +362,14 @@ impl DhtManager {
             total_requests: 1,
             inflight_requests: 1,
             total_discovered_nodes: 0,
-            requested_to_nodes: HashSet::new(),
+            queried_nodes: HashSet::new(),
             closest_k_nodes: Vec::new(),
             probed_nodes: HashSet::new(),
         };
         self.inflight_find_node_requests
             .insert(random_id, get_node_request);
 
-        self.sender
+        self.msg_sender
             .do_req(
                 &socket,
                 to_addr,
@@ -414,7 +408,7 @@ impl DhtManager {
             .insert(info_hash, get_peers_request);
 
         for n in closest_nodes.iter() {
-            self.sender
+            self.msg_sender
                 .do_req(
                     socket,
                     to_addr_string(&n.addr, n.port),
@@ -428,324 +422,122 @@ impl DhtManager {
 
     async fn handle_incoming_message(
         &mut self,
-        addr: SocketAddr,
+        remote_addr: SocketAddr,
+        socket: &UdpSocket,
         transaction_id: Vec<u8>,
         msg: KRPCMessage,
-        socket: &UdpSocket,
         dht_to_torrent_manager_tx: &Sender<DhtToTorrentManagerMsg>,
     ) {
         log::trace!(
             "got message from {}: tid: {}, msg: {:?}",
-            addr,
+            remote_addr,
             force_string(&transaction_id),
             msg
         );
-        let port = addr.port();
-        let ipv4addr = match addr.ip() {
+        let remote_port = remote_addr.port();
+        let remote_ipv4addr = match remote_addr.ip() {
             IpAddr::V4(ipv4addr) => ipv4addr,
             IpAddr::V6(_) => {
                 log::warn!("got ipv6 response from dht message, this should not be possible");
                 return;
             }
         };
+
         match msg {
             KRPCMessage::PingReq(_querying_node_id) => {
-                self.sender
+                self.msg_sender
                     .do_req(
                         socket,
-                        addr.to_string(),
+                        remote_addr.to_string(),
                         KRPCMessage::PingOrAnnouncePeerResp(self.own_node_id),
                         None,
                         0,
                     )
                     .await;
             }
-            KRPCMessage::PingOrAnnouncePeerResp(queried_node_id) => {
-                if !self.sender.inflight_requests.contains_key(&transaction_id) {
-                    log::trace!("got a ping or announce_peer resp from {} for an expired or unknown transaction id ({}) we didn't perform, ignoring it", addr, force_string(&transaction_id.to_vec()));
-                    return;
-                }
-                self.sender.inflight_requests.remove(&transaction_id);
-                // the node is valid, refresh last replied / add node to the routing table
-                let added = self
-                    .routing_table
-                    .add(Node::new(queried_node_id, ipv4addr, port));
-                // this is out of official spec of bep05 but we do this to accumulate more nodes in the routing table, todo maybe remove this
-                if added {
-                    // find_node for a random node near the new one
-                    let mut random_close_node_id = queried_node_id.clone();
-                    random_close_node_id[19] ^= rand::random::<u8>();
-                    self.find_node(to_addr_string(&ipv4addr, port), socket, queried_node_id)
-                        .await;
-                }
-            }
-            KRPCMessage::FindNodeReq(querying_node_id, target_node_id) => {
-                // reply to node
-                let closest = self.routing_table.closest_nodes(&target_node_id);
-                self.sender
-                    .do_req(
-                        socket,
-                        addr.to_string(),
-                        KRPCMessage::GetPeersOrFindNodeResp(GetPeersOrFindNodeRespData {
-                            target_id: self.own_node_id,
-                            token: None,
-                            nodes: Some(
-                                closest
-                                    .iter()
-                                    .map(|n| (biguint_to_u8_20(&n.id), n.addr, n.port))
-                                    .collect(),
-                            ),
-                            values: None,
-                        }),
-                        None,
-                        0,
-                    )
-                    .await;
 
-                // if we don't have it in the routing table, ping this node to eventually put it in the routing table: it could be a new node bootsrapping that is trying to let himself know
-                if let None = self.routing_table.get_mut(&querying_node_id) {
-                    self.sender
-                        .do_req(
-                            socket,
-                            addr.to_string(),
-                            KRPCMessage::PingReq(self.own_node_id),
-                            None,
-                            0,
-                        )
-                        .await;
-                }
+            KRPCMessage::PingOrAnnouncePeerResp(queried_node_id) => {
+                self.handle_ping_or_announce_peer_resp(
+                    remote_ipv4addr,
+                    remote_port,
+                    socket,
+                    transaction_id,
+                    queried_node_id,
+                )
+                .await;
             }
+
+            KRPCMessage::FindNodeReq(querying_node_id, target_node_id) => {
+                self.handle_find_node_req(remote_addr, socket, querying_node_id, target_node_id)
+                    .await;
+            }
+
             KRPCMessage::GetPeersReq(_querying_node_id, info_hash) => {
-                // generate token
-                let mut token_plain = self.token_signing_secret.to_vec();
-                token_plain.append(&mut ipv4addr.octets().to_vec());
-                let token: [u8; 20] = Sha1::digest(token_plain).as_slice().try_into().unwrap();
-                // response
-                match self.known_peers.get(&info_hash) {
-                    Some(peers) => {
-                        let mut resp_peers_info: Vec<(Ipv4Addr, u16)> =
-                            peers.iter().map(|(k, _v)| *k).collect();
-                        resp_peers_info.truncate(8000); // do not overflow a single udp packet. todo: do a better calculation
-                        self.sender
-                            .do_req(
-                                socket,
-                                addr.to_string(),
-                                KRPCMessage::GetPeersOrFindNodeResp(GetPeersOrFindNodeRespData {
-                                    target_id: self.own_node_id,
-                                    token: Some(token.to_vec()),
-                                    nodes: None, // todo: please note that some clients also send closest nodes on get_peers request even if they know some peers, should we do the same?
-                                    values: Some(resp_peers_info),
-                                }),
-                                None,
-                                0,
-                            )
-                            .await;
-                    }
-                    None => {
-                        let closest_nodes_info: Vec<([u8; 20], Ipv4Addr, u16)> = self
-                            .routing_table
-                            .closest_nodes(&info_hash)
-                            .iter()
-                            .map(|n| (biguint_to_u8_20(&n.id), n.addr, n.port))
-                            .collect();
-                        self.sender
-                            .do_req(
-                                socket,
-                                addr.to_string(),
-                                KRPCMessage::GetPeersOrFindNodeResp(GetPeersOrFindNodeRespData {
-                                    target_id: self.own_node_id,
-                                    token: Some(token.to_vec()),
-                                    nodes: Some(closest_nodes_info),
-                                    values: None,
-                                }),
-                                None,
-                                0,
-                            )
-                            .await;
-                    }
-                }
+                self.handle_get_peers_req(remote_ipv4addr, remote_port, socket, info_hash)
+                    .await
             }
-            KRPCMessage::GetPeersOrFindNodeResp(req_data) => {
-                let (req_id, depth) = match self.sender.inflight_requests.remove(&transaction_id) {
+
+            KRPCMessage::GetPeersOrFindNodeResp(resp_data) => {
+                let (original_request_id, call_depth) = match self
+                    .msg_sender
+                    .inflight_requests
+                    .remove(&transaction_id)
+                {
                     Some((_, _, _, Some(info_hash), depth)) => (info_hash, depth),
                     _ => {
-                        log::trace!("got a get_peers or find_node resp from {} for an expired or unknown transaction id ({}) we didn't perform, ignoring it", addr, force_string(&transaction_id.to_vec()));
+                        log::trace!("got a get_peers or find_node resp from {} for an expired or unknown transaction id ({}) we didn't perform, ignoring it",
+                            remote_addr,
+                            force_string(&transaction_id.to_vec())
+                        );
                         return;
                     }
                 };
-
                 // if it was a get_peers response...
-                if let Some(get_peers_req) = self.inflight_get_peers_requests.get_mut(&req_id) {
-                    let info_hash = req_id;
-
-                    if get_peers_req.inflight_requests > 0 {
-                        // avoid overflowing when by pure bad luck we get a late replay for a not yet expired msg request for
-                        // an expired get_peers request that has been recreated immediatelly after the previous has expired
-                        get_peers_req.inflight_requests -= 1;
-                    }
-
-                    // update replying nodes and sort by distance to target
-                    get_peers_req.replying_nodes.push((
-                        req_data.target_id,
-                        ipv4addr,
-                        port,
-                        req_data.token,
-                    ));
-                    get_peers_req
-                        .replying_nodes
-                        .sort_by_key(|(node_id, _, _, _)| distance(&info_hash, node_id));
-
-                    // act on response: nodes
-                    if let Some(nodes) = req_data.nodes {
-                        let mut max_distance_for_new_req = BigUint::from_str("2").unwrap().pow(160)
-                            - BigUint::from_str("1").unwrap();
-                        if get_peers_req.replying_nodes.len() != 0 {
-                            max_distance_for_new_req = distance(
-                                &info_hash,
-                                &get_peers_req.replying_nodes
-                                    [cmp::min(get_peers_req.replying_nodes.len(), K_FACTOR) - 1]
-                                    .0,
-                            );
-                        }
-                        for (node_id, ip, port) in nodes {
-                            if
-                            // we don't have already performed a request to this node
-                            !get_peers_req.queried_nodes.contains(&node_id) &&
-                        // if node is closer than the K_FACTORth closer node we queried, perform iterative request
-                        distance(&info_hash, &node_id) <= max_distance_for_new_req
-                            {
-                                self.sender
-                                    .do_req(
-                                        socket,
-                                        to_addr_string(&ip, port),
-                                        KRPCMessage::GetPeersReq(self.own_node_id, info_hash),
-                                        Some(info_hash),
-                                        depth + 1,
-                                    )
-                                    .await;
-                                get_peers_req.total_requests += 1;
-                                get_peers_req.inflight_requests += 1;
-                                get_peers_req.queried_nodes.insert(node_id);
-                            }
-                        }
-                    }
-
-                    // act on response: peers
-                    if let Some(peers) = req_data.values {
-                        if peers.len() > 0 {
-                            get_peers_req.replying_nodes_with_peers += 1;
-                        }
-
-                        for p in peers {
-                            if !get_peers_req.discovered_peers.contains(&p) {
-                                get_peers_req.discovered_peers.insert(p);
-                                // immediatelly send discovered peer to torrent manager
-                                let _ = dht_to_torrent_manager_tx
-                                    .send(DhtToTorrentManagerMsg::NewPeer(p.0, p.1))
-                                    .await;
-                            }
-                        }
-                        if get_peers_req.inflight_requests == 0 {
-                            // search is over
-                            self.end_get_peers_search(&req_id, socket).await;
-                        }
-                    }
-
+                if let Some(mut original_request) = self
+                    .inflight_get_peers_requests
+                    .remove(&original_request_id)
+                {
+                    self.handle_get_peers_resp(
+                        remote_ipv4addr,
+                        remote_port,
+                        socket,
+                        original_request_id,
+                        &mut original_request,
+                        call_depth,
+                        resp_data,
+                        dht_to_torrent_manager_tx,
+                    )
+                    .await;
+                    self.inflight_get_peers_requests
+                        .insert(original_request_id, original_request);
                     return;
                 }
-
                 // if instead it was a find_node response...
-                if let Some(find_node_req) = self.inflight_find_node_requests.get_mut(&req_id) {
-                    let nodes = match req_data.nodes {
-                        Some(nodes) => nodes,
-                        None => {
-                            log::trace!("we correlated a GetPeersOrFindNodeResp to an existing find_node request but the response had no nodes, skipping it");
-                            return;
-                        }
-                    };
-
-                    if find_node_req.inflight_requests > 0 {
-                        // avoid overflowing in special cases similar to get_peer
-                        find_node_req.inflight_requests -= 1;
-                    }
-
-                    // add or refresh this replying node to the routing table
-                    self.routing_table
-                        .add(Node::new(req_data.target_id, ipv4addr, port));
-
-                    for (node_id, addr, port) in nodes {
-                        if addr == Ipv4Addr::new(0, 0, 0, 0) || port == 0 {
-                            // sometimes it happens that replies contain invalid addresses
-                            continue;
-                        }
-                        find_node_req.total_discovered_nodes += 1;
-
-                        // ping newly discovered nodes to eventually put them in the routing table
-                        if let None = self.routing_table.get_mut(&node_id) {
-                            if !find_node_req.probed_nodes.contains(&node_id) {
-                                find_node_req.probed_nodes.insert(node_id);
-                                self.sender
-                                    .do_req(
-                                        socket,
-                                        to_addr_string(&addr, port),
-                                        KRPCMessage::PingReq(self.own_node_id),
-                                        None,
-                                        0,
-                                    )
-                                    .await;
-                            }
-                        }
-
-                        // avoid sending find_node to a node we already asked
-                        if find_node_req.requested_to_nodes.contains(&node_id) {
-                            continue;
-                        }
-                        // add this node among the best ones, if it is
-                        find_node_req.closest_k_nodes.push((node_id, addr, port));
-                        find_node_req.closest_k_nodes.sort_by_key(|(n_id, _, _)| {
-                            distance(&find_node_req.node_id_to_find, n_id)
-                        });
-                        find_node_req.closest_k_nodes.truncate(K_FACTOR);
-
-                        // if it is one of the best, query it
-                        if distance(&find_node_req.node_id_to_find, &node_id)
-                            <= distance(
-                                &find_node_req.node_id_to_find,
-                                &find_node_req.closest_k_nodes.last().unwrap().0,
-                            )
-                        {
-                            self.sender
-                                .do_req(
-                                    socket,
-                                    to_addr_string(&addr, port),
-                                    KRPCMessage::FindNodeReq(
-                                        self.own_node_id,
-                                        find_node_req.node_id_to_find,
-                                    ),
-                                    Some(req_id),
-                                    depth + 1,
-                                )
-                                .await;
-                            find_node_req.total_requests += 1;
-                            find_node_req.inflight_requests += 1;
-                            find_node_req.requested_to_nodes.insert(node_id);
-                        }
-                    }
-
-                    if find_node_req.inflight_requests == 0 {
-                        // search is over, let's gather results
-                        self.end_find_node_search(&req_id).await;
-                    }
+                if let Some(mut original_request) = self
+                    .inflight_find_node_requests
+                    .remove(&original_request_id)
+                {
+                    self.handle_find_node_resp(
+                        remote_ipv4addr,
+                        remote_port,
+                        socket,
+                        original_request_id,
+                        &mut original_request,
+                        call_depth,
+                        resp_data,
+                    )
+                    .await;
+                    self.inflight_find_node_requests
+                        .insert(original_request_id, original_request);
                     return;
                 }
-
                 log::trace!(
-                    "got a get_peers or find_node resp from {} for a request ({}) we do not have track of, maybe it has expired, ignoring it",
-                    addr,
-                    force_string(&req_id.to_vec())
+                    "got a get_peers or find_node resp from {} for a request ({}) we do not have track of, maybe it expired, ignoring it",
+                    remote_addr,
+                    force_string(&original_request_id.to_vec())
                 );
-                return;
             }
+
             KRPCMessage::AnnouncePeerReq(
                 _querying_node_id,
                 info_hash,
@@ -753,94 +545,34 @@ impl DhtManager {
                 token,
                 imply_port,
             ) => {
-                // verify token
-                let token_u8_20: [u8; 20] = match token.try_into() {
-                    Ok(t) => t,
-                    Err(_) => {
-                        log::trace!("got an announce_peer from {} with a token that is not 20b as expected, refusing it", addr);
-                        self.sender
-                            .do_req(
-                                &socket,
-                                addr.to_string(),
-                                KRPCMessage::Error(
-                                    ErrorType::GenericError,
-                                    "wrong secret, should be 20b long".to_string(),
-                                ),
-                                None,
-                                0,
-                            )
-                            .await;
-                        return;
-                    }
-                };
-                let mut expected_token_plain = self.token_signing_secret.to_vec();
-                expected_token_plain.append(&mut ipv4addr.octets().to_vec());
-                let expected_token: [u8; 20] = Sha1::digest(expected_token_plain)
-                    .as_slice()
-                    .try_into()
-                    .unwrap();
-                if expected_token != token_u8_20 {
-                    log::trace!(
-                        "got an announce_peer from {} with a token ({}) that is not what we expected ({}), refusing it",
-                        addr,
-                        force_string(&token_u8_20.to_vec()),
-                        force_string(&expected_token.to_vec())
-                    );
-                    self.sender
-                        .do_req(
-                            &socket,
-                            addr.to_string(),
-                            KRPCMessage::Error(
-                                ErrorType::GenericError,
-                                "wrong secret content".to_string(),
-                            ),
-                            None,
-                            0,
-                        )
-                        .await;
-                    return;
-                }
-                // store / refresh peer info for this info hash
-                let mut peer_port = announce_peer_port;
-                if imply_port {
-                    peer_port = port;
-                }
-                let peer_info = (ipv4addr, peer_port);
-                match self.known_peers.get_mut(&info_hash) {
-                    Some(s) => {
-                        s.insert(peer_info, SystemTime::now());
-                    }
-                    None => {
-                        let mut s = HashMap::new();
-                        s.insert(peer_info, SystemTime::now());
-                        self.known_peers.insert(info_hash, s);
-                    }
-                }
-                // send ok
-                self.sender
-                    .do_req(
-                        &socket,
-                        addr.to_string(),
-                        KRPCMessage::PingOrAnnouncePeerResp(self.own_node_id),
-                        None,
-                        0,
-                    )
-                    .await;
+                self.handle_announce_peer_req(
+                    remote_ipv4addr,
+                    remote_port,
+                    socket,
+                    info_hash,
+                    token,
+                    announce_peer_port,
+                    imply_port,
+                )
+                .await;
                 return;
             }
+
             KRPCMessage::Error(error_type, msg) => {
-                if !self.sender.inflight_requests.contains_key(&transaction_id) {
-                    log::trace!(
-                        "got a error resp from {} for an unknown or expired transaction id ({}) we didn't perform, ignoring it", addr, force_string(&transaction_id.to_vec())
+                if !self.msg_sender.inflight_requests.contains_key(&transaction_id) {
+                    log::trace!("got a error resp from {} for an unknown or expired transaction id ({}) we didn't perform, ignoring it",
+                        remote_addr, force_string(&transaction_id.to_vec())
                     );
                     return;
                 }
                 let inflight_req = self
-                    .sender
+                    .msg_sender
                     .inflight_requests
                     .remove(&transaction_id)
                     .unwrap();
-                log::trace!("got dht error respose for transaction id {} from {}; our message sent was: {:?}, error type: {:?}, error message: {}", force_string(&transaction_id), addr, inflight_req.2, error_type, msg);
+                log::trace!("got dht error respose for transaction id {} from {}; our message sent was: {:?}, error type: {:?}, error message: {}",
+                    force_string(&transaction_id),remote_addr, inflight_req.2, error_type, msg
+                );
             }
         }
     }
@@ -851,7 +583,7 @@ impl DhtManager {
             for i in 0..cmp::min(req.replying_nodes.len(), K_FACTOR) {
                 let (_, ip, port, token) = &req.replying_nodes[i];
                 if let Some(token_val) = token {
-                    self.sender
+                    self.msg_sender
                         .do_req(
                             socket,
                             to_addr_string(&ip, *port),
@@ -881,8 +613,8 @@ impl DhtManager {
         }
     }
 
-    async fn end_find_node_search(&mut self, random_id: &[u8; 20]) {
-        if let Some(req) = self.inflight_find_node_requests.remove(random_id) {
+    async fn end_find_node_search(&mut self, req_id: &[u8; 20]) {
+        if let Some(req) = self.inflight_find_node_requests.remove(req_id) {
             log::debug!(
                 "find_node request for {} terminated: total sent requests: {} not replied: {}, discovered nodes: {}, probed nodes for routing table addition: {}",
                 force_string(&req.node_id_to_find.to_vec()),
@@ -891,6 +623,404 @@ impl DhtManager {
                 req.total_discovered_nodes,
                 req.probed_nodes.len(),
             );
+        }
+    }
+
+    async fn handle_get_peers_resp(
+        &mut self,
+        remote_ipv4addr: Ipv4Addr,
+        remote_port: u16,
+        socket: &UdpSocket,
+        original_request_id: [u8; 20],
+        original_request: &mut GetPeersRequest,
+        call_depth: usize,
+        resp_data: GetPeersOrFindNodeRespData,
+        dht_to_torrent_manager_tx: &Sender<DhtToTorrentManagerMsg>,
+    ) {
+        // in case of get_peers request, we set the id of the request same as the infohash,
+        // since we are not allowing multiple concurrent get_peers searches
+        let info_hash = original_request_id;
+
+        if original_request.inflight_requests > 0 {
+            // avoid overflowing when by pure bad luck we get a late replay for a not yet expired msg request for
+            // an expired get_peers request that has been recreated immediatelly after the previous has expired
+            original_request.inflight_requests -= 1;
+        }
+
+        // update replying nodes and sort by distance to target
+        original_request.replying_nodes.push((
+            resp_data.target_id,
+            remote_ipv4addr,
+            remote_port,
+            resp_data.token,
+        ));
+        original_request
+            .replying_nodes
+            .sort_by_key(|(node_id, _, _, _)| distance(&info_hash, node_id));
+
+        // act on response: nodes
+        if let Some(nodes) = resp_data.nodes {
+            let mut max_distance_for_new_req =
+                BigUint::from_str("2").unwrap().pow(160) - BigUint::from_str("1").unwrap();
+            if original_request.replying_nodes.len() != 0 {
+                max_distance_for_new_req = distance(
+                    &info_hash,
+                    &original_request.replying_nodes
+                        [cmp::min(original_request.replying_nodes.len(), K_FACTOR) - 1]
+                        .0,
+                );
+            }
+            for (node_id, ip, port) in nodes {
+                if
+                // we don't have already performed a request to this node
+                !original_request.queried_nodes.contains(&node_id) &&
+            // if node is closer than the K_FACTORth closer node we queried, perform iterative request
+            distance(&info_hash, &node_id) <= max_distance_for_new_req
+                {
+                    self.msg_sender
+                        .do_req(
+                            socket,
+                            to_addr_string(&ip, port),
+                            KRPCMessage::GetPeersReq(self.own_node_id, info_hash),
+                            Some(info_hash),
+                            call_depth + 1,
+                        )
+                        .await;
+                    original_request.total_requests += 1;
+                    original_request.inflight_requests += 1;
+                    original_request.queried_nodes.insert(node_id);
+                }
+            }
+        }
+
+        // act on response: peers
+        if let Some(peers) = resp_data.values {
+            if peers.len() > 0 {
+                original_request.replying_nodes_with_peers += 1;
+            }
+
+            for p in peers {
+                if !original_request.discovered_peers.contains(&p) {
+                    original_request.discovered_peers.insert(p);
+                    // immediatelly send discovered peer to torrent manager
+                    let _ = dht_to_torrent_manager_tx
+                        .send(DhtToTorrentManagerMsg::NewPeer(p.0, p.1))
+                        .await;
+                }
+            }
+            if original_request.inflight_requests == 0 {
+                // search is over
+                self.end_get_peers_search(&original_request_id, socket)
+                    .await;
+            }
+        }
+    }
+
+    async fn handle_find_node_resp(
+        &mut self,
+        remote_ipv4addr: Ipv4Addr,
+        remote_port: u16,
+        socket: &UdpSocket,
+        original_request_id: [u8; 20],
+        original_request: &mut FindNodeRequest,
+        call_depth: usize,
+        resp_data: GetPeersOrFindNodeRespData,
+    ) {
+        let nodes = match resp_data.nodes {
+            Some(nodes) => nodes,
+            None => {
+                log::trace!("we correlated a GetPeersOrFindNodeResp to an existing find_node request but the response had no nodes, skipping it");
+                return;
+            }
+        };
+
+        if original_request.inflight_requests > 0 {
+            // avoid overflowing in special cases similar to get_peer
+            original_request.inflight_requests -= 1;
+        }
+
+        // add or refresh this replying node to the routing table
+        self.routing_table
+            .add(Node::new(resp_data.target_id, remote_ipv4addr, remote_port));
+
+        for (node_id, addr, port) in nodes {
+            if addr == Ipv4Addr::new(0, 0, 0, 0) || port == 0 {
+                // sometimes it happens that replies contain invalid addresses
+                continue;
+            }
+            original_request.total_discovered_nodes += 1;
+
+            // ping newly discovered nodes to eventually put them in the routing table
+            if let None = self.routing_table.get_mut(&node_id) {
+                if !original_request.probed_nodes.contains(&node_id) {
+                    original_request.probed_nodes.insert(node_id);
+                    self.msg_sender
+                        .do_req(
+                            socket,
+                            to_addr_string(&addr, port),
+                            KRPCMessage::PingReq(self.own_node_id),
+                            None,
+                            0,
+                        )
+                        .await;
+                }
+            }
+
+            // avoid sending find_node to a node we already asked
+            if original_request.queried_nodes.contains(&node_id) {
+                continue;
+            }
+            // add this node among the best ones, if it is
+            original_request.closest_k_nodes.push((node_id, addr, port));
+            original_request
+                .closest_k_nodes
+                .sort_by_key(|(n_id, _, _)| distance(&original_request.node_id_to_find, n_id));
+            original_request.closest_k_nodes.truncate(K_FACTOR);
+
+            // if it is one of the best, query it
+            if distance(&original_request.node_id_to_find, &node_id)
+                <= distance(
+                    &original_request.node_id_to_find,
+                    &original_request.closest_k_nodes.last().unwrap().0,
+                )
+            {
+                self.msg_sender
+                    .do_req(
+                        socket,
+                        to_addr_string(&addr, port),
+                        KRPCMessage::FindNodeReq(
+                            self.own_node_id,
+                            original_request.node_id_to_find,
+                        ),
+                        Some(original_request_id),
+                        call_depth + 1,
+                    )
+                    .await;
+                original_request.total_requests += 1;
+                original_request.inflight_requests += 1;
+                original_request.queried_nodes.insert(node_id);
+            }
+        }
+
+        if original_request.inflight_requests == 0 {
+            // search is over, let's gather results
+            self.end_find_node_search(&original_request_id).await;
+        }
+        return;
+    }
+
+    async fn handle_announce_peer_req(
+        &mut self,
+        remote_ipv4addr: Ipv4Addr,
+        remote_port: u16,
+        socket: &UdpSocket,
+        info_hash: [u8; 20],
+        token: Vec<u8>,
+        announce_peer_port: u16,
+        imply_port: bool,
+    ) {
+        let source_req_addr_port = to_addr_string(&remote_ipv4addr, remote_port);
+        // verify token
+        let token_u8_20: [u8; 20] = match token.try_into() {
+            Ok(t) => t,
+            Err(_) => {
+                log::trace!("got an announce_peer from {} with a token that is not 20b as expected, refusing it", source_req_addr_port);
+                self.msg_sender
+                    .do_req(
+                        &socket,
+                        source_req_addr_port,
+                        KRPCMessage::Error(
+                            ErrorType::GenericError,
+                            "wrong secret, should be 20b long".to_string(),
+                        ),
+                        None,
+                        0,
+                    )
+                    .await;
+                return;
+            }
+        };
+        let mut expected_token_plain = self.token_signing_secret.to_vec();
+        expected_token_plain.append(&mut remote_ipv4addr.octets().to_vec());
+        let expected_token: [u8; 20] = Sha1::digest(expected_token_plain)
+            .as_slice()
+            .try_into()
+            .unwrap();
+        if expected_token != token_u8_20 {
+            log::trace!(
+        "got an announce_peer from {} with a token ({}) that is not what we expected ({}), refusing it",
+        source_req_addr_port,
+        force_string(&token_u8_20.to_vec()),
+        force_string(&expected_token.to_vec())
+    );
+            self.msg_sender
+                .do_req(
+                    &socket,
+                    source_req_addr_port,
+                    KRPCMessage::Error(ErrorType::GenericError, "wrong secret content".to_string()),
+                    None,
+                    0,
+                )
+                .await;
+            return;
+        }
+        // store / refresh peer info for this info hash
+        let mut peer_port = announce_peer_port;
+        if imply_port {
+            peer_port = remote_port;
+        }
+        let peer_info = (remote_ipv4addr, peer_port);
+        match self.known_peers.get_mut(&info_hash) {
+            Some(s) => {
+                s.insert(peer_info, SystemTime::now());
+            }
+            None => {
+                let mut s = HashMap::new();
+                s.insert(peer_info, SystemTime::now());
+                self.known_peers.insert(info_hash, s);
+            }
+        }
+        // send ok
+        self.msg_sender
+            .do_req(
+                &socket,
+                source_req_addr_port,
+                KRPCMessage::PingOrAnnouncePeerResp(self.own_node_id),
+                None,
+                0,
+            )
+            .await;
+    }
+
+    async fn handle_ping_or_announce_peer_resp(
+        &mut self,
+        remote_ipv4addr: Ipv4Addr,
+        remote_port: u16,
+        socket: &UdpSocket,
+        transaction_id: Vec<u8>,
+        queried_node_id: [u8; 20],
+    ) {
+        if !self.msg_sender.inflight_requests.contains_key(&transaction_id) {
+            log::trace!("got a ping or announce_peer resp from {}:{} for an expired or unknown transaction id ({}) we didn't perform, ignoring it", remote_ipv4addr, remote_port, force_string(&transaction_id.to_vec()));
+            return;
+        }
+        self.msg_sender.inflight_requests.remove(&transaction_id);
+        // the node is valid, refresh last replied / add node to the routing table
+        let added =
+            self.routing_table
+                .add(Node::new(queried_node_id, remote_ipv4addr, remote_port));
+        // this is out of official spec of bep05 but we do this to accumulate more nodes in the routing table, todo maybe remove this
+        if added {
+            // find_node for a random node near the new one
+            let mut random_close_node_id = queried_node_id.clone();
+            random_close_node_id[19] ^= rand::random::<u8>();
+            self.find_node(
+                to_addr_string(&remote_ipv4addr, remote_port),
+                socket,
+                queried_node_id,
+            )
+            .await;
+        }
+    }
+
+    async fn handle_get_peers_req(
+        &mut self,
+        remote_ipv4addr: Ipv4Addr,
+        remote_port: u16,
+        socket: &UdpSocket,
+        info_hash: [u8; 20],
+    ) {
+        let source_req_addr_port = to_addr_string(&remote_ipv4addr, remote_port);
+        // generate token
+        let mut token_plain = self.token_signing_secret.to_vec();
+        token_plain.append(&mut remote_ipv4addr.octets().to_vec());
+        let token: [u8; 20] = Sha1::digest(token_plain).as_slice().try_into().unwrap();
+        // response
+        match self.known_peers.get(&info_hash) {
+            Some(peers) => {
+                let mut resp_peers_info: Vec<(Ipv4Addr, u16)> =
+                    peers.iter().map(|(k, _v)| *k).collect();
+                resp_peers_info.truncate(8000); // do not overflow a single udp packet. todo: do a better calculation
+                self.msg_sender
+                    .do_req(
+                        socket,
+                        source_req_addr_port.to_string(),
+                        KRPCMessage::GetPeersOrFindNodeResp(GetPeersOrFindNodeRespData {
+                            target_id: self.own_node_id,
+                            token: Some(token.to_vec()),
+                            nodes: None, // todo: note that some clients also send closest nodes on get_peers requests even if they know some peers, should we do the same?
+                            values: Some(resp_peers_info),
+                        }),
+                        None,
+                        0,
+                    )
+                    .await;
+            }
+            None => {
+                let closest_nodes_info: Vec<([u8; 20], Ipv4Addr, u16)> = self
+                    .routing_table
+                    .closest_nodes(&info_hash)
+                    .iter()
+                    .map(|n| (biguint_to_u8_20(&n.id), n.addr, n.port))
+                    .collect();
+                self.msg_sender
+                    .do_req(
+                        socket,
+                        source_req_addr_port.to_string(),
+                        KRPCMessage::GetPeersOrFindNodeResp(GetPeersOrFindNodeRespData {
+                            target_id: self.own_node_id,
+                            token: Some(token.to_vec()),
+                            nodes: Some(closest_nodes_info),
+                            values: None,
+                        }),
+                        None,
+                        0,
+                    )
+                    .await;
+            }
+        }
+    }
+
+    async fn handle_find_node_req(
+        &mut self,
+        remote_addr: SocketAddr,
+        socket: &UdpSocket,
+        querying_node_id: [u8; 20],
+        target_node_id: [u8; 20],
+    ) {
+        let closest_nodes = self.routing_table.closest_nodes(&target_node_id);
+        self.msg_sender
+            .do_req(
+                socket,
+                remote_addr.to_string(),
+                KRPCMessage::GetPeersOrFindNodeResp(GetPeersOrFindNodeRespData {
+                    target_id: self.own_node_id,
+                    token: None,
+                    nodes: Some(
+                        closest_nodes
+                            .iter()
+                            .map(|n| (biguint_to_u8_20(&n.id), n.addr, n.port))
+                            .collect(),
+                    ),
+                    values: None,
+                }),
+                None,
+                0,
+            )
+            .await;
+
+        // if we don't have it in the routing table, ping this node to eventually put it in the routing table:
+        // it could be a new node bootsrapping that is trying to let himself know
+        if let None = self.routing_table.get_mut(&querying_node_id) {
+            self.msg_sender
+                .do_req(
+                    socket,
+                    remote_addr.to_string(),
+                    KRPCMessage::PingReq(self.own_node_id),
+                    None,
+                    0,
+                )
+                .await;
         }
     }
 }
