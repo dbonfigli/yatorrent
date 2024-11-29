@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
 use manager::torrent_manager;
+use rlimit::{getrlimit, setrlimit, Resource};
+use std::cmp::min;
 use std::env::current_dir;
 use std::path::Path;
 use std::process::exit;
@@ -60,6 +62,8 @@ impl fmt::Display for LogLevels {
     }
 }
 
+static MAX_OPENED_FILES: u64 = 16384;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -69,6 +73,18 @@ async fn main() -> Result<()> {
     env_logger::init_from_env(
         env_logger::Env::default().filter_or("LOG_LEVEL", args.log_level.to_string()),
     );
+
+    // bump ulimit if needed
+    let (soft_limit, hard_limit) =
+        getrlimit(Resource::NOFILE).expect("could not read current NOFILE ulimit");
+    if soft_limit < MAX_OPENED_FILES {
+        setrlimit(
+            Resource::NOFILE,
+            min(hard_limit, MAX_OPENED_FILES),
+            hard_limit,
+        )
+        .expect("could not increase NOFILE ulimit");
+    }
 
     // read torrent file and start manager
     let contents = match fs::read(args.torrent_file.clone()) {
