@@ -108,7 +108,7 @@ pub async fn connect_to_new_peer(
                     .await;
                 }
                 Ok(Err(e)) => {
-                    log::trace!("error out completing handshake with peer {}", e);
+                    log::trace!("error completing handshake with peer {}", e);
                     send_to_torrent_manager(
                         &peers_to_torrent_manager_tx,
                         PeersToManagerMsg::Error(peer_addr, PeerError::HandshakeError),
