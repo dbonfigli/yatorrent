@@ -28,14 +28,14 @@ use crate::bencoding::Value::{self, Dict, Int, Str};
 
 use super::peer::PeerError;
 
-static CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS: usize = 100;
-static CONNECTED_PEERS_TO_START_NEW_PEER_CONNECTIONS: usize = 80;
+static CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS: usize = 500;
+static CONNECTED_PEERS_TO_START_NEW_PEER_CONNECTIONS: usize = 350;
 static MAX_CONNECTED_PEERS_TO_ASK_DHT_FOR_MORE: usize = 10;
 static DHT_NEW_PEER_COOL_OFF_PERIOD: Duration = Duration::from_secs(15);
 static DHT_BOOTSTRAP_TIME: Duration = Duration::from_secs(5);
 static KEEP_ALIVE_FREQ: Duration = Duration::from_secs(90);
 static MAX_OUTSTANDING_REQUESTS_PER_PEER: usize = 500; // can be retrieved per peer if it supports extensions, dict key "reqq", seen: deluge: 2000, qbittorrent: 500, transmission: 500, utorrent: 255, freebox bittorrent 2: 768, maybe variable
-static MAX_OUTSTANDING_PIECES: usize = 100;
+static MAX_OUTSTANDING_PIECES: usize = 2000;
 static BLOCK_SIZE_B: u64 = 16384;
 static TO_PEER_CHANNEL_CAPACITY: usize = 2000;
 static TO_PEER_CANCEL_CHANNEL_CAPACITY: usize = 1000;
