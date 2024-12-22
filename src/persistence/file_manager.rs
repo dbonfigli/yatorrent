@@ -177,6 +177,7 @@ impl FileManager {
     }
 
     pub fn completed_pieces(&self) -> usize {
+        // todo optimize this, keep a counter
         self.piece_completion_status
             .iter()
             .fold(0, |acc, v| if *v { acc + 1 } else { acc })

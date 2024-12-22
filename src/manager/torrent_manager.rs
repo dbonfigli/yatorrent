@@ -40,7 +40,9 @@ static BLOCK_SIZE_B: u64 = 16384;
 static TO_PEER_CHANNEL_CAPACITY: usize = 2000;
 static TO_PEER_CANCEL_CHANNEL_CAPACITY: usize = 1000;
 static PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY: usize = 50000;
-static REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+static BASE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120); // decreasing this will wast more bandwidth (needlessy requesting the same block again even if a peer would send it eventually) but will make retries for pieces requested to slow peers faster
+static ENDGAME_REQUEST_TIMEOUT: Duration = Duration::from_secs(15); // request timeout during the endgame phase: this will re-request a lot of pieces, wasting bandwidth, but will make endgame faster churning slow peers
+static ENDGAME_START_AT_COMPLETION_PERCENTAGE: f64 = 98.; // start endgame when we have this percentage of the torrent
 static MIN_CHOKE_TIME: Duration = Duration::from_secs(60);
 static NEW_CONNECTION_COOL_OFF_PERIOD: Duration = Duration::from_secs(180);
 static ADDED_DROPPED_PEER_EVENTS_RETENTION: Duration = Duration::from_secs(90);
@@ -171,6 +173,7 @@ pub struct TorrentManager {
     dht_nodes: Vec<String>,
     last_get_peers_requested_time: SystemTime,
     added_dropped_peer_events: Vec<(SystemTime, PeerAddr, PexEvent)>, // time of event, address of peer for this event, pex event. This field is used to support pex
+    request_timeout: Duration,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -218,6 +221,7 @@ impl TorrentManager {
             last_get_peers_requested_time: SystemTime::now() - DHT_NEW_PEER_COOL_OFF_PERIOD
                 + DHT_BOOTSTRAP_TIME, // try to wait a bit before the first request, in hope that the dht has been bootstrapped, so that we don't waste time for the first request with an empty routing table
             added_dropped_peer_events: Vec::new(),
+            request_timeout: BASE_REQUEST_TIMEOUT,
         }
     }
 
@@ -726,6 +730,18 @@ impl TorrentManager {
             }
         }
 
+        // check endgame status an decrease request timeout if needed
+        if self.request_timeout != ENDGAME_REQUEST_TIMEOUT {
+            let completed_pieces = self.file_manager.completed_pieces();
+            let total_pieces = self.file_manager.num_pieces();
+            if (completed_pieces as f64) / (total_pieces as f64) * 100.
+                > ENDGAME_START_AT_COMPLETION_PERCENTAGE
+            {
+                log::info!("entering endgame phase");
+                self.request_timeout = ENDGAME_REQUEST_TIMEOUT;
+            }
+        }
+
         // remove requests that have not been fulfilled for some time,
         // most probably they have been silently dropped by the peer even if it is still alive and not choked
         self.remove_stale_requests();
@@ -784,7 +800,7 @@ impl TorrentManager {
         for (peer_addr, peer) in self.peers.iter_mut() {
             peer.outstanding_block_requests
                 .retain(|(piece_idx, block_begin, data_len), req_time| {
-                    if now.duration_since(*req_time).unwrap() < REQUEST_TIMEOUT {
+                    if now.duration_since(*req_time).unwrap() < self.request_timeout {
                         return true;
                     } else {
                         log::debug!("removed stale request to peer: {}: (piece idx: {}, block begin: {}, lenght: {})", peer_addr, piece_idx, block_begin, data_len);
