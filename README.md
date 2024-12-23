@@ -45,7 +45,6 @@ Things yet to be implemented / todos:
 - better choking algorithm
 - better block requests pipelining algorithm: use also peer bandwith stats, tune request queue size
 - check for stalled downloads / try new peers if no current one has a piece we want
-- better endgame: ask the last remaining blocks to multiple peers to finish faster
 - better algorithm to exlude bad peers for new connections
 - remove not interested peers if we are also not interested
 - avoid re-requesting blocks after receiving choke message for awhile - requested blocks could still come
