@@ -400,33 +400,31 @@ impl TorrentManager {
                             self.file_manager.num_pieces()
                         );
                     // todo: close connection with this bad peer
-                } else {
-                    if let Some(peer) = self.peers.get_mut(&peer_addr) {
-                        // bitfield is byte aligned, it could contain more bits than pieces in the torrent
-                        peer.haves = bitfield[0..self.file_manager.num_pieces()].to_vec();
+                } else if let Some(peer) = self.peers.get_mut(&peer_addr) {
+                    // bitfield is byte aligned, it could contain more bits than pieces in the torrent
+                    peer.haves = bitfield[0..self.file_manager.num_pieces()].to_vec();
 
-                        // check if we need to send interest
-                        if !peer.am_interested {
-                            for piece_idx in 0..peer.haves.len() {
-                                if !self.file_manager.piece_completion_status[piece_idx]
-                                    && peer.haves[piece_idx]
-                                {
-                                    peer.am_interested = true;
-                                    peer.send(ToPeerMsg::Send(Message::Interested)).await;
-                                    break;
-                                }
+                    // check if we need to send interest
+                    if !peer.am_interested {
+                        for piece_idx in 0..peer.haves.len() {
+                            if !self.file_manager.piece_completion_status[piece_idx]
+                                && peer.haves[piece_idx]
+                            {
+                                peer.am_interested = true;
+                                peer.send(ToPeerMsg::Send(Message::Interested)).await;
+                                break;
                             }
                         }
-
-                        log::trace!(
-                            "received bitfield from peer {}: it has {}/{} pieces",
-                            peer_addr,
-                            peer.haves
-                                .iter()
-                                .fold(0, |acc, v| if *v { acc + 1 } else { acc }),
-                            peer.haves.len()
-                        );
                     }
+
+                    log::trace!(
+                        "received bitfield from peer {}: it has {}/{} pieces",
+                        peer_addr,
+                        peer.haves
+                            .iter()
+                            .fold(0, |acc, v| if *v { acc + 1 } else { acc }),
+                        peer.haves.len()
+                    );
                 }
                 // todo: maybe re-compute assignations immediately here instead of waiting tick
             }
