@@ -479,6 +479,7 @@ impl TorrentManager {
 
                                 if !self.completed_sent_to_tracker && self.file_manager.completed()
                                 {
+                                    log::warn!("torrent download completed");
                                     self.completed_sent_to_tracker = true;
                                     self.tracker_request_async(Event::Completed).await;
                                 }
@@ -737,7 +738,7 @@ impl TorrentManager {
             if (completed_pieces as f64) / (total_pieces as f64) * 100.
                 > ENDGAME_START_AT_COMPLETION_PERCENTAGE
             {
-                log::info!("entering endgame phase");
+                log::warn!("entering endgame phase");
                 self.request_timeout = ENDGAME_REQUEST_TIMEOUT;
             }
         }
