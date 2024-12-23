@@ -305,7 +305,6 @@ impl TorrentManager {
                 Some(()) = tick_rx.recv() => {
                     self.tick(peers_to_torrent_manager_tx.clone(), to_dht_manager_tx.clone()).await;
                 }
-
                 Some(DhtToTorrentManagerMsg::NewPeer(ip, port)) = dht_to_torrent_manager_rx.recv() => {
                     let p = tracker::Peer{peer_id: None, ip: ip.to_string(), port: port};
                     let mut advertised_peers_mg = self.advertised_peers.lock().unwrap();
@@ -361,10 +360,10 @@ impl TorrentManager {
             }
             Message::Piece(piece_idx, begin, data) => {
                 self.handle_receive_piece(
+                    peer_addr,
                     piece_idx,
                     begin,
                     data,
-                    peer_addr,
                     piece_completion_status_tx,
                 )
                 .await
@@ -601,10 +600,10 @@ impl TorrentManager {
 
     async fn handle_receive_piece(
         &mut self,
+        peer_addr: String,
         piece_idx: u32,
         begin: u32,
         data: Box<Vec<u8>>,
-        peer_addr: String,
         piece_completion_status_tx: Sender<Vec<bool>>,
     ) {
         let data_len = data.len() as u64;
@@ -634,9 +633,11 @@ impl TorrentManager {
                         self.tracker_request_async(Event::Completed).await;
                     }
 
+                    // ignore errors here: it can happen that the channel is closed on the other side if the rx handler loop exited
+                    // due to network errors and the peer is still lingering in self.peers because the control message about the error is not yet been handled
                     let _ = piece_completion_status_tx
                         .send(self.file_manager.piece_completion_status.clone())
-                        .await; // ignore in case of error: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors and the peer is still lingering in self.peers because the control message about the error is not yet been handled
+                        .await;
 
                     for (_, peer) in self.peers.iter_mut() {
                         // send have to interested peers
@@ -819,7 +820,7 @@ impl TorrentManager {
                 .await;
         }
 
-        // remove old added dropped events
+        // remove old added / dropped events
         self.added_dropped_peer_events
             .retain(|(event_timestamp, _, _)| {
                 now.duration_since(*event_timestamp).unwrap() < ADDED_DROPPED_PEER_EVENTS_RETENTION
