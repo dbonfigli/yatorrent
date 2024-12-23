@@ -886,12 +886,13 @@ impl TorrentManager {
         // assign incomplete pieces if not assigned yet
         for (piece_idx, piece) in self.file_manager.incomplete_pieces.iter() {
             if !self.outstanding_piece_assigments.contains_key(piece_idx) {
-                if let Some(peer_addr) = assign_piece(*piece_idx, &self.peers) {
-                    let peer = self.peers.get_mut(&peer_addr).unwrap();
-                    peer.send_requests(*piece_idx, piece.clone()).await;
-                    self.outstanding_piece_assigments
-                        .insert(*piece_idx, peer_addr.clone());
-                }
+                assign_piece(
+                    *piece_idx,
+                    &mut self.peers,
+                    &mut self.outstanding_piece_assigments,
+                    piece,
+                )
+                .await;
             }
         }
 
@@ -903,16 +904,13 @@ impl TorrentManager {
             if !self.file_manager.piece_completion_status[piece_idx]
                 && !self.outstanding_piece_assigments.contains_key(&piece_idx)
             {
-                if let Some(peer_addr) = assign_piece(piece_idx, &self.peers) {
-                    let peer = self.peers.get_mut(&peer_addr).unwrap();
-                    peer.send_requests(
-                        piece_idx,
-                        Piece::new(self.file_manager.piece_length(piece_idx)),
-                    )
-                    .await;
-                    self.outstanding_piece_assigments
-                        .insert(piece_idx, peer_addr.clone());
-                }
+                assign_piece(
+                    piece_idx,
+                    &mut self.peers,
+                    &mut self.outstanding_piece_assigments,
+                    &Piece::new(self.file_manager.piece_length(piece_idx)),
+                )
+                .await;
             }
         }
     }
@@ -1119,27 +1117,35 @@ fn should_choke(peers_to_torrent_manager_channel_pending_msgs: usize) -> bool {
     peers_to_torrent_manager_channel_pending_msgs > PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY / 2
 }
 
-fn assign_piece(piece_idx: usize, peers: &HashMap<String, Peer>) -> Option<String> {
+async fn assign_piece(
+    piece_idx: usize,
+    peers: &mut HashMap<String, Peer>,
+    outstanding_piece_assigments: &mut HashMap<usize, String>,
+    incomplete_piece: &Piece,
+) {
     let mut possible_peers = peers
-        .iter()
+        .iter_mut()
         .filter(|(_, peer)| {
             !peer.peer_choking
                 && peer.haves[piece_idx]
                 && peer.outstanding_block_requests.len() < MAX_OUTSTANDING_REQUESTS_PER_PEER
         })
         .map(|(peer_addr, peer)| {
+            let outstanding_block_requests = peer.outstanding_block_requests.len();
+            let concurrent_requested_pieces = peer
+                .outstanding_block_requests
+                .keys()
+                .map(|(piece_idx, _, _)| *piece_idx)
+                .collect::<HashSet<u32>>()
+                .len();
             (
                 peer_addr,
                 peer,
-                peer.outstanding_block_requests
-                    .keys()
-                    .map(|(piece_idx, _, _)| *piece_idx)
-                    .collect::<HashSet<u32>>()
-                    .len(),
-                peer.outstanding_block_requests.len(),
+                concurrent_requested_pieces,
+                outstanding_block_requests,
             )
         })
-        .collect::<Vec<(&String, &Peer, usize, usize)>>();
+        .collect::<Vec<(&String, &mut Peer, usize, usize)>>();
 
     possible_peers.shuffle(&mut rand::thread_rng());
 
@@ -1158,9 +1164,11 @@ fn assign_piece(piece_idx: usize, peers: &HashMap<String, Peer>) -> Option<Strin
     });
 
     if possible_peers.len() > 0 {
-        return Some(possible_peers[0].0.clone());
-    } else {
-        return None;
+        let peer_addr = possible_peers[0].0;
+        let peer = &mut possible_peers[0].1;
+        peer.send_requests(piece_idx, incomplete_piece.clone())
+            .await;
+        outstanding_piece_assigments.insert(piece_idx, peer_addr.clone());
     }
 }
 
