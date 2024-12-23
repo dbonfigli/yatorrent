@@ -874,13 +874,27 @@ impl TorrentManager {
 
     async fn assign_piece_reqs(&mut self) {
         // send requests for new blocks for pieces currently downloading
+        let mut piece_idx_to_remove = Vec::new();
         for (piece_idx, peer_addr) in self.outstanding_piece_assigments.iter() {
-            let peer = self.peers.get_mut(peer_addr).unwrap();
-            peer.send_requests(
-                *piece_idx,
-                peer.requested_pieces.get(&piece_idx).unwrap().clone(),
-            )
-            .await;
+            if let Some(peer) = self.peers.get_mut(peer_addr) {
+                if let Some(incomplete_piece) = peer.requested_pieces.get(&piece_idx) {
+                    peer.send_requests(*piece_idx, incomplete_piece.clone())
+                        .await;
+                } else {
+                    log::warn!(
+                        "could not find requested piece {} for peer {}, this should never happen",
+                        piece_idx,
+                        peer_addr
+                    );
+                    piece_idx_to_remove.push(*piece_idx);
+                }
+            } else {
+                log::warn!("could not find a peer for outstanding piece assigment (piece_idx: {}, peer_addr: {}), this should never happen", piece_idx, peer_addr);
+                piece_idx_to_remove.push(*piece_idx);
+            }
+        }
+        for idx in piece_idx_to_remove {
+            self.outstanding_piece_assigments.remove(&idx);
         }
 
         // assign incomplete pieces if not assigned yet
