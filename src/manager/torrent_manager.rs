@@ -41,8 +41,9 @@ static TO_PEER_CHANNEL_CAPACITY: usize = 2000;
 static TO_PEER_CANCEL_CHANNEL_CAPACITY: usize = 1000;
 static PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY: usize = 50000;
 static BASE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120); // decreasing this will wast more bandwidth (needlessy requesting the same block again even if a peer would send it eventually) but will make retries for pieces requested to slow peers faster
-static ENDGAME_REQUEST_TIMEOUT: Duration = Duration::from_secs(15); // request timeout during the endgame phase: this will re-request a lot of pieces, wasting bandwidth, but will make endgame faster churning slow peers
+static ENDGAME_REQUEST_TIMEOUT: Duration = Duration::from_secs(120); // request timeout during the endgame phase: this will re-request a lot of pieces, wasting bandwidth, but will make endgame faster churning slow peers
 static ENDGAME_START_AT_COMPLETION_PERCENTAGE: f64 = 98.; // start endgame when we have this percentage of the torrent
+static CONCURRENT_PIECE_REQUESTS_FOR_ENDGAME: usize = 10;
 static MIN_CHOKE_TIME: Duration = Duration::from_secs(60);
 static NEW_CONNECTION_COOL_OFF_PERIOD: Duration = Duration::from_secs(180);
 static ADDED_DROPPED_PEER_EVENTS_RETENTION: Duration = Duration::from_secs(90);
@@ -167,13 +168,13 @@ pub struct TorrentManager {
     downloaded_bytes: u64,
     uploaded_bytes_previous_poll: u64,
     downloaded_bytes_previous_poll: u64,
-    outstanding_piece_assigments: HashMap<usize, String>, // piece idx -> peer_addr
+    outstanding_piece_assigments: HashMap<usize, HashSet<String>>, // piece idx -> list of peers we have requested the piece (can be more than one during endgame)
     completed_sent_to_tracker: bool,
     listening_dht_port: u16,
     dht_nodes: Vec<String>,
     last_get_peers_requested_time: SystemTime,
     added_dropped_peer_events: Vec<(SystemTime, PeerAddr, PexEvent)>, // time of event, address of peer for this event, pex event. This field is used to support pex
-    request_timeout: Duration,
+    is_endgame: bool,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -221,7 +222,7 @@ impl TorrentManager {
             last_get_peers_requested_time: SystemTime::now() - DHT_NEW_PEER_COOL_OFF_PERIOD
                 + DHT_BOOTSTRAP_TIME, // try to wait a bit before the first request, in hope that the dht has been bootstrapped, so that we don't waste time for the first request with an empty routing table
             added_dropped_peer_events: Vec::new(),
-            request_timeout: BASE_REQUEST_TIMEOUT,
+            is_endgame: false,
         }
     }
 
@@ -346,8 +347,11 @@ impl TorrentManager {
 
                     // remove outstandig requests that will be discarded because the peer is choking
                     for (piece_idx, _) in peer.requested_pieces.iter() {
-                        self.outstanding_piece_assigments
-                            .remove(&(*piece_idx as usize));
+                        remove_piece_assigment(
+                            &mut self.outstanding_piece_assigments,
+                            piece_idx,
+                            &peer_addr,
+                        );
                     }
                     peer.outstanding_block_requests = HashMap::new();
                     peer.requested_pieces = HashMap::new();
@@ -474,8 +478,19 @@ impl TorrentManager {
                             ));
                             if piece_completed {
                                 peer.requested_pieces.remove(&(piece_idx as usize));
-                                self.outstanding_piece_assigments
-                                    .remove(&(piece_idx as usize));
+                                remove_piece_assigment(
+                                    &mut self.outstanding_piece_assigments,
+                                    &(piece_idx as usize),
+                                    &peer_addr,
+                                );
+                                // send cancel to others
+                                // if let Some(assigned_peers) = self.outstanding_piece_assigments.remove(&(piece_idx as usize)) {
+                                //     for assigned_peer in assigned_peers {
+                                //         if assigned_peer != peer_addr { // if the assigned peer is this peer, do not cancel, the request was fulfilled
+                                //             self.peers.get(assigned_peer).unwrap().send(ToPeerMsg::Send(Message::Cancel((), (), ())))
+                                //         }
+                                //     }
+                                // }
 
                                 if !self.completed_sent_to_tracker && self.file_manager.completed()
                                 {
@@ -731,15 +746,13 @@ impl TorrentManager {
             }
         }
 
-        // check endgame status an decrease request timeout if needed
-        if self.request_timeout != ENDGAME_REQUEST_TIMEOUT {
-            let completed_pieces = self.file_manager.completed_pieces();
-            let total_pieces = self.file_manager.num_pieces();
-            if (completed_pieces as f64) / (total_pieces as f64) * 100.
-                > ENDGAME_START_AT_COMPLETION_PERCENTAGE
-            {
+        // update endgame status
+        if !self.is_endgame {
+            let completed_pieces = self.file_manager.completed_pieces() as f64;
+            let total_pieces = self.file_manager.num_pieces() as f64;
+            if completed_pieces / total_pieces * 100. > ENDGAME_START_AT_COMPLETION_PERCENTAGE {
                 log::warn!("entering endgame phase");
-                self.request_timeout = ENDGAME_REQUEST_TIMEOUT;
+                self.is_endgame = true;
             }
         }
 
@@ -801,7 +814,8 @@ impl TorrentManager {
         for (peer_addr, peer) in self.peers.iter_mut() {
             peer.outstanding_block_requests
                 .retain(|(piece_idx, block_begin, data_len), req_time| {
-                    if now.duration_since(*req_time).unwrap() < self.request_timeout {
+                    let request_timeout = if self.is_endgame { ENDGAME_REQUEST_TIMEOUT } else { BASE_REQUEST_TIMEOUT };
+                    if now.duration_since(*req_time).unwrap() < request_timeout {
                         return true;
                     } else {
                         log::debug!("removed stale request to peer: {}: (piece idx: {}, block begin: {}, lenght: {})", peer_addr, piece_idx, block_begin, data_len);
@@ -815,25 +829,37 @@ impl TorrentManager {
 
     async fn assign_piece_reqs(&mut self) {
         // send requests for new blocks for pieces currently downloading
-        for (piece_idx, peer_addr) in self.outstanding_piece_assigments.iter() {
-            let peer = self.peers.get_mut(peer_addr).unwrap();
-            peer.send_requests(
-                *piece_idx,
-                peer.requested_pieces.get(&piece_idx).unwrap().clone(),
-            )
-            .await;
+        for (piece_idx, peers_addr) in self.outstanding_piece_assigments.iter() {
+            for peer_addr in peers_addr {
+                let peer = self.peers.get_mut(peer_addr).unwrap();
+                peer.send_requests(
+                    *piece_idx,
+                    peer.requested_pieces.get(&piece_idx).unwrap().clone(), // qui crash
+                )
+                .await;
+            }
         }
 
+        let required = if self.is_endgame {
+            CONCURRENT_PIECE_REQUESTS_FOR_ENDGAME
+        } else {
+            1
+        };
+
         // assign incomplete pieces if not assigned yet
-        for (piece_idx, piece) in self.file_manager.incomplete_pieces.iter() {
-            if !self.outstanding_piece_assigments.contains_key(piece_idx) {
-                if let Some(peer_addr) = assign_piece(*piece_idx, &self.peers) {
-                    let peer = self.peers.get_mut(&peer_addr).unwrap();
-                    peer.send_requests(*piece_idx, piece.clone()).await;
-                    self.outstanding_piece_assigments
-                        .insert(*piece_idx, peer_addr.clone());
-                }
-            }
+        for (piece_idx, incomplete_piece) in self.file_manager.incomplete_pieces.iter() {
+            let required_for_this_piece = match self.outstanding_piece_assigments.get(piece_idx) {
+                Some(assigned_peers) => required - assigned_peers.len(),
+                None => required,
+            };
+            assign_peers_for_piece(
+                *piece_idx,
+                &mut self.peers,
+                required_for_this_piece,
+                &mut self.outstanding_piece_assigments,
+                incomplete_piece,
+            )
+            .await;
         }
 
         // assign other pieces, in order
@@ -844,16 +870,14 @@ impl TorrentManager {
             if !self.file_manager.piece_completion_status[piece_idx]
                 && !self.outstanding_piece_assigments.contains_key(&piece_idx)
             {
-                if let Some(peer_addr) = assign_piece(piece_idx, &self.peers) {
-                    let peer = self.peers.get_mut(&peer_addr).unwrap();
-                    peer.send_requests(
-                        piece_idx,
-                        Piece::new(self.file_manager.piece_length(piece_idx)),
-                    )
-                    .await;
-                    self.outstanding_piece_assigments
-                        .insert(piece_idx, peer_addr.clone());
-                }
+                assign_peers_for_piece(
+                    piece_idx,
+                    &mut self.peers,
+                    required,
+                    &mut self.outstanding_piece_assigments,
+                    &Piece::new(self.file_manager.piece_length(piece_idx)),
+                )
+                .await;
             }
         }
     }
@@ -1056,31 +1080,53 @@ fn update_tracker_client_and_advertised_peers(
     drop(advertised_peers);
 }
 
+fn remove_piece_assigment(
+    outstanding_piece_assigments: &mut HashMap<usize, HashSet<String>>,
+    piece_idx: &usize,
+    peer_addr: &String,
+) {
+    if let Some(assigned_to_peers) = outstanding_piece_assigments.get_mut(piece_idx) {
+        assigned_to_peers.remove(peer_addr);
+        if assigned_to_peers.len() == 0 {
+            outstanding_piece_assigments.remove(piece_idx);
+        }
+    }
+}
+
 fn should_choke(peers_to_torrent_manager_channel_pending_msgs: usize) -> bool {
     peers_to_torrent_manager_channel_pending_msgs > PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY / 2
 }
 
-fn assign_piece(piece_idx: usize, peers: &HashMap<String, Peer>) -> Option<String> {
+async fn assign_peers_for_piece(
+    piece_idx: usize,
+    peers: &mut HashMap<String, Peer>,
+    needed: usize,
+    outstanding_piece_assigments: &mut HashMap<usize, HashSet<String>>,
+    incomplete_piece: &Piece,
+) {
     let mut possible_peers = peers
-        .iter()
+        .iter_mut()
         .filter(|(_, peer)| {
             !peer.peer_choking
                 && peer.haves[piece_idx]
                 && peer.outstanding_block_requests.len() < MAX_OUTSTANDING_REQUESTS_PER_PEER
         })
         .map(|(peer_addr, peer)| {
+            let outstanding_block_requests = peer.outstanding_block_requests.len();
+            let concurrent_requested_pieces = peer
+                .outstanding_block_requests
+                .keys()
+                .map(|(piece_idx, _, _)| *piece_idx)
+                .collect::<HashSet<u32>>()
+                .len();
             (
                 peer_addr,
                 peer,
-                peer.outstanding_block_requests
-                    .keys()
-                    .map(|(piece_idx, _, _)| *piece_idx)
-                    .collect::<HashSet<u32>>()
-                    .len(),
-                peer.outstanding_block_requests.len(),
+                concurrent_requested_pieces,
+                outstanding_block_requests,
             )
         })
-        .collect::<Vec<(&String, &Peer, usize, usize)>>();
+        .collect::<Vec<(&String, &mut Peer, usize, usize)>>();
 
     possible_peers.shuffle(&mut rand::thread_rng());
 
@@ -1098,10 +1144,27 @@ fn assign_piece(piece_idx: usize, peers: &HashMap<String, Peer>) -> Option<Strin
         }
     });
 
-    if possible_peers.len() > 0 {
-        return Some(possible_peers[0].0.clone());
-    } else {
-        return None;
+    possible_peers.truncate(needed);
+
+    for (_, peer, _, _) in possible_peers.iter_mut() {
+        peer.send_requests(piece_idx, incomplete_piece.clone())
+            .await;
+    }
+
+    if let Some(assigments) = outstanding_piece_assigments.get_mut(&piece_idx) {
+        for (p, _, _, _) in possible_peers {
+            assigments.insert(p.clone());
+        }
+    } else if possible_peers.len() > 0 {
+        outstanding_piece_assigments.insert(
+            piece_idx,
+            HashSet::from_iter(
+                possible_peers
+                    .iter()
+                    .map(|p| p.0.clone())
+                    .collect::<HashSet<String>>(),
+            ),
+        );
     }
 }
 
