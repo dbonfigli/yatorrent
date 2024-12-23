@@ -154,7 +154,7 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                 }
             }
             Message::Bitfield(bitfield) => {
-                let buf = encode_bitfield_message(bitfield);
+                let buf = encode_bitfield(bitfield);
                 if let Err(e) = self.write_all(&buf).await {
                     return Err(e.into());
                 } else {
@@ -378,7 +378,7 @@ fn decode_bitfield(buf: Box<Vec<u8>>) -> Box<Vec<bool>> {
     bitfield
 }
 
-fn encode_bitfield_message(bitfield: Box<Vec<bool>>) -> Vec<u8> {
+fn encode_bitfield(bitfield: Box<Vec<bool>>) -> Vec<u8> {
     let bitfield_bytes = (bitfield.len() / 8) + if bitfield.len() % 8 != 0 { 1 } else { 0 };
     let mut buf = vec![0; 5 + bitfield_bytes];
     let bitfield_bytes_u32: u32 = bitfield_bytes.try_into().unwrap();
@@ -404,7 +404,7 @@ fn encode_bitfield_message(bitfield: Box<Vec<bool>>) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::decode_bitfield;
-    use super::encode_bitfield_message;
+    use super::encode_bitfield;
 
     #[test]
     fn decode_bitfield_test() {
@@ -425,7 +425,7 @@ mod tests {
             true, false, false, false, false, false, false, true, // byte 1
             false, false, false, false, true, true, // byte 2, only 6 bits
         ]);
-        let buf = encode_bitfield_message(bitfield);
+        let buf = encode_bitfield(bitfield);
         assert_eq!(
             buf,
             vec![
@@ -442,7 +442,7 @@ mod tests {
             true, false, false, false, false, false, false, true, // byte 1
             false, false, false, false, true, true, false, true, // byte 2
         ]);
-        let buf = encode_bitfield_message(bitfield);
+        let buf = encode_bitfield(bitfield);
         assert_eq!(
             buf,
             vec![
@@ -458,7 +458,7 @@ mod tests {
         let bitfield = Box::new(vec![
             false, true, // byte 1
         ]);
-        let buf = encode_bitfield_message(bitfield);
+        let buf = encode_bitfield(bitfield);
         assert_eq!(
             buf,
             vec![
