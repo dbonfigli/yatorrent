@@ -240,18 +240,24 @@ pub fn start_peer_msg_handlers(
 ) {
     let peers_to_torrent_manager_tx_for_snd_message_handler = peers_to_torrent_manager_tx.clone();
     let (read, write) = tokio::io::split(tcp_stream);
-    tokio::spawn(rcv_message_handler(
+    let mut rcv = tokio::spawn(rcv_message_handler(
         peer_addr.clone(),
         peers_to_torrent_manager_tx,
         read,
     ));
-    tokio::spawn(snd_message_handler(
+    let mut snd = tokio::spawn(snd_message_handler(
         peer_addr.clone(),
         to_peer_rx,
         peers_to_torrent_manager_tx_for_snd_message_handler,
         write,
         to_peer_cancel_rx,
     ));
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = &mut rcv => snd.abort(),
+            _ = &mut snd => rcv.abort(),
+        }
+    });
 }
 
 async fn handshake(
