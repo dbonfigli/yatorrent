@@ -435,5 +435,7 @@ async fn send_to_torrent_manager(
             peers_to_torrent_manager_tx.capacity()
         );
     }
-    peers_to_torrent_manager_tx.send(msg).await.unwrap();
+    // ignore error here: torrent manger can drop this peer due to errors in rcv_message_handler
+    // while snd_message_handler is about to send messages to manager or vice versa
+    _ = peers_to_torrent_manager_tx.send(msg).await;
 }
