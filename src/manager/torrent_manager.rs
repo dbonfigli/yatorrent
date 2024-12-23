@@ -333,277 +333,271 @@ impl TorrentManager {
             .map(|k| k.clone())
             .collect::<Vec<_>>();
         let now = SystemTime::now();
-        if let Some(peer) = self.peers.get_mut(&peer_addr) {
-            match msg {
-                Message::KeepAlive => {}
-                Message::Choke => {
-                    log::debug!(
-                        "received choked from peer {} with {} outstandig requests",
+
+        let peer = match self.peers.get_mut(&peer_addr) {
+            Some(peer) => peer,
+            None => return,
+        };
+
+        match msg {
+            Message::KeepAlive => {}
+            Message::Choke => {
+                log::debug!(
+                    "received choked from peer {} with {} outstandig requests",
+                    peer_addr,
+                    peer.outstanding_block_requests.len()
+                );
+                peer.peer_choking = true;
+
+                // remove outstandig requests that will be discarded because the peer is choking
+                for (piece_idx, _) in peer.requested_pieces.iter() {
+                    self.outstanding_piece_assigments
+                        .remove(&(*piece_idx as usize));
+                }
+                peer.outstanding_block_requests = HashMap::new();
+                peer.requested_pieces = HashMap::new();
+
+                // todo: maybe re-compute assignations immediately here instead of waiting tick
+            }
+            Message::Unchoke => {
+                peer.peer_choking = false;
+                // todo: maybe re-compute assignations immediately here instead of waiting tick
+            }
+            Message::Interested => {
+                peer.peer_interested = true;
+            }
+            Message::NotInterested => {
+                peer.peer_interested = false;
+            }
+            Message::Have(piece_idx) => {
+                let pieces = peer.haves.len();
+                if (piece_idx as usize) < pieces {
+                    peer.haves[piece_idx as usize] = true;
+
+                    // send interest if needed
+                    if !peer.am_interested
+                        && !self.file_manager.piece_completion_status[piece_idx as usize]
+                    {
+                        peer.am_interested = true;
+                        peer.send(ToPeerMsg::Send(Message::Interested)).await;
+                    }
+                } else {
+                    log::warn!(
+                        "got message \"have\" {} from peer {} but the torrent have only {} pieces",
+                        piece_idx,
                         peer_addr,
-                        peer.outstanding_block_requests.len()
+                        pieces
                     );
-                    peer.peer_choking = true;
-
-                    // remove outstandig requests that will be discarded because the peer is choking
-                    for (piece_idx, _) in peer.requested_pieces.iter() {
-                        self.outstanding_piece_assigments
-                            .remove(&(*piece_idx as usize));
-                    }
-                    peer.outstanding_block_requests = HashMap::new();
-                    peer.requested_pieces = HashMap::new();
-
-                    // todo: maybe re-compute assignations immediately here instead of waiting tick
+                    // todo: close connection with this bad peer
                 }
-                Message::Unchoke => {
-                    peer.peer_choking = false;
-                    // todo: maybe re-compute assignations immediately here instead of waiting tick
-                }
-                Message::Interested => {
-                    peer.peer_interested = true;
-                }
-                Message::NotInterested => {
-                    peer.peer_interested = false;
-                }
-                Message::Have(piece_idx) => {
-                    let pieces = peer.haves.len();
-                    if (piece_idx as usize) < pieces {
-                        peer.haves[piece_idx as usize] = true;
-
-                        // send interest if needed
-                        if !peer.am_interested
-                            && !self.file_manager.piece_completion_status[piece_idx as usize]
-                        {
-                            peer.am_interested = true;
-                            peer.send(ToPeerMsg::Send(Message::Interested)).await;
-                        }
-                    } else {
-                        log::warn!(
-                            "got message \"have\" {} from peer {} but the torrent have only {} pieces",
-                            piece_idx,
-                            peer_addr,
-                            pieces
-                        );
-                        // todo: close connection with this bad peer
-                    }
-                }
-                Message::Bitfield(bitfield) => {
-                    if bitfield.len() < self.file_manager.num_pieces() {
-                        log::warn!(
+            }
+            Message::Bitfield(bitfield) => {
+                if bitfield.len() < self.file_manager.num_pieces() {
+                    log::warn!(
                             "received wrongly sized bitfield from peer {}: received {} bits but expected {}",
                             peer_addr,
                             bitfield.len(),
                             self.file_manager.num_pieces()
                         );
-                        // todo: close connection with this bad peer
-                    } else {
-                        if let Some(peer) = self.peers.get_mut(&peer_addr) {
-                            // bitfield is byte aligned, it could contain more bits than pieces in the torrent
-                            peer.haves = bitfield[0..self.file_manager.num_pieces()].to_vec();
+                    // todo: close connection with this bad peer
+                } else {
+                    if let Some(peer) = self.peers.get_mut(&peer_addr) {
+                        // bitfield is byte aligned, it could contain more bits than pieces in the torrent
+                        peer.haves = bitfield[0..self.file_manager.num_pieces()].to_vec();
 
-                            // check if we need to send interest
-                            if !peer.am_interested {
-                                for piece_idx in 0..peer.haves.len() {
-                                    if !self.file_manager.piece_completion_status[piece_idx]
-                                        && peer.haves[piece_idx]
-                                    {
-                                        peer.am_interested = true;
-                                        peer.send(ToPeerMsg::Send(Message::Interested)).await;
-                                        break;
-                                    }
-                                }
-                            }
-
-                            log::trace!(
-                                "received bitfield from peer {}: it has {}/{} pieces",
-                                peer_addr,
-                                peer.haves
-                                    .iter()
-                                    .fold(0, |acc, v| if *v { acc + 1 } else { acc }),
-                                peer.haves.len()
-                            );
-                        }
-                    }
-                    // todo: maybe re-compute assignations immediately here instead of waiting tick
-                }
-                Message::Request(piece_idx, begin, lenght) => {
-                    if !peer.am_choking {
-                        if should_choke(peers_to_torrent_manager_channel_capacity) {
-                            peer.send(ToPeerMsg::Send(Message::Choke)).await;
-                            peer.am_choking = true;
-                            peer.am_choking_since = SystemTime::now();
-                        } else {
-                            match self.file_manager.read_piece_block(
-                                piece_idx as usize,
-                                begin as u64,
-                                lenght as u64,
-                            ) {
-                                Err(e) => {
-                                    log::error!("error reading block: {}", e);
-                                }
-
-                                Ok(data) => {
-                                    let data_len = data.len() as u64;
-                                    peer.send(ToPeerMsg::Send(Message::Piece(
-                                        piece_idx, begin, data,
-                                    )))
-                                    .await;
-
-                                    // todo: this is really naive, must avoid saturating upload
-
-                                    self.uploaded_bytes += data_len; // todo: we are not keeping track of cancelled pieces
-                                }
-                            }
-                        }
-                    }
-                }
-                Message::Piece(piece_idx, begin, data) => {
-                    let data_len = data.len() as u64;
-                    match self.file_manager.write_piece_block(
-                        piece_idx as usize,
-                        data,
-                        begin as u64,
-                    ) {
-                        Ok(piece_completed) => {
-                            self.downloaded_bytes += data_len;
-
-                            // remove outstanding request associated with this block
-                            peer.outstanding_block_requests.remove(&(
-                                piece_idx,
-                                begin,
-                                data_len as u32,
-                            ));
-                            if piece_completed {
-                                peer.requested_pieces.remove(&(piece_idx as usize));
-                                self.outstanding_piece_assigments
-                                    .remove(&(piece_idx as usize));
-
-                                if !self.completed_sent_to_tracker && self.file_manager.completed()
+                        // check if we need to send interest
+                        if !peer.am_interested {
+                            for piece_idx in 0..peer.haves.len() {
+                                if !self.file_manager.piece_completion_status[piece_idx]
+                                    && peer.haves[piece_idx]
                                 {
-                                    log::warn!("torrent download completed");
-                                    self.completed_sent_to_tracker = true;
-                                    self.tracker_request_async(Event::Completed).await;
-                                }
-
-                                let _ = piece_completion_status_tx
-                                    .send(self.file_manager.piece_completion_status.clone())
-                                    .await; // ignore in case of error: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors and the peer is still lingering in self.peers because the control message about the error is not yet been handled
-
-                                for (_, peer) in self.peers.iter_mut() {
-                                    // send have to interested peers
-                                    if peer.peer_interested && !peer.haves[piece_idx as usize] {
-                                        peer.send(ToPeerMsg::Send(Message::Have(piece_idx))).await;
-                                    }
-                                    // send not interested if needed
-                                    if peer.am_interested {
-                                        let mut am_still_interested = false;
-                                        for i in 0..peer.haves.len() {
-                                            if !self.file_manager.piece_completion_status
-                                                [piece_idx as usize]
-                                                && peer.haves[i]
-                                            {
-                                                am_still_interested = true;
-                                                break;
-                                            }
-                                        }
-                                        if !am_still_interested {
-                                            peer.send(ToPeerMsg::Send(Message::NotInterested))
-                                                .await;
-                                        }
-                                    }
+                                    peer.am_interested = true;
+                                    peer.send(ToPeerMsg::Send(Message::Interested)).await;
+                                    break;
                                 }
                             }
-                            // todo: maybe re-compute assignations immediately here instead of waiting tick
                         }
-                        Err(e) => {
-                            log::error!("cannot write block: {}", e);
-                        }
+
+                        log::trace!(
+                            "received bitfield from peer {}: it has {}/{} pieces",
+                            peer_addr,
+                            peer.haves
+                                .iter()
+                                .fold(0, |acc, v| if *v { acc + 1 } else { acc }),
+                            peer.haves.len()
+                        );
                     }
                 }
-                Message::Cancel(piece_idx, begin, lenght) => {
-                    // we try to let the peer message handler know about the cancellation,
-                    // but it the buffer is full, we don't care, it means there were no outstunding messages to be sent
-                    // and so the cancellation would have not effect
-                    let _ = peer
-                        .to_peer_cancel_tx
-                        .try_send((piece_idx, begin, lenght, now));
-                }
-                Message::Port(port) => {
-                    // we know the peer supports DHT, send this to dht as new node
-                    let peer_ip_addr = peer_addr.split(":").next().unwrap();
-                    let _ = to_dht_manager_tx
-                        .send(ToDhtManagerMsg::NewNode(format!(
-                            "{}:{}",
-                            peer_ip_addr, port
-                        )))
-                        .await;
-                }
-                Message::Extended(extension_id, value) => {
-                    if extension_id == 0 {
-                        // this is an extension handshake
-                        if let Dict(d, _, _) = value {
-                            if let Some(Dict(m, _, _)) = d.get(&b"m".to_vec()) {
-                                if let Some(Int(ut_pex_id)) = m.get(&b"ut_pex".to_vec()) {
-                                    // this peer supports the PEX extension, registered at number ut_pex_id
-                                    peer.ut_pex_id = *ut_pex_id as u8;
-                                    // send first peer list
-                                    peer.send_pex_message(
-                                        &peer_addr,
-                                        other_active_peers,
-                                        Vec::new(),
-                                    )
-                                    .await;
-                                }
-                            }
-                        }
-                    } else if peer.ut_pex_id == extension_id {
-                        // this is an ut_pex extended message
-                        if let Dict(d, _, _) = value {
-                            // todo: should we also use the dropped list? atm we are eager to hoarde all possible peers so we ignore it
-                            if let Some(Str(compact_contacts_info)) = d.get(&b"added".to_vec()) {
-                                // we don't support flags, dropped or ipv6 fields ATM
-                                if compact_contacts_info.len() % 6 != 0 {
-                                    log::debug!("got a PEX message with an \"added\" field that is not divisible by 6, ignoring this message");
-                                } else {
-                                    for i in (0..compact_contacts_info.len()).step_by(6) {
-                                        let mut peer_ip_buf: [u8; 4] = [0; 4];
-                                        peer_ip_buf
-                                            .copy_from_slice(&compact_contacts_info[i..i + 4]);
-                                        let ip = [
-                                            (peer_ip_buf[0]).to_string(),
-                                            (peer_ip_buf[1]).to_string(),
-                                            (peer_ip_buf[2]).to_string(),
-                                            peer_ip_buf[3].to_string(),
-                                        ]
-                                        .join(".");
-                                        let mut peer_port_buf: [u8; 2] = [0; 2];
-                                        peer_port_buf
-                                            .copy_from_slice(&compact_contacts_info[i + 4..i + 6]);
-                                        let port = u16::from_be_bytes(peer_port_buf);
-                                        log::debug!(
-                                            "adding peer advertised by {} from PEX: {}:{}",
-                                            peer_addr,
-                                            ip,
-                                            port
-                                        );
-                                        let p = tracker::Peer {
-                                            peer_id: None,
-                                            ip: ip.clone(),
-                                            port,
-                                        };
-                                        let mut advertised_peers_mg =
-                                            self.advertised_peers.lock().unwrap();
-                                        advertised_peers_mg.insert(
-                                            format!("{}:{}", ip, port),
-                                            (p, SystemTime::UNIX_EPOCH),
-                                        );
-                                        drop(advertised_peers_mg);
-                                    }
-                                }
-                            }
-                        }
+                // todo: maybe re-compute assignations immediately here instead of waiting tick
+            }
+            Message::Request(piece_idx, begin, lenght) => {
+                if !peer.am_choking {
+                    if should_choke(peers_to_torrent_manager_channel_capacity) {
+                        peer.send(ToPeerMsg::Send(Message::Choke)).await;
+                        peer.am_choking = true;
+                        peer.am_choking_since = SystemTime::now();
                     } else {
-                        log::debug!("got an extension message from {} but id was not recognized as an extension we registered: {}", peer_addr, extension_id);
+                        match self.file_manager.read_piece_block(
+                            piece_idx as usize,
+                            begin as u64,
+                            lenght as u64,
+                        ) {
+                            Err(e) => {
+                                log::error!("error reading block: {}", e);
+                            }
+
+                            Ok(data) => {
+                                let data_len = data.len() as u64;
+                                peer.send(ToPeerMsg::Send(Message::Piece(piece_idx, begin, data)))
+                                    .await;
+
+                                // todo: this is really naive, must avoid saturating upload
+
+                                self.uploaded_bytes += data_len; // todo: we are not keeping track of cancelled pieces
+                            }
+                        }
                     }
+                }
+            }
+            Message::Piece(piece_idx, begin, data) => {
+                let data_len = data.len() as u64;
+                match self
+                    .file_manager
+                    .write_piece_block(piece_idx as usize, data, begin as u64)
+                {
+                    Ok(piece_completed) => {
+                        self.downloaded_bytes += data_len;
+
+                        // remove outstanding request associated with this block
+                        peer.outstanding_block_requests.remove(&(
+                            piece_idx,
+                            begin,
+                            data_len as u32,
+                        ));
+                        if piece_completed {
+                            peer.requested_pieces.remove(&(piece_idx as usize));
+                            self.outstanding_piece_assigments
+                                .remove(&(piece_idx as usize));
+
+                            if !self.completed_sent_to_tracker && self.file_manager.completed() {
+                                log::warn!("torrent download completed");
+                                self.completed_sent_to_tracker = true;
+                                self.tracker_request_async(Event::Completed).await;
+                            }
+
+                            let _ = piece_completion_status_tx
+                                .send(self.file_manager.piece_completion_status.clone())
+                                .await; // ignore in case of error: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors and the peer is still lingering in self.peers because the control message about the error is not yet been handled
+
+                            for (_, peer) in self.peers.iter_mut() {
+                                // send have to interested peers
+                                if peer.peer_interested && !peer.haves[piece_idx as usize] {
+                                    peer.send(ToPeerMsg::Send(Message::Have(piece_idx))).await;
+                                }
+                                // send not interested if needed
+                                if peer.am_interested {
+                                    let mut am_still_interested = false;
+                                    for i in 0..peer.haves.len() {
+                                        if !self.file_manager.piece_completion_status
+                                            [piece_idx as usize]
+                                            && peer.haves[i]
+                                        {
+                                            am_still_interested = true;
+                                            break;
+                                        }
+                                    }
+                                    if !am_still_interested {
+                                        peer.send(ToPeerMsg::Send(Message::NotInterested)).await;
+                                    }
+                                }
+                            }
+                        }
+                        // todo: maybe re-compute assignations immediately here instead of waiting tick
+                    }
+                    Err(e) => {
+                        log::error!("cannot write block: {}", e);
+                    }
+                }
+            }
+            Message::Cancel(piece_idx, begin, lenght) => {
+                // we try to let the peer message handler know about the cancellation,
+                // but it the buffer is full, we don't care, it means there were no outstunding messages to be sent
+                // and so the cancellation would have not effect
+                let _ = peer
+                    .to_peer_cancel_tx
+                    .try_send((piece_idx, begin, lenght, now));
+            }
+            Message::Port(port) => {
+                // we know the peer supports DHT, send this to dht as new node
+                let peer_ip_addr = peer_addr.split(":").next().unwrap();
+                let _ = to_dht_manager_tx
+                    .send(ToDhtManagerMsg::NewNode(format!(
+                        "{}:{}",
+                        peer_ip_addr, port
+                    )))
+                    .await;
+            }
+            Message::Extended(extension_id, value) => {
+                if extension_id == 0 {
+                    // this is an extension handshake
+                    if let Dict(d, _, _) = value {
+                        if let Some(Dict(m, _, _)) = d.get(&b"m".to_vec()) {
+                            if let Some(Int(ut_pex_id)) = m.get(&b"ut_pex".to_vec()) {
+                                // this peer supports the PEX extension, registered at number ut_pex_id
+                                peer.ut_pex_id = *ut_pex_id as u8;
+                                // send first peer list
+                                peer.send_pex_message(&peer_addr, other_active_peers, Vec::new())
+                                    .await;
+                            }
+                        }
+                    }
+                } else if peer.ut_pex_id == extension_id {
+                    // this is an ut_pex extended message
+                    if let Dict(d, _, _) = value {
+                        // todo: should we also use the dropped list? atm we are eager to hoarde all possible peers so we ignore it
+                        if let Some(Str(compact_contacts_info)) = d.get(&b"added".to_vec()) {
+                            // we don't support flags, dropped or ipv6 fields ATM
+                            if compact_contacts_info.len() % 6 != 0 {
+                                log::debug!("got a PEX message with an \"added\" field that is not divisible by 6, ignoring this message");
+                            } else {
+                                for i in (0..compact_contacts_info.len()).step_by(6) {
+                                    let mut peer_ip_buf: [u8; 4] = [0; 4];
+                                    peer_ip_buf.copy_from_slice(&compact_contacts_info[i..i + 4]);
+                                    let ip = [
+                                        (peer_ip_buf[0]).to_string(),
+                                        (peer_ip_buf[1]).to_string(),
+                                        (peer_ip_buf[2]).to_string(),
+                                        peer_ip_buf[3].to_string(),
+                                    ]
+                                    .join(".");
+                                    let mut peer_port_buf: [u8; 2] = [0; 2];
+                                    peer_port_buf
+                                        .copy_from_slice(&compact_contacts_info[i + 4..i + 6]);
+                                    let port = u16::from_be_bytes(peer_port_buf);
+                                    log::debug!(
+                                        "adding peer advertised by {} from PEX: {}:{}",
+                                        peer_addr,
+                                        ip,
+                                        port
+                                    );
+                                    let p = tracker::Peer {
+                                        peer_id: None,
+                                        ip: ip.clone(),
+                                        port,
+                                    };
+                                    let mut advertised_peers_mg =
+                                        self.advertised_peers.lock().unwrap();
+                                    advertised_peers_mg.insert(
+                                        format!("{}:{}", ip, port),
+                                        (p, SystemTime::UNIX_EPOCH),
+                                    );
+                                    drop(advertised_peers_mg);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    log::debug!("got an extension message from {} but id was not recognized as an extension we registered: {}", peer_addr, extension_id);
                 }
             }
         }
