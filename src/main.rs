@@ -90,7 +90,7 @@ async fn main() -> Result<()> {
     let contents = match fs::read(args.torrent_file.clone()) {
         Ok(c) => c,
         Err(e) => {
-            log::error!("could not read .torrent file {}: {}", args.torrent_file, e);
+            log::error!("could not read .torrent file {}: {e}", args.torrent_file);
             exit(1);
         }
     };
@@ -98,7 +98,7 @@ async fn main() -> Result<()> {
     let metainfo = metainfo::Metainfo::new(&torrent_content, &contents);
     match metainfo {
         Ok(m) => {
-            log::info!("torrent file metainfo:\n{}", m);
+            log::info!("torrent file metainfo:\n{m}");
             if m.announce_list.len() == 0 {
                 if m.url_list.len() != 0 {
                     log::warn!("The .torrent file contains a \"url-list\" field, this means the torrent can be dowloaded via HTTP/FTP http://www.bittorrent.org/beps/bep_0019.html), this is not supported by this client");
@@ -114,10 +114,7 @@ async fn main() -> Result<()> {
             exit(0);
         }
         Err(e) => {
-            log::error!(
-                "The .torrent file is invalid: could not parse metainfo: {}",
-                e
-            );
+            log::error!("The .torrent file is invalid: could not parse metainfo: {e}");
             exit(1)
         }
     }

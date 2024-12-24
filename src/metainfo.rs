@@ -165,7 +165,7 @@ impl Metainfo {
                         } else {
                             bail!("The .torrent file \"nodes\" has a port that is not a number");
                         }
-                        node_list.push(format!("{}:{}", node_host, node_port));
+                        node_list.push(format!("{node_host}:{node_port}"));
                     } else {
                         bail!("The .torrent file \"nodes\" has an element that is not a list");
                     }

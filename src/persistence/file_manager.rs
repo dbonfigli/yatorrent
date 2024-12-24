@@ -169,8 +169,7 @@ impl FileManager {
 
         let total_completed = self.completed_pieces();
         log::info!(
-            "checking pieces already downloaded completed: {} out of {} ({}%) pieces already completed",
-            total_completed,
+            "checking pieces already downloaded completed: {total_completed} out of {} ({}%) pieces already completed",
             self.piece_completion_status.len(),
             total_completed * 100 / self.piece_completion_status.len()
         );
@@ -207,16 +206,14 @@ impl FileManager {
             .iter()
             .fold(0, |acc, v| if v.2 { acc + 1 } else { acc });
         log::info!(
-            "files completed: {} out of {} ({}%)",
-            total_completed,
+            "files completed: {total_completed} out of {} ({}%)",
             self.file_list.len(),
             total_completed * 100 / self.file_list.len()
         );
         log::info!("files status:");
         for (file_path, size, status) in self.file_list.iter() {
             log::info!(
-                "  - {:#?} ({}): {}",
-                file_path,
+                "  - {file_path:#?} ({}): {}",
                 Size::from_bytes(*size),
                 if *status { "completed" } else { "incomplete" }
             );
@@ -255,20 +252,16 @@ impl FileManager {
     ) -> Result<Box<Vec<u8>>> {
         if piece_idx >= self.piece_to_files.len() {
             bail!(
-                "requested to read piece idx {} that is not in range (total pieces: {})",
-                piece_idx,
+                "requested to read piece idx {piece_idx} that is not in range (total pieces: {})",
                 self.piece_to_files.len()
             );
         }
         let piece_length = self.piece_length(piece_idx);
         if piece_length < block_begin + block_length {
-            bail!("requested to read piece idx {} out of range: block_begin {} + block_length {} > piece_length {}", piece_idx, block_begin, block_length, piece_length);
+            bail!("requested to read piece idx {piece_idx} out of range: block_begin {block_begin} + block_length {block_length} > piece_length {piece_length}");
         }
         if check_if_have_piece && !self.piece_completion_status[piece_idx] {
-            bail!(
-                "requested to read piece idx {} that we don't have",
-                piece_idx
-            );
+            bail!("requested to read piece idx {piece_idx} that we don't have");
         }
         let mut block_buf = Box::new(Vec::<u8>::new());
         let mut current_piece_offset = 0;
@@ -319,18 +312,14 @@ impl FileManager {
 
         if piece_idx >= self.num_pieces() {
             bail!(
-                "cannot write block: piece idx {} would overflow total pieces ({})",
-                piece_idx,
+                "cannot write block: piece idx {piece_idx} would overflow total pieces ({})",
                 self.num_pieces()
             );
         }
 
         // avoid useless writes if we already have the piece
         if self.piece_completion_status[piece_idx] {
-            log::trace!(
-                "we already have the piece {}, will avoid to writing it again",
-                piece_idx
-            );
+            log::trace!("we already have the piece {piece_idx}, will avoid to writing it again");
             self.wasted_bytes += data.len();
             return Ok(true);
         }
@@ -347,7 +336,7 @@ impl FileManager {
         }
         let piece = self.incomplete_pieces.get_mut(&piece_idx).unwrap();
         if piece.contains(block_begin, block_begin + data_len) {
-            log::trace!("we already have written all the data in this block (begin: {} lenght: {}) for piece {}, will avoid writing it again", block_begin, data_len, piece_idx);
+            log::trace!("we already have written all the data in this block (begin: {block_begin} lenght: {data_len}) for piece {piece_idx}, will avoid writing it again");
             self.wasted_bytes += data.len();
             return Ok(false);
         }
@@ -392,7 +381,7 @@ impl FileManager {
                 .try_into()
                 .unwrap();
             if piece_sha != self.piece_hashes[piece_idx] {
-                bail!("the sha of the data we just wrote for piece {} do not match the sha we expect, marking this piece as missing", piece_idx);
+                bail!("the sha of the data we just wrote for piece {piece_idx} do not match the sha we expect, marking this piece as missing");
             } else {
                 self.piece_completion_status[piece_idx] = true;
                 self.refresh_completed_files(); //todo: optimize this

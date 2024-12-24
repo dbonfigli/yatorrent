@@ -42,7 +42,7 @@ impl fmt::Display for Response {
         match self {
             Response::Ok(ok_response) => {
                 if let Some(warning_message) = &ok_response.warning_message {
-                    write!(f, "WARNING {}", warning_message)?;
+                    write!(f, "WARNING {warning_message}")?;
                 }
                 let peers = ok_response
                     .peers
@@ -53,7 +53,7 @@ impl fmt::Display for Response {
                 write!(f, "interval: {}\nmin_interval: {:#?}\ntracker_id: {:#?}\nn. peers completed: {}\nn. peers incomplete: {}\npeers:\n{}", ok_response.interval, ok_response.min_interval, ok_response.tracker_id, ok_response.complete, ok_response.incomplete, peers)
             }
             Response::Failure(failure_message) => {
-                write!(f, "FAILURE: {}", failure_message)
+                write!(f, "FAILURE: {failure_message}")
             }
         }
     }
@@ -139,7 +139,7 @@ impl TrackerClient {
                             url.clone(),
                             msg.clone()
                         ));
-                        log::debug!("tracker {} responded with failure: {}", url.clone(), msg);
+                        log::debug!("tracker {} responded with failure: {msg}", url.clone());
                         log::debug!("will try next tracker if it exists...");
                     }
                     Ok(Response::Ok(response)) => {
@@ -160,9 +160,9 @@ impl TrackerClient {
                         return Ok(Response::Ok(response));
                     }
                     Err(e) => {
-                        log::debug!("error from tracker {}: {}", url.clone(), e);
+                        log::debug!("error from tracker {}: {e}", url.clone());
                         log::debug!("will try next tracker if it exists...");
-                        error_message.push(format!("tracker {} errored: \"{}\"", url.clone(), e));
+                        error_message.push(format!("tracker {} errored: \"{e}\"", url.clone()));
                     }
                 }
             }
@@ -183,14 +183,14 @@ impl TrackerClient {
         event: Event,
     ) -> Result<Response> {
         if url.starts_with("http") {
-            log::debug!("trying reaching http tracker {}...", url);
+            log::debug!("trying reaching http tracker {url}...");
             return self
                 .request_to_http_tracker(url, info_hash, uploaded, downloaded, left, event)
                 .await;
         } else if url.starts_with("udp") {
             let mut attempts = 0;
             loop {
-                log::debug!("trying reaching udp tracker {}...", url);
+                log::debug!("trying reaching udp tracker {url}...");
                 match self
                     .request_to_udp_tracker(
                         url.clone(),
@@ -218,7 +218,7 @@ impl TrackerClient {
             }
         } else {
             // some torrents are announcing webtorrent websockets with scheme wss://
-            bail!("scheme of url not supported: {}", url);
+            bail!("scheme of url not supported: {url}");
         }
     }
 
@@ -253,7 +253,7 @@ impl TrackerClient {
             ))
         }
 
-        log::debug!("requesting url: {}", url);
+        log::debug!("requesting url: {url}");
 
         let body: Vec<u8> = match ClientBuilder::new()
             .connect_timeout(Duration::from_secs(5))
@@ -269,7 +269,7 @@ impl TrackerClient {
             .collect()
         {
             Ok(b) => b,
-            Err(e) => bail!("error on http request: {}", e),
+            Err(e) => bail!("error on http request: {e}"),
         };
 
         let response_map = match Value::new(&body) {
@@ -358,14 +358,14 @@ impl TrackerClient {
         let url = reqwest::Url::parse(&url)?;
         let host = match url.host() {
             Some(h) => h,
-            None => bail!("udp tracker url did not contain host: {}", url),
+            None => bail!("udp tracker url did not contain host: {url}"),
         };
         let port = match url.port() {
             Some(p) => p,
-            None => bail!("udp tracker url did not contain port: {}", url),
+            None => bail!("udp tracker url did not contain port: {url}"),
         };
 
-        let dest_addr = format!("{}:{}", host, port);
+        let dest_addr = format!("{host}:{port}");
         let socket = UdpSocket::bind("0.0.0.0:0").await?;
         if let Err(e) = socket.connect(dest_addr).await {
             bail!(e);
@@ -397,14 +397,14 @@ impl TrackerClient {
         action_buf.copy_from_slice(&recv_connect_buf[0..4]);
         let action = u32::from_be_bytes(action_buf);
         if action != 0 {
-            bail!("got connect response from udp tracker but received action was not 0 (i.e.: connect): {}", action);
+            bail!("got connect response from udp tracker but received action was not 0 (i.e.: connect): {action}");
         }
 
         let mut transaction_id_buf = [0u8; 4];
         transaction_id_buf.copy_from_slice(&recv_connect_buf[4..8]);
         let recv_transaction_id = u32::from_be_bytes(transaction_id_buf);
         if recv_transaction_id != transaction_id {
-            bail!("got connect response from udp tracker but received transaction_id {} was different from the request ({})", recv_transaction_id, transaction_id);
+            bail!("got connect response from udp tracker but received transaction_id {recv_transaction_id} was different from the request ({transaction_id})");
         }
 
         let mut connection_id_buf = [0u8; 8];
@@ -449,14 +449,14 @@ impl TrackerClient {
                 action_buf.copy_from_slice(&recv_announce_buf[0..4]);
                 let action = u32::from_be_bytes(action_buf);
                 if action != 1 {
-                    bail!("got announce response from udp tracker but received action was not 1 (i.e.: announce): {}", action);
+                    bail!("got announce response from udp tracker but received action was not 1 (i.e.: announce): {action}");
                 }
 
                 let mut transaction_id_buf = [0u8; 4];
                 transaction_id_buf.copy_from_slice(&recv_announce_buf[4..8]);
                 let recv_transaction_id = u32::from_be_bytes(transaction_id_buf);
                 if recv_transaction_id != transaction_id {
-                    bail!("got announce response from udp tracker but received transaction_id {} was different from the request ({})", recv_transaction_id, transaction_id);
+                    bail!("got announce response from udp tracker but received transaction_id {recv_transaction_id} was different from the request ({transaction_id})");
                 }
 
                 let mut interval_buf = [0u8; 4];

@@ -38,7 +38,7 @@ impl fmt::Display for Message {
                 write!(f, "not interested")
             }
             Message::Have(piece_idx) => {
-                write!(f, "have piece id {}", piece_idx)
+                write!(f, "have piece id {piece_idx}")
             }
             Message::Bitfield(bitfield) => {
                 let total_have = bitfield
@@ -46,43 +46,34 @@ impl fmt::Display for Message {
                     .fold(0, |acc, v| if *v { acc + 1 } else { acc });
                 write!(
                     f,
-                    "bitfield have {} total: {} (bitfield comes in bytes, number of pieces could be less)",
-                    total_have,
+                    "bitfield have {total_have} total: {} (bitfield comes in bytes, number of pieces could be less)",
                     bitfield.len()
                 )
             }
             Message::Request(piece_idx, begin, length) => {
                 write!(
                     f,
-                    "request: piece idx: {}, begin: {}, length: {}",
-                    piece_idx, begin, length
+                    "request: piece idx: {piece_idx}, begin: {begin}, length: {length}"
                 )
             }
             Message::Piece(piece_idx, begin, data) => {
                 write!(
                     f,
-                    "piece: piece idx: {}, begin: {}, data len: {}",
-                    piece_idx,
-                    begin,
+                    "piece: piece idx: {piece_idx}, begin: {begin}, data len: {}",
                     data.len()
                 )
             }
             Message::Cancel(piece_idx, begin, length) => {
                 write!(
                     f,
-                    "cancel: piece idx: {}, begin: {}, length: {}",
-                    piece_idx, begin, length
+                    "cancel: piece idx: {piece_idx}, begin: {begin}, length: {length}",
                 )
             }
             Message::Port(p) => {
-                write!(f, "port {}", p)
+                write!(f, "port {p}")
             }
             Message::Extended(id, value) => {
-                write!(
-                    f,
-                    "extension message: extension id: {}, value: {}",
-                    id, value
-                )
+                write!(f, "extension message: extension id: {id}, value: {value}")
             }
         }
     }

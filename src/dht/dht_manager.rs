@@ -136,11 +136,9 @@ impl MessageSender {
     ) {
         let tid = generate_transaction_id();
         log::trace!(
-            "perform req to {}, depth: {}, tid: {}, msg: {:?}",
+            "perform req to {}, depth: {call_depth}, tid: {}, msg: {msg:?}",
             dest.clone(),
-            call_depth,
             force_string(&tid.to_vec()),
-            msg
         );
         let buf = encode_krpc_message(tid.to_vec(), msg.clone());
         self.inflight_requests.insert(
@@ -155,7 +153,7 @@ impl MessageSender {
         );
         if let Err(e) = socket.send_to(&buf, dest.clone()).await {
             // don't care if we cannot send it, due to routing issues or others (if it was for buffer full, send_to would have blocked)
-            log::debug!("could not send dht message {:?} to {}: {}", msg, dest, e);
+            log::debug!("could not send dht message {msg:?} to {dest}: {e}");
         };
     }
 }
@@ -218,7 +216,7 @@ impl DhtManager {
                 Ok((msg_size, remote_addr)) = socket.recv_from(&mut msg_buf) => {
                     match decode_krpc_message(msg_buf[0..msg_size].to_vec()) {
                         Err(e) => {
-                            log::trace!("error decoding incoming dht message from {}: {}, udp message was: {:?}", remote_addr, e, msg_buf);
+                            log::trace!("error decoding incoming dht message from {remote_addr}: {e}, udp message was: {msg_buf:?}");
                         }
                         Ok((transaction_id, msg)) => {
                             self.handle_incoming_message(remote_addr, &socket, transaction_id, msg, &dht_to_torrent_manager_tx).await;
@@ -238,7 +236,7 @@ impl DhtManager {
                             self.get_peers(&socket, info_hash).await;
                         }
                         ToDhtManagerMsg::NewNode(new_node_addr) => {
-                            log::trace!("got NewNode msg from torrent manager: {}", new_node_addr);
+                            log::trace!("got NewNode msg from torrent manager: {new_node_addr}");
                             // ping new dht node as validation to eventually put it in routing table
                             self.msg_sender.do_req(
                                 &socket,
@@ -249,7 +247,7 @@ impl DhtManager {
                             ).await;
                         }
                         ToDhtManagerMsg::ConnectedToNewPeer(info_hash, new_peer_addr, new_peer_port) => {
-                            log::trace!("got ConnectedToNewPeer msg from torrent manager: {}", new_peer_addr);
+                            log::trace!("got ConnectedToNewPeer msg from torrent manager: {new_peer_addr}");
                             let peer_info = (new_peer_addr, new_peer_port);
                             match self.known_peers.get_mut(&info_hash) {
                                 Some(peers_for_this_info_hash) => {
@@ -429,10 +427,8 @@ impl DhtManager {
         dht_to_torrent_manager_tx: &Sender<DhtToTorrentManagerMsg>,
     ) {
         log::trace!(
-            "got message from {}: tid: {}, msg: {:?}",
-            remote_addr,
+            "got message from {remote_addr}: tid: {}, msg: {msg:?}",
             force_string(&transaction_id),
-            msg
         );
         let remote_port = remote_addr.port();
         let remote_ipv4addr = match remote_addr.ip() {
@@ -485,8 +481,7 @@ impl DhtManager {
                 {
                     Some((_, _, _, Some(info_hash), depth)) => (info_hash, depth),
                     _ => {
-                        log::trace!("got a get_peers or find_node resp from {} for an expired or unknown transaction id ({}) we didn't perform, ignoring it",
-                            remote_addr,
+                        log::trace!("got a get_peers or find_node resp from {remote_addr} for an expired or unknown transaction id ({}) we didn't perform, ignoring it",
                             force_string(&transaction_id.to_vec())
                         );
                         return;
@@ -532,8 +527,7 @@ impl DhtManager {
                     return;
                 }
                 log::trace!(
-                    "got a get_peers or find_node resp from {} for a request ({}) we do not have track of, maybe it expired, ignoring it",
-                    remote_addr,
+                    "got a get_peers or find_node resp from {remote_addr} for a request ({}) we do not have track of, maybe it expired, ignoring it",
                     force_string(&original_request_id.to_vec())
                 );
             }
@@ -559,7 +553,11 @@ impl DhtManager {
             }
 
             KRPCMessage::Error(error_type, msg) => {
-                if !self.msg_sender.inflight_requests.contains_key(&transaction_id) {
+                if !self
+                    .msg_sender
+                    .inflight_requests
+                    .contains_key(&transaction_id)
+                {
                     log::trace!("got a error resp from {} for an unknown or expired transaction id ({}) we didn't perform, ignoring it",
                         remote_addr, force_string(&transaction_id.to_vec())
                     );
@@ -824,7 +822,7 @@ impl DhtManager {
         let token_u8_20: [u8; 20] = match token.try_into() {
             Ok(t) => t,
             Err(_) => {
-                log::trace!("got an announce_peer from {} with a token that is not 20b as expected, refusing it", source_req_addr_port);
+                log::trace!("got an announce_peer from {source_req_addr_port} with a token that is not 20b as expected, refusing it");
                 self.msg_sender
                     .do_req(
                         &socket,
@@ -848,8 +846,7 @@ impl DhtManager {
             .unwrap();
         if expected_token != token_u8_20 {
             log::trace!(
-        "got an announce_peer from {} with a token ({}) that is not what we expected ({}), refusing it",
-        source_req_addr_port,
+        "got an announce_peer from {source_req_addr_port} with a token ({}) that is not what we expected ({}), refusing it",
         force_string(&token_u8_20.to_vec()),
         force_string(&expected_token.to_vec())
     );
@@ -900,8 +897,12 @@ impl DhtManager {
         transaction_id: Vec<u8>,
         queried_node_id: [u8; 20],
     ) {
-        if !self.msg_sender.inflight_requests.contains_key(&transaction_id) {
-            log::trace!("got a ping or announce_peer resp from {}:{} for an expired or unknown transaction id ({}) we didn't perform, ignoring it", remote_ipv4addr, remote_port, force_string(&transaction_id.to_vec()));
+        if !self
+            .msg_sender
+            .inflight_requests
+            .contains_key(&transaction_id)
+        {
+            log::trace!("got a ping or announce_peer resp from {remote_ipv4addr}:{remote_port} for an expired or unknown transaction id ({}) we didn't perform, ignoring it", force_string(&transaction_id.to_vec()));
             return;
         }
         self.msg_sender.inflight_requests.remove(&transaction_id);

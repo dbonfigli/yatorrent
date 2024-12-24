@@ -182,7 +182,7 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
 pub fn decode_krpc_message(data: Vec<u8>) -> Result<(Vec<u8> /* transaction id */, KRPCMessage)> {
     let transaction_id;
     let bencoded_data = Value::new(&data);
-    log::trace!("decoding krpc message: {}", bencoded_data);
+    log::trace!("decoding krpc message: {bencoded_data}");
     match bencoded_data {
         Value::Error(e) => bail!(e),
         Value::Str(_) | Value::Int(_) | Value::List(_) => {

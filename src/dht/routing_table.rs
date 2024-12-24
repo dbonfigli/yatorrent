@@ -63,11 +63,7 @@ pub fn biguint_to_u8_20(n: &BigUint) -> [u8; 20] {
     }
 
     return vec.try_into().expect(
-        format!(
-            "could not convert biguint to [u8; 20] number is more than 20 bytes: {}",
-            n
-        )
-        .as_str(),
+        format!("could not convert biguint to [u8; 20] number is more than 20 bytes: {n}").as_str(),
     );
 }
 

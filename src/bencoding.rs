@@ -52,13 +52,13 @@ impl fmt::Display for Value {
             Value::Str(s) => {
                 write!(f, "{}", force_string(s))
             }
-            Value::Int(i) => write!(f, "{}", i),
+            Value::Int(i) => write!(f, "{i}"),
             Value::List(l) => {
                 write!(
                     f,
                     "[{}]",
                     l.iter()
-                        .map(|i| format!("{}", i))
+                        .map(|i| format!("{i}"))
                         .collect::<Vec<String>>()
                         .join(", ")
                 )

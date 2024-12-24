@@ -125,7 +125,7 @@ impl Peer {
         self.last_pex_message_sent = SystemTime::now();
         if h.len() > 0 {
             let pex_msg = Message::Extended(self.ut_pex_id, Value::Dict(h, 0, 0));
-            log::trace!("sending pex message to peer {}: {}", peer_addr, pex_msg);
+            log::trace!("sending pex message to peer {peer_addr}: {pex_msg}");
             self.send(ToPeerMsg::Send(pex_msg)).await;
         }
     }
@@ -308,7 +308,7 @@ impl TorrentManager {
                 Some(DhtToTorrentManagerMsg::NewPeer(ip, port)) = dht_to_torrent_manager_rx.recv() => {
                     let p = tracker::Peer{peer_id: None, ip: ip.to_string(), port: port};
                     let mut advertised_peers_mg = self.advertised_peers.lock().unwrap();
-                    advertised_peers_mg.insert(format!("{}:{}", ip, port), (p, SystemTime::UNIX_EPOCH));
+                    advertised_peers_mg.insert(format!("{ip}:{port}"), (p, SystemTime::UNIX_EPOCH));
                     drop(advertised_peers_mg);
                 }
                 else => break,
@@ -324,7 +324,7 @@ impl TorrentManager {
         peers_to_torrent_manager_channel_capacity: usize,
         to_dht_manager_tx: Sender<ToDhtManagerMsg>,
     ) {
-        log::trace!("received message from peer {}: {}", peer_addr, msg);
+        log::trace!("received message from peer {peer_addr}: {msg}");
         let now = SystemTime::now();
 
         match msg {
@@ -346,8 +346,13 @@ impl TorrentManager {
                     peer.peer_interested = false;
                 }
             }
-            Message::Have(piece_idx) => self.handle_receive_have_message(peer_addr, piece_idx).await,
-            Message::Bitfield(bitfield) => self.handle_receive_bitfield_message(peer_addr, bitfield).await,
+            Message::Have(piece_idx) => {
+                self.handle_receive_have_message(peer_addr, piece_idx).await
+            }
+            Message::Bitfield(bitfield) => {
+                self.handle_receive_bitfield_message(peer_addr, bitfield)
+                    .await
+            }
             Message::Request(piece_idx, begin, lenght) => {
                 self.handle_receive_request_message(
                     peer_addr,
@@ -372,7 +377,7 @@ impl TorrentManager {
                 if let Some(peer) = self.peers.get_mut(&peer_addr) {
                     // we try to let the peer message handler know about the cancellation,
                     // but it the buffer is full, we don't care, it means there were no outstunding messages to be sent
-                    // and so the cancellation would have not effect
+                    // and so the cancellation would have no effect
                     let _ = peer
                         .to_peer_cancel_tx
                         .try_send((piece_idx, begin, lenght, now));
@@ -412,21 +417,19 @@ impl TorrentManager {
                 peer.send(ToPeerMsg::Send(Message::Interested)).await;
             }
         } else {
-            log::warn!(
-                "got message \"have\" {} from peer {} but the torrent have only {} pieces",
-                piece_idx,
-                peer_addr,
-                pieces
-            );
+            log::warn!("got message \"have\" {piece_idx} from peer {peer_addr} but the torrent have only {pieces} pieces");
             // todo: close connection with this bad peer
         }
     }
 
-    async fn handle_receive_bitfield_message(&mut self, peer_addr: String, bitfield: Box<Vec<bool>>) {
+    async fn handle_receive_bitfield_message(
+        &mut self,
+        peer_addr: String,
+        bitfield: Box<Vec<bool>>,
+    ) {
         if bitfield.len() < self.file_manager.num_pieces() {
             log::warn!(
-                "received wrongly sized bitfield from peer {}: received {} bits but expected {}",
-                peer_addr,
+                "received wrongly sized bitfield from peer {peer_addr}: received {} bits but expected {}",
                 bitfield.len(),
                 self.file_manager.num_pieces()
             );
@@ -449,8 +452,7 @@ impl TorrentManager {
             }
 
             log::trace!(
-                "received bitfield from peer {}: it has {}/{} pieces",
-                peer_addr,
+                "received bitfield from peer {peer_addr}: it has {}/{} pieces",
                 peer.haves
                     .iter()
                     .fold(0, |acc, v| if *v { acc + 1 } else { acc }),
@@ -467,8 +469,7 @@ impl TorrentManager {
         };
 
         log::debug!(
-            "received choked from peer {} with {} outstandig requests",
-            peer_addr,
+            "received choked from peer {peer_addr} with {} outstandig requests",
             peer.outstanding_block_requests.len()
         );
         peer.peer_choking = true;
@@ -509,7 +510,7 @@ impl TorrentManager {
                     lenght as u64,
                 ) {
                     Err(e) => {
-                        log::error!("error reading block: {}", e);
+                        log::error!("error reading block: {e}");
                     }
 
                     Ok(data) => {
@@ -526,7 +527,12 @@ impl TorrentManager {
         }
     }
 
-    async fn handle_receive_extended_message(&mut self, peer_addr: String, extension_id: u8, value: Value) {
+    async fn handle_receive_extended_message(
+        &mut self,
+        peer_addr: String,
+        extension_id: u8,
+        value: Value,
+    ) {
         let other_active_peers = self
             .peers
             .keys()
@@ -575,10 +581,7 @@ impl TorrentManager {
                             peer_port_buf.copy_from_slice(&compact_contacts_info[i + 4..i + 6]);
                             let port = u16::from_be_bytes(peer_port_buf);
                             log::debug!(
-                                "adding peer advertised by {} from PEX: {}:{}",
-                                peer_addr,
-                                ip,
-                                port
+                                "adding peer advertised by {peer_addr} from PEX: {ip}:{port}"
                             );
                             let p = tracker::Peer {
                                 peer_id: None,
@@ -594,7 +597,7 @@ impl TorrentManager {
                 }
             }
         } else {
-            log::debug!("got an extension message from {} but id was not recognized as an extension we registered: {}", peer_addr, extension_id);
+            log::debug!("got an extension message from {peer_addr} but id was not recognized as an extension we registered: {extension_id}");
         }
     }
 
@@ -664,7 +667,7 @@ impl TorrentManager {
                 // todo: maybe re-compute assignations immediately here instead of waiting tick
             }
             Err(e) => {
-                log::error!("cannot write block: {}", e);
+                log::error!("cannot write block: {e}");
             }
         }
     }
@@ -675,7 +678,7 @@ impl TorrentManager {
         error_type: PeerError,
         ok_to_accept_connection_tx: Sender<bool>,
     ) {
-        log::debug!("removing errored peer {}", peer_addr);
+        log::debug!("removing errored peer {peer_addr}");
         self.added_dropped_peer_events.push((
             SystemTime::now(),
             peer_addr.clone(),
@@ -864,7 +867,7 @@ impl TorrentManager {
                     if now.duration_since(*req_time).unwrap() < self.request_timeout {
                         return true;
                     } else {
-                        log::debug!("removed stale request to peer: {}: (piece idx: {}, block begin: {}, lenght: {})", peer_addr, piece_idx, block_begin, data_len);
+                        log::debug!("removed stale request to peer: {peer_addr}: (piece idx: {piece_idx}, block begin: {block_begin}, lenght: {data_len})");
                         peer.requested_pieces.remove(&(*piece_idx as usize));
                         self.outstanding_piece_assigments.remove(&(*piece_idx as usize));
                         return false;
@@ -882,15 +885,11 @@ impl TorrentManager {
                     peer.send_requests_for_piece(*piece_idx, incomplete_piece.clone())
                         .await;
                 } else {
-                    log::warn!(
-                        "could not find requested piece {} for peer {}, this should never happen",
-                        piece_idx,
-                        peer_addr
-                    );
+                    log::warn!("could not find requested piece {piece_idx} for peer {peer_addr}, this should never happen");
                     piece_idx_to_remove.push(*piece_idx);
                 }
             } else {
-                log::warn!("could not find a peer for outstanding piece assigment (piece_idx: {}, peer_addr: {}), this should never happen", piece_idx, peer_addr);
+                log::warn!("could not find a peer for outstanding piece assigment (piece_idx: {piece_idx}, peer_addr: {peer_addr}), this should never happen");
                 piece_idx_to_remove.push(*piece_idx);
             }
         }
@@ -987,8 +986,7 @@ impl TorrentManager {
             }
             Err(e) => {
                 log::trace!(
-                    "new peer initialization failed because we could not get peer_addr: {}",
-                    e
+                    "new peer initialization failed because we could not get peer_addr: {e}"
                 );
                 return;
             }
@@ -1011,7 +1009,7 @@ impl TorrentManager {
                 should_choke(peers_to_torrent_manager_tx.capacity()),
             ),
         );
-        log::debug!("new peer initialized: {}", peer_addr);
+        log::debug!("new peer initialized: {peer_addr}");
         self.added_dropped_peer_events
             .push((SystemTime::now(), peer_addr, PexEvent::Added));
         if self.peers.len() > CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS {
@@ -1038,22 +1036,21 @@ impl TorrentManager {
         self.downloaded_bytes_previous_poll = self.downloaded_bytes;
         self.last_bandwidth_poll = now;
         log::info!(
-            "left: {}, pieces: {}/{} | Up: {}/s, Down: {}/s (tot.: {}, {}), wasted: {} | peers known: {} (bad: {}), connected: {}, unchoked: {} | pending peers_to_torrent_manager msgs: {}/{}",
-            Size::from_bytes(self.file_manager.bytes_left()),
-            self.file_manager.completed_pieces(),
-            self.file_manager.num_pieces(),
-            Size::from_bytes(bandwidth_up).format().with_style(Style::Abbreviated),
-            Size::from_bytes(bandwidth_down).format().with_style(Style::Abbreviated),
-            Size::from_bytes(self.uploaded_bytes).format().with_style(Style::Abbreviated),
-            Size::from_bytes(self.downloaded_bytes).format().with_style(Style::Abbreviated),
-            Size::from_bytes(self.file_manager.wasted_bytes).format().with_style(Style::Abbreviated),
-            advertised_peers_len,
-            self.bad_peers.len(),
-            self.peers.len(),
-            self.peers.iter()
-            .fold(0, |acc, (_,p)| if !p.peer_choking { acc + 1 } else { acc }),
-            PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY - peers_to_torrent_manager_channel_capacity,
-            PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY,
+            "left: {left}, pieces: {completed_pieces}/{total_pieces} | Up: {up_band}/s, Down: {down_band}/s (tot.: {tot_up}, {tot_down}), wasted: {wasted} | known peers: {known_peers} (bad: {bad_peers}), connected: {connected_peers}, unchoked: {unchoked_peers} | pending peers_to_torrent_manager msgs: {cur_ch_cap}/{tot_ch_cap}",
+            left=Size::from_bytes(self.file_manager.bytes_left()),
+            completed_pieces=self.file_manager.completed_pieces(),
+            total_pieces=self.file_manager.num_pieces(),
+            up_band=Size::from_bytes(bandwidth_up).format().with_style(Style::Abbreviated),
+            down_band=Size::from_bytes(bandwidth_down).format().with_style(Style::Abbreviated),
+            tot_up=Size::from_bytes(self.uploaded_bytes).format().with_style(Style::Abbreviated),
+            tot_down=Size::from_bytes(self.downloaded_bytes).format().with_style(Style::Abbreviated),
+            wasted=Size::from_bytes(self.file_manager.wasted_bytes).format().with_style(Style::Abbreviated),
+            known_peers=advertised_peers_len,
+            bad_peers=self.bad_peers.len(),
+            connected_peers=self.peers.len(),
+            unchoked_peers=self.peers.iter().fold(0, |acc, (_,p)| if !p.peer_choking { acc + 1 } else { acc }),
+            cur_ch_cap=PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY - peers_to_torrent_manager_channel_capacity,
+            tot_ch_cap=PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY,
         );
     }
 }
@@ -1085,16 +1082,16 @@ async fn request_to_tracker(
         .await
     {
         Err(e) => {
-            log::error!("could not perform request to tracker: {}", e);
+            log::error!("could not perform request to tracker: {e}");
             bail!(e);
         }
         Ok(Response::Failure(msg)) => {
-            log::error!("tracker responded with failure: {}", msg);
+            log::error!("tracker responded with failure: {msg}");
             bail!(msg);
         }
         Ok(Response::Ok(ok_response)) => {
             if let Some(msg) = ok_response.warning_message.clone() {
-                log::error!("tracker sent a warning: {}", msg);
+                log::error!("tracker sent a warning: {msg}");
             }
             log::info!(
                 "tracker request succeeded: seeders: {}; leechers: {}; peers provided: {}",
