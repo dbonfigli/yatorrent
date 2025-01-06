@@ -12,6 +12,7 @@ use torrent_manager::TorrentManager;
 
 mod bencoding;
 mod dht;
+mod magnet;
 mod manager;
 mod metainfo;
 mod persistence;
@@ -124,6 +125,18 @@ async fn main() -> Result<()> {
             }
         }
     } else if let Some(magnet_uri) = args.magnet_uri {
+        match magnet::Magnet::new(magnet_uri) {
+            Ok(m) => {
+                // TorrentManager::new(base_path, args.port, args.dht_port, m)
+                //     .start()
+                //     .await;
+                exit(0);
+            }
+            Err(e) => {
+                log::error!("Could not parse magnet link: {e}");
+                exit(1)
+            }
+        }
     }
 
     log::error!("A magnet link or .torrent file must be provided.");
