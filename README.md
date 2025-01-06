@@ -26,11 +26,12 @@ $ yatorrent -t <path to torrent file>
 All command line arguments (show them with the `--help`), also definible via environment variables:
 
 ```
-Usage: yatorrent [OPTIONS] --torrent-file <TORRENT_FILE>
+Usage: yatorrent [OPTIONS]
 
 Options:
-  -t, --torrent-file <TORRENT_FILE>  Path to the .torrent file [env: TORRENT_FILE=]
-  -b, --base-path <BASE_PATH>        Optional base path where files are downloaded (directory will be created if it does not exist) [env: BASE_PATH=] [default: <current directory>]
+  -t, --torrent-file <TORRENT_FILE>  Path to the .torrent file (optional, either this or a magnet link must be provided) [env: TORRENT_FILE=]
+  -m, --magnet-uri <MAGNET_URI>      Magnet Link URI (optional, either this or a torrent file must be provided) [env: MAGNET_URI=]
+  -b, --base-path <BASE_PATH>        Optional base path where files are downloaded (directory will be created if it does not exist) [env: BASE_PATH=] [default: /Users/diego/repo/yatorrent]
   -p, --port <PORT>                  Optional listening port [env: PORT=] [default: 8000]
   -d, --dht-port <DHT_PORT>          Optional listening port for DHT protocol [env: DHT_PORT=] [default: 8001]
   -l, --log-level <LOG_LEVEL>        Optional log level [env: LOG_LEVEL=] [default: info] [possible values: trace, debug, info, warn, error]

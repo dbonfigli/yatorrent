@@ -26,11 +26,15 @@ extern crate assert_matches;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    /// Path to the .torrent file
+    /// Path to the .torrent file (optional, either this or a magnet link must be provided)
     #[arg(short, long, env)]
-    torrent_file: String,
+    torrent_file: Option<String>,
 
-    /// Optional base path where files are stored (directory will be created if it does not exist)
+    /// Magnet Link URI (optional, either this or a torrent file must be provided)
+    #[arg(short, long, env)]
+    magnet_uri: Option<String>,
+
+    /// Optional base path where files are downloaded (directory will be created if it does not exist)
     #[arg(short, long, env, default_value_t = current_dir().unwrap().to_str().expect("current path must be an utf8 string").to_string())]
     base_path: String,
 
@@ -87,35 +91,41 @@ async fn main() -> Result<()> {
     }
 
     // read torrent file and start manager
-    let contents = match fs::read(args.torrent_file.clone()) {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("could not read .torrent file {}: {e}", args.torrent_file);
-            exit(1);
-        }
-    };
-    let torrent_content = bencoding::Value::new(&contents);
-    let metainfo = metainfo::Metainfo::new(&torrent_content, &contents);
-    match metainfo {
-        Ok(m) => {
-            log::info!("torrent file metainfo:\n{m}");
-            if m.announce_list.len() == 0 {
-                if m.url_list.len() != 0 {
-                    log::warn!("The .torrent file contains a \"url-list\" field, this means the torrent can be dowloaded via HTTP/FTP http://www.bittorrent.org/beps/bep_0019.html), this is not supported by this client");
+    if let Some(torrent_file) = args.torrent_file {
+        let contents = match fs::read(&torrent_file) {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("could not read .torrent file {}: {e}", torrent_file);
+                exit(1);
+            }
+        };
+        let torrent_content = bencoding::Value::new(&contents);
+        let metainfo = metainfo::Metainfo::new(&torrent_content, &contents);
+        match metainfo {
+            Ok(m) => {
+                log::info!("torrent file metainfo:\n{m}");
+                if m.announce_list.len() == 0 {
+                    if m.url_list.len() != 0 {
+                        log::warn!("The .torrent file contains a \"url-list\" field, this means the torrent can be dowloaded via HTTP/FTP http://www.bittorrent.org/beps/bep_0019.html), this is not supported by this client");
+                    }
+                    log::warn!("The .torrent file does not contain valid announces (\"announce-list\" or \"announce\" fields): this is a trackless torrent relying only on DHT");
                 }
-                log::warn!("The .torrent file does not contain valid announces (\"announce-list\" or \"announce\" fields): this is a trackless torrent relying only on DHT");
+                if m.nodes.len() != 0 {
+                    log::info!("The .torrent file contains a \"nodes\" field, the torrent is announcing also via specific DHT nodes");
+                }
+                TorrentManager::new(base_path, args.port, args.dht_port, m)
+                    .start()
+                    .await;
+                exit(0);
             }
-            if m.nodes.len() != 0 {
-                log::info!("The .torrent file contains a \"nodes\" field, the torrent is announcing also via specific DHT nodes");
+            Err(e) => {
+                log::error!("The .torrent file is invalid: could not parse metainfo: {e}");
+                exit(1)
             }
-            TorrentManager::new(base_path, args.port, args.dht_port, m)
-                .start()
-                .await;
-            exit(0);
         }
-        Err(e) => {
-            log::error!("The .torrent file is invalid: could not parse metainfo: {e}");
-            exit(1)
-        }
+    } else if let Some(magnet_uri) = args.magnet_uri {
     }
+
+    log::error!("A magnet link or .torrent file must be provided.");
+    exit(1);
 }
