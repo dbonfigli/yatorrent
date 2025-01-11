@@ -285,7 +285,7 @@ async fn handshake(
     // send bitfield
     if let Some(pcs) = piece_completion_status {
         write
-            .send(Message::Bitfield(Box::from(pcs))) // todo box is useless here
+            .send(Message::Bitfield(pcs))
             .await?;
         log::trace!("bitfield sent to peer {peer_addr}");
     }

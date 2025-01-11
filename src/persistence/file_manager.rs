@@ -240,7 +240,7 @@ impl FileManager {
         piece_idx: usize,
         block_begin: u64,
         block_length: u64,
-    ) -> Result<Box<Vec<u8>>> {
+    ) -> Result<Vec<u8>> {
         return self.read_piece_block_with_have_piece_check(
             piece_idx,
             block_begin,
@@ -255,7 +255,7 @@ impl FileManager {
         block_begin: u64,
         block_length: u64,
         check_if_have_piece: bool,
-    ) -> Result<Box<Vec<u8>>> {
+    ) -> Result<Vec<u8>> {
         if piece_idx >= self.piece_to_files.len() {
             bail!(
                 "requested to read piece idx {piece_idx} that is not in range (total pieces: {})",
@@ -269,7 +269,7 @@ impl FileManager {
         if check_if_have_piece && !self.piece_completion_status[piece_idx] {
             bail!("requested to read piece idx {piece_idx} that we don't have");
         }
-        let mut block_buf = Box::new(Vec::<u8>::new());
+        let mut block_buf = Vec::<u8>::new();
         let mut current_piece_offset = 0;
         let mut block_bytes_still_to_read = block_length;
         for (file_path, start, end) in self.piece_to_files[piece_idx].iter() {
@@ -311,7 +311,7 @@ impl FileManager {
     pub fn write_piece_block(
         &mut self,
         piece_idx: usize,
-        data: Box<Vec<u8>>,
+        data: Vec<u8>,
         block_begin: u64, // position in the piece where to start writing data
     ) -> Result<bool> {
         // if ok, return if piece is completed / not completed

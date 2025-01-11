@@ -265,7 +265,7 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
             // bitfield
             5 => {
                 let bitfield_byte_size: usize = (size_message - 1).try_into()?;
-                let mut buf = Box::new(vec![0; bitfield_byte_size]);
+                let mut buf = vec![0; bitfield_byte_size];
                 if let Err(e) = self.read_exact(&mut buf).await {
                     return Err(e.into());
                 }
@@ -303,7 +303,7 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                     return Err(e.into());
                 }
                 let block_size: usize = (size_message - 9).try_into()?;
-                let mut block_buf = Box::new(vec![0; block_size]);
+                let mut block_buf = vec![0; block_size];
                 if let Err(e) = self.read_exact(&mut block_buf).await {
                     return Err(e.into());
                 }
@@ -349,7 +349,7 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                 }
                 let extended_message_id = buf[0]; // i.e. id of the extension. 0 means this message is an extension handshake
                 let payload_extended_message_size: usize = (size_message - 2).try_into()?;
-                let mut buf = Box::new(vec![0; payload_extended_message_size]);
+                let mut buf = vec![0; payload_extended_message_size];
                 if let Err(e) = self.read_exact(&mut buf).await {
                     return Err(e.into());
                 }
@@ -366,8 +366,8 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
     }
 }
 
-fn decode_bitfield(buf: Box<Vec<u8>>) -> Box<Vec<bool>> {
-    let mut bitfield = Box::new(vec![false; buf.len() * 8]);
+fn decode_bitfield(buf: Vec<u8>) -> Vec<bool> {
+    let mut bitfield = vec![false; buf.len() * 8];
     for i in 0..buf.len() {
         let mut mask: u8 = 0b10000000;
         for j in 0..8 {
@@ -378,7 +378,7 @@ fn decode_bitfield(buf: Box<Vec<u8>>) -> Box<Vec<bool>> {
     bitfield
 }
 
-fn encode_bitfield(bitfield: Box<Vec<bool>>) -> Vec<u8> {
+fn encode_bitfield(bitfield: Vec<bool>) -> Vec<u8> {
     let bitfield_bytes = (bitfield.len() / 8) + if bitfield.len() % 8 != 0 { 1 } else { 0 };
     let mut buf = vec![0; 5 + bitfield_bytes];
     let bitfield_bytes_u32: u32 = bitfield_bytes.try_into().unwrap();
@@ -408,7 +408,7 @@ mod tests {
 
     #[test]
     fn decode_bitfield_test() {
-        let buf = Box::new(vec![0b10000001, 0b00001100]);
+        let buf = vec![0b10000001, 0b00001100];
         let bitfield = decode_bitfield(buf);
         assert_eq!(
             *bitfield,
@@ -421,10 +421,10 @@ mod tests {
 
     #[test]
     fn encode_bitfield_test_1() {
-        let bitfield = Box::new(vec![
+        let bitfield = vec![
             true, false, false, false, false, false, false, true, // byte 1
             false, false, false, false, true, true, // byte 2, only 6 bits
-        ]);
+        ];
         let buf = encode_bitfield(bitfield);
         assert_eq!(
             buf,
@@ -438,10 +438,10 @@ mod tests {
 
     #[test]
     fn encode_bitfield_test_2() {
-        let bitfield = Box::new(vec![
+        let bitfield = vec![
             true, false, false, false, false, false, false, true, // byte 1
             false, false, false, false, true, true, false, true, // byte 2
-        ]);
+        ];
         let buf = encode_bitfield(bitfield);
         assert_eq!(
             buf,
@@ -455,9 +455,9 @@ mod tests {
 
     #[test]
     fn encode_bitfield_test_3() {
-        let bitfield = Box::new(vec![
+        let bitfield = vec![
             false, true, // byte 1
-        ]);
+        ];
         let buf = encode_bitfield(bitfield);
         assert_eq!(
             buf,

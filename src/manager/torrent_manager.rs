@@ -442,7 +442,7 @@ impl TorrentManager {
     async fn handle_receive_bitfield_message(
         &mut self,
         peer_addr: String,
-        bitfield: Box<Vec<bool>>,
+        bitfield: Vec<bool>,
     ) {
         let file_manager = match &mut self.file_manager {
             Some(file_manager) => file_manager,
@@ -637,7 +637,7 @@ impl TorrentManager {
         peer_addr: String,
         piece_idx: u32,
         begin: u32,
-        data: Box<Vec<u8>>,
+        data: Vec<u8>,
         piece_completion_status_tx: Sender<Vec<bool>>,
     ) {
         if self.file_manager.is_none() {

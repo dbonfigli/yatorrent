@@ -10,13 +10,13 @@ pub enum Message {
     Unchoke,
     Interested,
     NotInterested,
-    Have(u32),                     // piece index
-    Bitfield(Box<Vec<bool>>),      // the high bit in the first byte corresponds to piece index 0
-    Request(u32, u32, u32),        // index, begin, length
-    Piece(u32, u32, Box<Vec<u8>>), // index, begin, block of data
-    Cancel(u32, u32, u32),         // index, begin, length
-    Port(u16),                     // port number
-    Extended(u8, Value),           // Extension Protocol id, bencoded message
+    Have(u32),                // piece index
+    Bitfield(Vec<bool>),      // the high bit in the first byte corresponds to piece index 0
+    Request(u32, u32, u32),   // index, begin, length
+    Piece(u32, u32, Vec<u8>), // index, begin, block of data
+    Cancel(u32, u32, u32),    // index, begin, length
+    Port(u16),                // port number
+    Extended(u8, Value),      // Extension Protocol id, bencoded message
 }
 
 impl fmt::Display for Message {
