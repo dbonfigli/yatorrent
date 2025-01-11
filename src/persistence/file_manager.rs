@@ -134,7 +134,7 @@ impl FileManager {
         // initialize piece_completion_status
         let piece_completion_status = vec![false; piece_hashes.len()];
 
-        FileManager {
+        let mut file_manager = FileManager {
             file_list: fm_file_list,
             piece_hashes,
             piece_to_files,
@@ -142,14 +142,20 @@ impl FileManager {
             file_handles: FileHandles::new(),
             incomplete_pieces: HashMap::new(),
             wasted_bytes: 0,
-        }
+        };
+
+        file_manager.refresh_completed_pieces();
+        file_manager.refresh_completed_files();
+        file_manager.log_file_completion_stats();
+
+        file_manager
     }
 
     pub fn refresh_completed_pieces(&mut self) {
         log::info!("checking pieces already downloaded...");
         for idx in 0..self.piece_hashes.len() {
             // print progress
-            if idx % (self.piece_to_files.len() / 10) == 0 {
+            if idx % (std::cmp::max(10, self.piece_to_files.len()) / 10) == 0 {
                 log::info!(
                     "{:>3}%...",
                     f64::round((idx as f64 * 100.0) / self.piece_to_files.len() as f64)

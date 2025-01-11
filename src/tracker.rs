@@ -115,7 +115,7 @@ impl TrackerClient {
         info_hash: [u8; 20],
         uploaded: u64,
         downloaded: u64,
-        left: u64,
+        left: Option<u64>,
         event: Event,
     ) -> Result<Response> {
         let mut error_message = Vec::new();
@@ -128,7 +128,7 @@ impl TrackerClient {
                         info_hash,
                         uploaded,
                         downloaded,
-                        left,
+                        left.clone(),
                         event.clone(),
                     )
                     .await
@@ -179,7 +179,7 @@ impl TrackerClient {
         info_hash: [u8; 20],
         uploaded: u64,
         downloaded: u64,
-        left: u64,
+        left: Option<u64>,
         event: Event,
     ) -> Result<Response> {
         if url.starts_with("http") {
@@ -228,7 +228,7 @@ impl TrackerClient {
         info_hash: [u8; 20],
         uploaded: u64,
         downloaded: u64,
-        left: u64,
+        left: Option<u64>,
         event: Event,
     ) -> Result<Response> {
         let mut url = reqwest::Url::parse_with_params(
@@ -239,12 +239,15 @@ impl TrackerClient {
                 ("port", self.listening_port.to_string()),
                 ("uploaded", uploaded.to_string()),
                 ("downloaded", downloaded.to_string()),
-                ("left", left.to_string()),
                 ("compact", COMPACT.to_string()),
                 ("event", event.to_string()),
                 ("numwant", "50".to_string()),
             ],
         )?;
+
+        if let Some(left) = left {
+            url.set_query(Some(&("left=".to_string() + &left.to_string())));
+        }
 
         // we need this so to avoid reqwest to urlencode again info_hash - binary array cannot be natively url encoded by it
         if let Some(query) = url.query() {
@@ -352,7 +355,7 @@ impl TrackerClient {
         info_hash: [u8; 20],
         uploaded: u64,
         downloaded: u64,
-        left: u64,
+        left: Option<u64>,
         event: Event,
     ) -> Result<Response> {
         let url = reqwest::Url::parse(&url)?;
@@ -420,7 +423,7 @@ impl TrackerClient {
         announce_buf[16..36].copy_from_slice(&info_hash);
         announce_buf[36..56].copy_from_slice(self.peer_id.as_bytes());
         announce_buf[56..64].copy_from_slice(&downloaded.to_be_bytes());
-        announce_buf[64..72].copy_from_slice(&left.to_be_bytes());
+        announce_buf[64..72].copy_from_slice(&left.unwrap_or_default().to_be_bytes()); // BEP 0015 does not specify what to do if left is not provided, so we use 0
         announce_buf[72..80].copy_from_slice(&uploaded.to_be_bytes());
         let event_id: u32 = match event {
             Event::None => 0,

@@ -46,7 +46,7 @@ pub async fn connect_to_new_peer(
     info_hash: [u8; 20],
     own_peer_id: String,
     tcp_wire_protocol_listening_port: u16,
-    piece_completion_status: Vec<bool>,
+    piece_completion_status: Option<Vec<bool>>,
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
 ) {
     let dest = format!("{host}:{port}");
@@ -93,7 +93,7 @@ pub async fn connect_to_new_peer(
                     info_hash.clone(),
                     own_peer_id.clone(),
                     tcp_wire_protocol_listening_port,
-                    Box::from(piece_completion_status),
+                    piece_completion_status,
                 ),
             )
             .await
@@ -130,7 +130,7 @@ pub async fn run_new_incoming_peers_handler(
     info_hash: [u8; 20],
     own_peer_id: String,
     tcp_wire_protocol_listening_port: u16,
-    piece_completion_status: Vec<bool>,
+    piece_completion_status: Option<Vec<bool>>,
     mut ok_to_accept_connection_rx: Receiver<bool>,
     mut piece_completion_status_rx: Receiver<Vec<bool>>,
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
@@ -147,7 +147,7 @@ pub async fn run_new_incoming_peers_handler(
         }
     });
 
-    let piece_completion_status_for_rcv: Arc<Mutex<Vec<bool>>> =
+    let piece_completion_status_for_rcv: Arc<Mutex<Option<Vec<bool>>>> =
         Arc::new(Mutex::new(piece_completion_status));
     let piece_completion_status = piece_completion_status_for_rcv.clone();
     tokio::spawn(async move {
@@ -155,7 +155,7 @@ pub async fn run_new_incoming_peers_handler(
             log::trace!("got message to update piece_completion_status");
             let mut piece_completion_status_for_rcv_lock =
                 piece_completion_status_for_rcv.lock().await;
-            *piece_completion_status_for_rcv_lock = msg;
+            *piece_completion_status_for_rcv_lock = Some(msg);
             drop(piece_completion_status_for_rcv_lock);
         }
     });
@@ -196,7 +196,7 @@ pub async fn run_new_incoming_peers_handler(
                         info_hash,
                         own_peer_id_for_spawn,
                         tcp_wire_protocol_listening_port,
-                        Box::from(pcs),
+                        pcs,
                     ),
                 )
                 .await
@@ -261,7 +261,7 @@ async fn handshake(
     info_hash: [u8; 20],
     own_peer_id: String,
     tcp_wire_protocol_listening_port: u16,
-    piece_completion_status: Box<Vec<bool>>,
+    piece_completion_status: Option<Vec<bool>>,
 ) -> Result<TcpStream> {
     let (peer_protocol, reserved, peer_info_hash, peer_id) = stream
         .handshake(info_hash, own_peer_id.as_bytes().try_into()?)
@@ -279,13 +279,16 @@ async fn handshake(
         bail!("own and their infohash did not match");
     }
 
-    // send bitfield
     let peer_addr = addr_or_unknown(&stream);
     let (read, mut write) = tokio::io::split(stream);
-    write
-        .send(Message::Bitfield(piece_completion_status))
-        .await?;
-    log::trace!("bitfield sent to peer {peer_addr}");
+
+    // send bitfield
+    if let Some(pcs) = piece_completion_status {
+        write
+            .send(Message::Bitfield(Box::from(pcs))) // todo box is useless here
+            .await?;
+        log::trace!("bitfield sent to peer {peer_addr}");
+    }
 
     // if peer supports DHT, send port
     if reserved[7] & 1u8 != 0 {

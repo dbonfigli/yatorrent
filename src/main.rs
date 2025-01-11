@@ -114,9 +114,18 @@ async fn main() -> Result<()> {
                 if m.nodes.len() != 0 {
                     log::info!("The .torrent file contains a \"nodes\" field, the torrent is announcing also via specific DHT nodes");
                 }
-                TorrentManager::new(base_path, args.port, args.dht_port, m)
-                    .start()
-                    .await;
+                TorrentManager::new(
+                    m.info_hash,
+                    base_path,
+                    args.port,
+                    m.announce_list.clone(),
+                    Some((m.get_files(), m.piece_length as u64, m.pieces)),
+                    // dht data
+                    args.dht_port,
+                    m.nodes,
+                )
+                .start()
+                .await;
                 exit(0);
             }
             Err(e) => {
@@ -126,7 +135,7 @@ async fn main() -> Result<()> {
         }
     } else if let Some(magnet_uri) = args.magnet_uri {
         match magnet::Magnet::new(magnet_uri) {
-            Ok(m) => {
+            Ok(_m) => {
                 // TorrentManager::new(base_path, args.port, args.dht_port, m)
                 //     .start()
                 //     .await;
