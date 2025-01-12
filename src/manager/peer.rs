@@ -16,9 +16,10 @@ use crate::torrent_protocol::wire_protocol::{
 };
 use crate::util::{force_string, pretty_info_hash};
 
-static DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
-static CANCELLATION_DURATION: Duration = Duration::from_secs(120);
-
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+const CANCELLATION_DURATION: Duration = Duration::from_secs(120);
+const UT_PEX_EXTENSION_ID: i64 = 1;
+const UT_METADATA_EXTENSION_ID: i64 = 2;
 pub enum ToPeerMsg {
     Send(Message),
 }

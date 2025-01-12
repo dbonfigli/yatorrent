@@ -27,25 +27,25 @@ use crate::bencoding::Value::{self, Dict, Int, Str};
 
 use super::peer::PeerError;
 
-static CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS: usize = 500;
-static CONNECTED_PEERS_TO_START_NEW_PEER_CONNECTIONS: usize = 350;
-static MAX_CONNECTED_PEERS_TO_ASK_DHT_FOR_MORE: usize = 10;
-static DHT_NEW_PEER_COOL_OFF_PERIOD: Duration = Duration::from_secs(15);
-static DHT_BOOTSTRAP_TIME: Duration = Duration::from_secs(5);
-static KEEP_ALIVE_FREQ: Duration = Duration::from_secs(90);
-static MAX_OUTSTANDING_REQUESTS_PER_PEER: usize = 500; // can be retrieved per peer if it supports extensions, dict key "reqq", seen: deluge: 2000, qbittorrent: 500, transmission: 500, utorrent: 255, freebox bittorrent 2: 768, maybe variable
-static MAX_OUTSTANDING_PIECES: usize = 2000;
-static BLOCK_SIZE_B: u64 = 16384;
-static TO_PEER_CHANNEL_CAPACITY: usize = 2000;
-static TO_PEER_CANCEL_CHANNEL_CAPACITY: usize = 1000;
-static PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY: usize = 50000;
-static BASE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120); // decreasing this will wast more bandwidth (needlessy requesting the same block again even if a peer would send it eventually) but will make retries for pieces requested to slow peers faster
-static ENDGAME_REQUEST_TIMEOUT: Duration = Duration::from_secs(15); // request timeout during the endgame phase: this will re-request a lot of pieces, wasting bandwidth, but will make endgame faster churning slow peers
-static ENDGAME_START_AT_COMPLETION_PERCENTAGE: f64 = 98.; // start endgame when we have this percentage of the torrent
-static MIN_CHOKE_TIME: Duration = Duration::from_secs(60);
-static NEW_CONNECTION_COOL_OFF_PERIOD: Duration = Duration::from_secs(180);
-static ADDED_DROPPED_PEER_EVENTS_RETENTION: Duration = Duration::from_secs(90);
-static PEX_MESSAGE_COOLOFF_PERIOD: Duration = Duration::from_secs(60);
+const CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS: usize = 500;
+const CONNECTED_PEERS_TO_START_NEW_PEER_CONNECTIONS: usize = 350;
+const MAX_CONNECTED_PEERS_TO_ASK_DHT_FOR_MORE: usize = 10;
+const DHT_NEW_PEER_COOL_OFF_PERIOD: Duration = Duration::from_secs(15);
+const DHT_BOOTSTRAP_TIME: Duration = Duration::from_secs(5);
+const KEEP_ALIVE_FREQ: Duration = Duration::from_secs(90);
+const MAX_OUTSTANDING_REQUESTS_PER_PEER: usize = 500; // can be retrieved per peer if it supports extensions, dict key "reqq", seen: deluge: 2000, qbittorrent: 500, transmission: 500, utorrent: 255, freebox bittorrent 2: 768, maybe variable
+const MAX_OUTSTANDING_PIECES: usize = 2000;
+const BLOCK_SIZE_B: u64 = 16384;
+const TO_PEER_CHANNEL_CAPACITY: usize = 2000;
+const TO_PEER_CANCEL_CHANNEL_CAPACITY: usize = 1000;
+const PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY: usize = 50000;
+const BASE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120); // decreasing this will wast more bandwidth (needlessy requesting the same block again even if a peer would send it eventually) but will make retries for pieces requested to slow peers faster
+const ENDGAME_REQUEST_TIMEOUT: Duration = Duration::from_secs(15); // request timeout during the endgame phase: this will re-request a lot of pieces, wasting bandwidth, but will make endgame faster churning slow peers
+const ENDGAME_START_AT_COMPLETION_PERCENTAGE: f64 = 98.; // start endgame when we have this percentage of the torrent
+const MIN_CHOKE_TIME: Duration = Duration::from_secs(60);
+const NEW_CONNECTION_COOL_OFF_PERIOD: Duration = Duration::from_secs(180);
+const ADDED_DROPPED_PEER_EVENTS_RETENTION: Duration = Duration::from_secs(90);
+const PEX_MESSAGE_COOLOFF_PERIOD: Duration = Duration::from_secs(60);
 
 pub struct Peer {
     am_choking: bool,

@@ -29,12 +29,12 @@ use super::{messages::KRPCMessage, routing_table::Bucket};
 
 // NOTE! we are only supporting IPv4 DHT, i.e. BEP 32 (https://www.bittorrent.org/beps/bep_0032.html) is not implemented
 
-static INFLIGHT_FIND_NODE_TIMEOUT: Duration = Duration::from_secs(12);
-static INFLIGHT_GET_PEERS_TIMEOUT: Duration = Duration::from_secs(12);
-static INFLIGHT_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
-static ROUTING_TABLE_REFRESH_TIME: Duration = Duration::from_secs(60);
+const INFLIGHT_FIND_NODE_TIMEOUT: Duration = Duration::from_secs(12);
+const INFLIGHT_GET_PEERS_TIMEOUT: Duration = Duration::from_secs(12);
+const INFLIGHT_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+const ROUTING_TABLE_REFRESH_TIME: Duration = Duration::from_secs(60);
 
-static WELL_KNOWN_BOOTSTRAP_NODES: &[&str] = &[
+const WELL_KNOWN_BOOTSTRAP_NODES: &[&str] = &[
     "dht.libtorrent.org:25401",
     "router.utorrent.com:6881",
     "router.bittorrent.com:6881",

@@ -67,7 +67,7 @@ impl fmt::Display for LogLevels {
     }
 }
 
-static MAX_OPENED_FILES: u64 = 16384;
+const MAX_OPENED_FILES: u64 = 16384;
 
 #[tokio::main]
 async fn main() -> Result<()> {

@@ -9,9 +9,9 @@ use anyhow::{bail, Result};
 use rand::seq::SliceRandom;
 use std::{fmt, io::Read, str, time::Duration};
 
-static UDP_TIMEOUT: Duration = Duration::from_secs(15);
-static UDP_RETRY_COOLOFF_SEC: u64 = 15;
-static UDP_MAX_RETRIES: u32 = 3; // according to https://www.bittorrent.org/beps/bep_0015.html it should be 8, but it is way too much
+const UDP_TIMEOUT: Duration = Duration::from_secs(15);
+const UDP_RETRY_COOLOFF_SEC: u64 = 15;
+const UDP_MAX_RETRIES: u32 = 3; // according to https://www.bittorrent.org/beps/bep_0015.html it should be 8, but it is way too much
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct Peer {
