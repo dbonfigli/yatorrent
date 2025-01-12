@@ -285,9 +285,7 @@ async fn handshake(
 
     // send bitfield
     if let Some(pcs) = piece_completion_status {
-        write
-            .send(Message::Bitfield(pcs))
-            .await?;
+        write.send(Message::Bitfield(pcs)).await?;
         log::trace!("bitfield sent to peer {peer_addr}");
     }
 
@@ -299,16 +297,19 @@ async fn handshake(
         log::trace!("port sent to peer {peer_addr}");
     }
 
-    // if peer supports extensions, send PEX support
+    // if peer supports extensions, send PEX and metadata extension support
     if reserved[5] & 0x10 != 0 {
         let extension_handshake = Value::Dict(
             HashMap::from([(
                 b"m".to_vec(),
                 Value::Dict(
-                    HashMap::from([(
-                        b"ut_pex".to_vec(),
-                        Value::Int(1), // we always register 1 as ut_pex extension since we don't support others ATM
-                    )]),
+                    HashMap::from([
+                        (b"ut_pex".to_vec(), Value::Int(UT_PEX_EXTENSION_ID)),
+                        (
+                            b"ut_metadata".to_vec(),
+                            Value::Int(UT_METADATA_EXTENSION_ID),
+                        ),
+                    ]),
                     0,
                     0,
                 ),

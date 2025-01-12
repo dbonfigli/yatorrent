@@ -61,7 +61,18 @@ pub struct Peer {
     requested_pieces: HashMap<usize, Piece>, // piece idx -> piece status with all the requested fragments
     ut_pex_id: u8,
     last_pex_message_sent: SystemTime,
+    ut_metadata_id: u8,
 }
+
+enum MetadataMessage {
+    Request(u64),            // piece
+    Data(u64, u64, Vec<u8>), // piece, total_size, data (16kb or less if last piece)
+    Reject,
+}
+
+const METADATA_MESSAGE_REQUEST: i64 = 0;
+const METADATA_MESSAGE_DATA: i64 = 1;
+const METADATA_MESSAGE_REJECT: i64 = 2;
 
 impl Peer {
     pub fn new(
@@ -85,6 +96,7 @@ impl Peer {
             requested_pieces: HashMap::new(),
             ut_pex_id: 0, // i.e. no support for pex on this peer, initially
             last_pex_message_sent: SystemTime::UNIX_EPOCH,
+            ut_metadata_id: 0, // i.e. no support for metadata on this peer, initially
         };
     }
 
@@ -98,11 +110,15 @@ impl Peer {
         // and the peer is still lingering in self.peers because the control message about the error is not yet been handled
     }
 
-    fn support_pex(&self) -> bool {
+    fn support_pex_extension(&self) -> bool {
         self.ut_pex_id != 0
     }
 
-    async fn send_pex_message(
+    fn support_metadata_extension(&self) -> bool {
+        self.ut_metadata_id != 0
+    }
+
+    async fn send_pex_extension_message(
         &mut self,
         peer_addr: &String,
         added: Vec<String>,
@@ -126,6 +142,28 @@ impl Peer {
             let pex_msg = Message::Extended(self.ut_pex_id, Value::Dict(h, 0, 0));
             log::trace!("sending pex message to peer {peer_addr}: {pex_msg}");
             self.send(ToPeerMsg::Send(pex_msg)).await;
+        }
+    }
+
+    async fn send_metadata_extension_message(
+        &mut self,
+        peer_addr: &String,
+        metadata_message: MetadataMessage,
+    ) {
+        match metadata_message {
+            MetadataMessage::Request(piece) => {
+                // todo magnet: implement
+            }
+            MetadataMessage::Data(piece, total_size, data) => {
+                // todo magnet: implement
+            }
+            MetadataMessage::Reject => {
+                let h =
+                    HashMap::from([(b"msg_type".to_vec(), Value::Int(METADATA_MESSAGE_REJECT))]);
+                let metadata_msg = Message::Extended(self.ut_pex_id, Value::Dict(h, 0, 0));
+                log::trace!("sending metadata reject message to peer {peer_addr}: {metadata_msg}");
+                self.send(ToPeerMsg::Send(metadata_msg)).await;
+            }
         }
     }
 
@@ -439,11 +477,7 @@ impl TorrentManager {
         }
     }
 
-    async fn handle_receive_bitfield_message(
-        &mut self,
-        peer_addr: String,
-        bitfield: Vec<bool>,
-    ) {
+    async fn handle_receive_bitfield_message(&mut self, peer_addr: String, bitfield: Vec<bool>) {
         let file_manager = match &mut self.file_manager {
             Some(file_manager) => file_manager,
             None => return,
@@ -480,11 +514,11 @@ impl TorrentManager {
 
             log::trace!(
                 "received bitfield from peer {peer_addr}: it has {}/{} pieces",
-                peer.haves
-                    .as_ref()
-                    .unwrap()
-                    .iter()
-                    .fold(0, |acc, v| if *v { acc + 1 } else { acc }),
+                peer.haves.as_ref().unwrap().iter().fold(0, |acc, v| if *v {
+                    acc + 1
+                } else {
+                    acc
+                }),
                 peer.haves.as_ref().unwrap().len()
             );
         }
@@ -576,59 +610,102 @@ impl TorrentManager {
             None => return,
         };
 
-        if extension_id == 0 {
-            // this is an extension handshake
-            if let Dict(d, _, _) = value {
-                if let Some(Dict(m, _, _)) = d.get(&b"m".to_vec()) {
-                    if let Some(Int(ut_pex_id)) = m.get(&b"ut_pex".to_vec()) {
-                        // this peer supports the PEX extension, registered at number ut_pex_id
-                        peer.ut_pex_id = *ut_pex_id as u8;
-                        // send first peer list
-                        peer.send_pex_message(&peer_addr, other_active_peers, Vec::new())
-                            .await;
-                    }
-                }
-            }
-        } else if peer.ut_pex_id == extension_id {
-            // this is an ut_pex extended message
-            if let Dict(d, _, _) = value {
-                // todo: should we also use the dropped list? atm we are eager to hoarde all possible peers so we ignore it
-                if let Some(Str(compact_contacts_info)) = d.get(&b"added".to_vec()) {
-                    // we don't support flags, dropped or ipv6 fields ATM
-                    if compact_contacts_info.len() % 6 != 0 {
-                        log::debug!("got a PEX message with an \"added\" field that is not divisible by 6, ignoring this message");
-                    } else {
-                        for i in (0..compact_contacts_info.len()).step_by(6) {
-                            let mut peer_ip_buf: [u8; 4] = [0; 4];
-                            peer_ip_buf.copy_from_slice(&compact_contacts_info[i..i + 4]);
-                            let ip = [
-                                (peer_ip_buf[0]).to_string(),
-                                (peer_ip_buf[1]).to_string(),
-                                (peer_ip_buf[2]).to_string(),
-                                peer_ip_buf[3].to_string(),
-                            ]
-                            .join(".");
-                            let mut peer_port_buf: [u8; 2] = [0; 2];
-                            peer_port_buf.copy_from_slice(&compact_contacts_info[i + 4..i + 6]);
-                            let port = u16::from_be_bytes(peer_port_buf);
-                            log::debug!(
-                                "adding peer advertised by {peer_addr} from PEX: {ip}:{port}"
-                            );
-                            let p = tracker::Peer {
-                                peer_id: None,
-                                ip: ip.clone(),
-                                port,
-                            };
-                            let mut advertised_peers_mg = self.advertised_peers.lock().unwrap();
-                            advertised_peers_mg
-                                .insert(format!("{}:{}", ip, port), (p, SystemTime::UNIX_EPOCH));
-                            drop(advertised_peers_mg);
+        match extension_id {
+            0 => {
+                // this is an extension handshake
+                if let Dict(d, _, _) = value {
+                    if let Some(Dict(m, _, _)) = d.get(&b"m".to_vec()) {
+                        if let Some(Int(ut_pex_id)) = m.get(&b"ut_pex".to_vec()) {
+                            // this peer supports the PEX extension, registered at number ut_pex_id
+                            peer.ut_pex_id = *ut_pex_id as u8;
+                            // send first peer list
+                            peer.send_pex_extension_message(&peer_addr, other_active_peers, Vec::new())
+                                .await;
+                        }
+                        if let Some(Int(ut_metadata_id)) = m.get(&b"ut_metadata".to_vec()) {
+                            // this peer supports the ut_metadata extension, registered at number ut_metadata_id
+                            peer.ut_metadata_id = *ut_metadata_id as u8;
                         }
                     }
                 }
             }
-        } else {
-            log::debug!("got an extension message from {peer_addr} but id was not recognized as an extension we registered: {extension_id}");
+            extension_id if extension_id == peer.ut_pex_id => {
+                // this is an ut_pex extended message
+                if let Dict(d, _, _) = value {
+                    // todo: should we also use the dropped list? atm we are eager to hoarde all possible peers so we ignore it
+                    if let Some(Str(compact_contacts_info)) = d.get(&b"added".to_vec()) {
+                        // we don't support flags, dropped or ipv6 fields ATM
+                        if compact_contacts_info.len() % 6 != 0 {
+                            log::debug!("got a PEX message with an \"added\" field that is not divisible by 6, ignoring this message");
+                        } else {
+                            for i in (0..compact_contacts_info.len()).step_by(6) {
+                                let mut peer_ip_buf: [u8; 4] = [0; 4];
+                                peer_ip_buf.copy_from_slice(&compact_contacts_info[i..i + 4]);
+                                let ip = [
+                                    (peer_ip_buf[0]).to_string(),
+                                    (peer_ip_buf[1]).to_string(),
+                                    (peer_ip_buf[2]).to_string(),
+                                    peer_ip_buf[3].to_string(),
+                                ]
+                                .join(".");
+                                let mut peer_port_buf: [u8; 2] = [0; 2];
+                                peer_port_buf.copy_from_slice(&compact_contacts_info[i + 4..i + 6]);
+                                let port = u16::from_be_bytes(peer_port_buf);
+                                log::debug!(
+                                    "adding peer advertised by {peer_addr} from PEX: {ip}:{port}"
+                                );
+                                let p = tracker::Peer {
+                                    peer_id: None,
+                                    ip: ip.clone(),
+                                    port,
+                                };
+                                let mut advertised_peers_mg = self.advertised_peers.lock().unwrap();
+                                advertised_peers_mg.insert(
+                                    format!("{}:{}", ip, port),
+                                    (p, SystemTime::UNIX_EPOCH),
+                                );
+                                drop(advertised_peers_mg);
+                            }
+                        }
+                    }
+                }
+            }
+            extension_id if extension_id == peer.ut_metadata_id => {
+                // this is an ut_metadata extended message
+                if let Dict(d, _, _) = value {
+                    if let Some(Int(msg_type)) = d.get(&b"msg_type".to_vec()) {
+                        match *msg_type {
+                            METADATA_MESSAGE_REQUEST => {
+                                match &mut self.file_manager {
+                                    Some(file_manager) => {
+                                        // todo magnet: send data
+                                    }
+                                    None => {
+                                        // send reject
+                                        peer.send_metadata_extension_message(
+                                            &peer_addr,
+                                            MetadataMessage::Reject,
+                                        )
+                                        .await;
+                                    }
+                                }
+                            }
+                            METADATA_MESSAGE_DATA => {
+                                // todo magnet: implement
+                            }
+                            METADATA_MESSAGE_REJECT => {
+                                // todo magnet: implement
+                            }
+                            _ => {
+                                log::debug!("got an ut_metadataextension message from {peer_addr} but msg_type was not recognized as an extension we registered: {msg_type}");
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {
+                log::debug!("got an extension message from {peer_addr} but id was not recognized as an extension we registered: {extension_id}");
+            }
         }
     }
 
@@ -691,7 +768,8 @@ impl TorrentManager {
                             continue;
                         }
                         // send have to interested peers
-                        if peer.peer_interested && !peer.haves.as_ref().unwrap()[piece_idx as usize] {
+                        if peer.peer_interested && !peer.haves.as_ref().unwrap()[piece_idx as usize]
+                        {
                             peer.send(ToPeerMsg::Send(Message::Have(piece_idx))).await;
                         }
                         // send not interested if needed
@@ -886,7 +964,7 @@ impl TorrentManager {
 
         // send PEX messages
         for (peer_addr, peer) in self.peers.iter_mut().filter(|(_, p)| {
-            p.support_pex()
+            p.support_pex_extension()
                 && now.duration_since(p.last_pex_message_sent).unwrap() > PEX_MESSAGE_COOLOFF_PERIOD
         }) {
             let elided_events = self
@@ -907,7 +985,7 @@ impl TorrentManager {
                 .filter(|(_, event_type)| **event_type == PexEvent::Dropped)
                 .map(|(p, _)| (*p).clone())
                 .collect();
-            peer.send_pex_message(peer_addr, added, dropped).await;
+            peer.send_pex_extension_message(peer_addr, added, dropped).await;
         }
 
         // send torrent file request
@@ -917,12 +995,11 @@ impl TorrentManager {
         self.send_pieces_reqs().await;
     }
 
-
     async fn send_torrent_file_reqs(&mut self) {
         if self.file_manager.is_some() {
             return;
         }
-        // todo: implement
+        // todo magnet: implement
     }
 
     fn remove_stale_requests(&mut self) {
