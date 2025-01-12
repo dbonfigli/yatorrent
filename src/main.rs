@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use manager::torrent_manager;
 use rlimit::{getrlimit, setrlimit, Resource};
 use std::cmp::min;
@@ -148,6 +148,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    log::error!("A magnet link or .torrent file must be provided.");
+    log::error!("A magnet link (-m) or .torrent file (-t) must be provided.");
+    Args::command().print_help().unwrap();
     exit(1);
 }
