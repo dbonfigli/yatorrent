@@ -910,8 +910,19 @@ impl TorrentManager {
             peer.send_pex_message(peer_addr, added, dropped).await;
         }
 
+        // send torrent file request
+        self.send_torrent_file_reqs().await;
+
         // send piece requests
         self.send_pieces_reqs().await;
+    }
+
+
+    async fn send_torrent_file_reqs(&mut self) {
+        if self.file_manager.is_some() {
+            return;
+        }
+        // todo: implement
     }
 
     fn remove_stale_requests(&mut self) {
