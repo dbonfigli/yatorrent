@@ -190,7 +190,7 @@ impl TorrentManager {
         files_data: Option<(
             Vec<(String, u64)>, // files_list
             u64,                // piece_lenght
-            Vec<[u8; 20]>,      // piece_hases
+            Vec<[u8; 20]>,      // piece_hashes
         )>,
         // dht data
         listening_dht_port: u16,
