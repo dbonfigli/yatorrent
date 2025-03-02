@@ -67,7 +67,7 @@ pub struct Peer {
 enum MetadataMessage {
     Request(u64),            // piece
     Data(u64, u64, Vec<u8>), // piece, total_size, data (16kb or less if last piece)
-    Reject,
+    Reject(u64),             // piece
 }
 
 const METADATA_MESSAGE_REQUEST: i64 = 0;
@@ -139,7 +139,7 @@ impl Peer {
         }
         self.last_pex_message_sent = SystemTime::now();
         if h.len() > 0 {
-            let pex_msg = Message::Extended(self.ut_pex_id, Value::Dict(h, 0, 0));
+            let pex_msg = Message::Extended(self.ut_pex_id, Value::Dict(h, 0, 0), Vec::new());
             log::trace!("sending pex message to peer {peer_addr}: {pex_msg}");
             self.send(ToPeerMsg::Send(pex_msg)).await;
         }
@@ -152,15 +152,32 @@ impl Peer {
     ) {
         match metadata_message {
             MetadataMessage::Request(piece) => {
-                // todo magnet: implement
+                let h = HashMap::from([
+                    (b"msg_type".to_vec(), Value::Int(METADATA_MESSAGE_REQUEST)),
+                    (b"piece".to_vec(), Value::Int(piece as i64)),
+                ]);
+                let metadata_msg =
+                    Message::Extended(self.ut_pex_id, Value::Dict(h, 0, 0), Vec::new());
+                log::trace!("sending metadata request message to peer {peer_addr}: {metadata_msg}");
+                self.send(ToPeerMsg::Send(metadata_msg)).await;
             }
-            MetadataMessage::Data(piece, total_size, data) => {
-                // todo magnet: implement
+            MetadataMessage::Data(piece, metadata_size, data) => {
+                let h = HashMap::from([
+                    (b"msg_type".to_vec(), Value::Int(METADATA_MESSAGE_DATA)),
+                    (b"piece".to_vec(), Value::Int(piece as i64)),
+                    (b"total_size".to_vec(), Value::Int(metadata_size as i64)),
+                ]);
+                let metadata_msg = Message::Extended(self.ut_pex_id, Value::Dict(h, 0, 0), data);
+                log::trace!("sending metadata data message to peer {peer_addr}: {metadata_msg}");
+                self.send(ToPeerMsg::Send(metadata_msg)).await;
             }
-            MetadataMessage::Reject => {
-                let h =
-                    HashMap::from([(b"msg_type".to_vec(), Value::Int(METADATA_MESSAGE_REJECT))]);
-                let metadata_msg = Message::Extended(self.ut_pex_id, Value::Dict(h, 0, 0));
+            MetadataMessage::Reject(piece) => {
+                let h = HashMap::from([
+                    (b"msg_type".to_vec(), Value::Int(METADATA_MESSAGE_REJECT)),
+                    (b"piece".to_vec(), Value::Int(piece as i64)),
+                ]);
+                let metadata_msg =
+                    Message::Extended(self.ut_pex_id, Value::Dict(h, 0, 0), Vec::new());
                 log::trace!("sending metadata reject message to peer {peer_addr}: {metadata_msg}");
                 self.send(ToPeerMsg::Send(metadata_msg)).await;
             }
@@ -439,9 +456,14 @@ impl TorrentManager {
                     )))
                     .await;
             }
-            Message::Extended(extension_id, value) => {
-                self.handle_receive_extended_message(peer_addr, extension_id, value)
-                    .await;
+            Message::Extended(extension_id, value, additional_data) => {
+                self.handle_receive_extended_message(
+                    peer_addr,
+                    extension_id,
+                    value,
+                    additional_data,
+                )
+                .await;
             }
         }
     }
@@ -597,6 +619,7 @@ impl TorrentManager {
         peer_addr: String,
         extension_id: u8,
         value: Value,
+        additional_data: Vec<u8>,
     ) {
         let other_active_peers = self
             .peers
@@ -676,41 +699,66 @@ impl TorrentManager {
             }
             extension_id if extension_id == peer.ut_metadata_id => {
                 // this is an ut_metadata extended message
-                if let Dict(d, _, _) = value {
-                    if let Some(Int(msg_type)) = d.get(&b"msg_type".to_vec()) {
-                        match *msg_type {
-                            METADATA_MESSAGE_REQUEST => {
-                                match &mut self.file_manager {
-                                    Some(file_manager) => {
-                                        // todo magnet: send data
-                                        // get proper block of data in metadata
-                                        // send metedata block
-                                        // peer.send_metadata_extension_message(
-                                        //     &peer_addr,
-                                        //     MetadataMessage::Data( .... ),
-                                        // )
-                                        // .await;
-                                    }
-                                    None => {
-                                        // send reject
-                                        peer.send_metadata_extension_message(
-                                            &peer_addr,
-                                            MetadataMessage::Reject,
-                                        )
-                                        .await;
-                                    }
-                                }
+                let d = match value {
+                    Dict(d, _, _) => d,
+                    _ => {
+                        log::debug!("got an ut_metadataextension message from {peer_addr}, it was a bencoded value but not a dict dict, droppping it");
+                        return;
+                    }
+                };
+                let msg_type = match d.get(&b"msg_type".to_vec()) {
+                    Some(Int(msg_type)) => msg_type,
+                    _ => {
+                        log::debug!("got an ut_metadataextension message from {peer_addr} but no msg_type key was found in the bencoded dict, droppping it");
+                        return;
+                    }
+                };
+                let piece = match d.get(&b"piece".to_vec()) {
+                    Some(Int(piece)) => piece,
+                    _ => {
+                        log::debug!("got an ut_metadataextension message from {peer_addr} but no piece key was found in the bencoded dict, droppping it");
+                        return;
+                    }
+                };
+                match *msg_type {
+                    METADATA_MESSAGE_REQUEST => {
+                        match &mut self.file_manager {
+                            Some(file_manager) => {
+                                // todo magnet: send data
+                                // get proper block of data in metadata
+                                // send metedata block
+                                // peer.send_metadata_extension_message(
+                                //     &peer_addr,
+                                //     MetadataMessage::Data( .... ),
+                                // )
+                                // .await;
                             }
-                            METADATA_MESSAGE_DATA => {
-                                // todo magnet: implement
-                            }
-                            METADATA_MESSAGE_REJECT => {
-                                // todo magnet: implement
-                            }
-                            _ => {
-                                log::debug!("got an ut_metadataextension message from {peer_addr} but msg_type was not recognized as an extension we registered: {msg_type}");
+                            None => {
+                                // send reject
+                                peer.send_metadata_extension_message(
+                                    &peer_addr,
+                                    MetadataMessage::Reject(*piece as u64),
+                                )
+                                .await;
                             }
                         }
+                    }
+                    METADATA_MESSAGE_DATA => {
+                        let metadata_size = match d.get(&b"total_size".to_vec()) {
+                            Some(Int(piece)) => piece,
+                            _ => {
+                                log::debug!("got an ut_metadataextension message from {peer_addr} but no total_size key was found in the bencoded dict, droppping it");
+                                return;
+                            }
+                        };
+                        let piece_block_data = additional_data;
+                        // todo magnet: implement
+                    }
+                    METADATA_MESSAGE_REJECT => {
+                        // todo magnet: implement
+                    }
+                    _ => {
+                        log::debug!("got an ut_metadataextension message from {peer_addr} but msg_type was not recognized as an extension we registered: {msg_type}");
                     }
                 }
             }

@@ -92,6 +92,10 @@ impl Value {
         from_char_vec(&source, 0).0
     }
 
+    pub fn new_with_size(source: &Vec<u8>) -> (Value, usize) {
+        return from_char_vec(&source, 0);
+    }
+
     fn new_error(elem: ErrorElem, index: IndexOfError) -> Self {
         Value::Error(ParseError { elem, index })
     }

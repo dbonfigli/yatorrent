@@ -211,13 +211,16 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                     return Ok(());
                 }
             }
-            Message::Extended(id, value) => {
+            Message::Extended(id, value, additional_data) => {
                 let encoded_value = value.encode();
-                let mut buf = vec![0; 6 + encoded_value.len()];
-                buf[0..4].copy_from_slice(&(2 + encoded_value.len() as u32).to_be_bytes());
+                let mut buf = vec![0; 6 + encoded_value.len() + additional_data.len()];
+                buf[0..4].copy_from_slice(
+                    &(2 + encoded_value.len() as u32 + additional_data.len() as u32).to_be_bytes(),
+                );
                 buf[4] = 20; // extension protocol magic number
                 buf[5] = id;
                 buf[6..].copy_from_slice(&encoded_value);
+                buf[6 + encoded_value.len()..].copy_from_slice(&additional_data);
                 if let Err(e) = self.write_all(&buf).await {
                     return Err(e.into());
                 } else {
@@ -353,8 +356,12 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                 if let Err(e) = self.read_exact(&mut buf).await {
                     return Err(e.into());
                 }
-                let extended_message = Value::new(&buf);
-                return Ok(Message::Extended(extended_message_id, extended_message));
+                let (extended_message, dict_size) = Value::new_with_size(&buf);
+                return Ok(Message::Extended(
+                    extended_message_id,
+                    extended_message,
+                    buf[dict_size..].to_vec(),
+                ));
             }
             unknown_message_id => {
                 return Err(ProtocolError::new(

@@ -318,7 +318,7 @@ async fn handshake(
             0,
         );
         write
-            .send(Message::Extended(0, extension_handshake))
+            .send(Message::Extended(0, extension_handshake, Vec::new()))
             .await?;
         log::trace!("extension handshake sent to peer {peer_addr}");
     }
