@@ -619,8 +619,12 @@ impl TorrentManager {
                             // this peer supports the PEX extension, registered at number ut_pex_id
                             peer.ut_pex_id = *ut_pex_id as u8;
                             // send first peer list
-                            peer.send_pex_extension_message(&peer_addr, other_active_peers, Vec::new())
-                                .await;
+                            peer.send_pex_extension_message(
+                                &peer_addr,
+                                other_active_peers,
+                                Vec::new(),
+                            )
+                            .await;
                         }
                         if let Some(Int(ut_metadata_id)) = m.get(&b"ut_metadata".to_vec()) {
                             // this peer supports the ut_metadata extension, registered at number ut_metadata_id
@@ -679,6 +683,13 @@ impl TorrentManager {
                                 match &mut self.file_manager {
                                     Some(file_manager) => {
                                         // todo magnet: send data
+                                        // get proper block of data in metadata
+                                        // send metedata block
+                                        // peer.send_metadata_extension_message(
+                                        //     &peer_addr,
+                                        //     MetadataMessage::Data( .... ),
+                                        // )
+                                        // .await;
                                     }
                                     None => {
                                         // send reject
@@ -859,8 +870,7 @@ impl TorrentManager {
                     CONNECTED_PEERS_TO_START_NEW_PEER_CONNECTIONS - current_peers_n,
                 )
                 .collect();
-            // todo:
-            // * better algorithm to select new peers
+            // todo: better algorithm to select new peers
             for (_, (peer, _)) in candidates_for_new_connections.iter() {
                 tokio::spawn(peer::connect_to_new_peer(
                     peer.ip.clone(),
@@ -985,7 +995,8 @@ impl TorrentManager {
                 .filter(|(_, event_type)| **event_type == PexEvent::Dropped)
                 .map(|(p, _)| (*p).clone())
                 .collect();
-            peer.send_pex_extension_message(peer_addr, added, dropped).await;
+            peer.send_pex_extension_message(peer_addr, added, dropped)
+                .await;
         }
 
         // send torrent file request
@@ -999,7 +1010,10 @@ impl TorrentManager {
         if self.file_manager.is_some() {
             return;
         }
+        // we still have to download the metadata, ask it to peers
         // todo magnet: implement
+        // peer.send_metadata_extension_message(&peer_addr, MetadataMessage::Request( ... ))
+        //     .await;
     }
 
     fn remove_stale_requests(&mut self) {

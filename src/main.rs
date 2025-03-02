@@ -14,7 +14,7 @@ mod bencoding;
 mod dht;
 mod magnet;
 mod manager;
-mod metainfo;
+mod metadata;
 mod persistence;
 mod torrent_protocol;
 mod tracker;
@@ -101,7 +101,7 @@ async fn main() -> Result<()> {
             }
         };
         let torrent_content = bencoding::Value::new(&contents);
-        let metainfo = metainfo::Metainfo::new(&torrent_content, &contents);
+        let metainfo = metadata::metainfo::Metainfo::new(&torrent_content, &contents);
         match metainfo {
             Ok(m) => {
                 log::info!("torrent file metainfo:\n{m}");
