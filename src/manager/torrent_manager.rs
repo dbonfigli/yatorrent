@@ -650,8 +650,13 @@ impl TorrentManager {
                             .await;
                         }
                         if let Some(Int(ut_metadata_id)) = m.get(&b"ut_metadata".to_vec()) {
-                            // this peer supports the ut_metadata extension, registered at number ut_metadata_id
-                            peer.ut_metadata_id = *ut_metadata_id as u8;
+                            if let Some(Int(metadata_size)) = d.get(&b"metadata_size".to_vec()) {
+                                // todo magnet: do somethig with metadata_size
+                                // this peer supports the ut_metadata extension, registered at number ut_metadata_id
+                                peer.ut_metadata_id = *ut_metadata_id as u8;
+                            } else {
+                                log::debug!("got an ut_metadata extension handshake without the required an \"metadata_size\", ignoring this message");
+                            }
                         }
                     }
                 }
