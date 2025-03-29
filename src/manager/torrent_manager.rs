@@ -474,11 +474,11 @@ impl TorrentManager {
                     )))
                     .await;
             }
-            Message::Extended(extension_id, value, additional_data) => {
+            Message::Extended(extension_id, extended_message, additional_data) => {
                 self.handle_receive_extended_message(
                     peer_addr,
                     extension_id,
-                    value,
+                    extended_message,
                     additional_data,
                 )
                 .await;
@@ -636,181 +636,233 @@ impl TorrentManager {
         &mut self,
         peer_addr: String,
         extension_id: u8,
-        value: Value,
+        extended_message: Value,
         additional_data: Vec<u8>,
     ) {
+        let peer = match self.peers.get(&peer_addr) {
+            Some(peer) => peer,
+            None => return,
+        };
+        match extension_id {
+            0 => {
+                // this is an extension handshake
+                self.handle_receive_extended_message_handshake(extended_message, peer_addr)
+                    .await;
+            }
+            _ if extension_id == peer.ut_pex_id => {
+                // this is an ut_pex extended message
+                self.handle_receive_extended_message_ut_pex(extended_message, peer_addr);
+            }
+            _ if extension_id == peer.ut_metadata_id => {
+                // this is an ut_metadata extended message
+                self.handle_receive_extended_message_ut_metadata(
+                    extended_message,
+                    peer_addr,
+                    additional_data,
+                )
+                .await;
+            }
+            _ => {
+                log::debug!("got an extension message from {peer_addr} but id was not recognized as an extension we registered: {extension_id}");
+            }
+        }
+    }
+
+    async fn handle_receive_extended_message_handshake(
+        &mut self,
+        extended_message: Value,
+        peer_addr: String,
+    ) {
+        let extended_message_dict = match extended_message {
+            Dict(extended_message_dict, _, _) => extended_message_dict,
+            _ => {
+                log::debug!("got an ut_metadata extension handshake but data was not a dict, ignoring this message");
+                return;
+            }
+        };
+        let m = match extended_message_dict.get(&b"m".to_vec()) {
+            Some(Dict(m, _, _)) => m,
+            _ => {
+                log::debug!("got an ut_metadata extension handshake but \"m\" entry was not found in dict or was not a dict itself, ignoring this message");
+                return;
+            }
+        };
+
         let other_active_peers = self
             .peers
             .keys()
             .filter(|k| peer_addr != **k)
             .map(|k| k.clone())
             .collect::<Vec<_>>();
-
         let peer = match self.peers.get_mut(&peer_addr) {
             Some(peer) => peer,
             None => return,
         };
 
-        match extension_id {
-            0 => {
-                // this is an extension handshake
-                if let Dict(d, _, _) = value {
-                    if let Some(Dict(m, _, _)) = d.get(&b"m".to_vec()) {
-                        if let Some(Int(ut_pex_id)) = m.get(&b"ut_pex".to_vec()) {
-                            // this peer supports the PEX extension, registered at number ut_pex_id
-                            peer.ut_pex_id = *ut_pex_id as u8;
-                            // send first peer list
-                            peer.send_pex_extension_message(
-                                &peer_addr,
-                                other_active_peers,
-                                Vec::new(),
-                            )
-                            .await;
-                        }
-                        if let Some(Int(ut_metadata_id)) = m.get(&b"ut_metadata".to_vec()) {
-                            if let Some(Int(metadata_size)) = d.get(&b"metadata_size".to_vec()) {
-                                if *metadata_size <= 0 {
-                                    log::debug!("got an ut_metadata extension handshake where \"metadata_size\" was <= 0, ignoring this message");
-                                } else if self.raw_metadata_size.is_none() {
-                                    self.raw_metadata_size = Some(*metadata_size);
-                                    self.downloaded_metadata_blocks =
-                                        metadata_blocks_from_size(*metadata_size, false);
-                                    self.raw_metadata = Some(vec![0; *metadata_size as usize]);
-                                }
-                                // this peer supports the ut_metadata extension, registered at number ut_metadata_id
-                                peer.ut_metadata_id = *ut_metadata_id as u8;
-                            } else {
-                                log::debug!("got an ut_metadata extension handshake without the required an \"metadata_size\", ignoring this message");
-                            }
-                        }
-                    }
+        if let Some(Int(ut_pex_id)) = m.get(&b"ut_pex".to_vec()) {
+            // this peer supports the PEX extension, registered at number ut_pex_id
+            peer.ut_pex_id = *ut_pex_id as u8;
+            // send first peer list
+            peer.send_pex_extension_message(&peer_addr, other_active_peers, Vec::new())
+                .await;
+        }
+        if let Some(Int(ut_metadata_id)) = m.get(&b"ut_metadata".to_vec()) {
+            if let Some(Int(metadata_size)) = extended_message_dict.get(&b"metadata_size".to_vec())
+            {
+                if *metadata_size <= 0 {
+                    log::debug!("got an ut_metadata extension handshake where \"metadata_size\" was <= 0, ignoring this message");
+                } else if self.raw_metadata_size.is_none() {
+                    self.raw_metadata_size = Some(*metadata_size);
+                    self.downloaded_metadata_blocks =
+                        metadata_blocks_from_size(*metadata_size, false);
+                    self.raw_metadata = Some(vec![0; *metadata_size as usize]);
                 }
+                // this peer supports the ut_metadata extension, registered at number ut_metadata_id
+                peer.ut_metadata_id = *ut_metadata_id as u8;
+            } else {
+                log::debug!("got an ut_metadata extension handshake without the required an \"metadata_size\", ignoring this message");
             }
-            extension_id if extension_id == peer.ut_pex_id => {
-                // this is an ut_pex extended message
-                if let Dict(d, _, _) = value {
-                    // todo: should we also use the dropped list? atm we are eager to hoarde all possible peers so we ignore it
-                    if let Some(Str(compact_contacts_info)) = d.get(&b"added".to_vec()) {
-                        // we don't support flags, dropped or ipv6 fields ATM
-                        if compact_contacts_info.len() % 6 != 0 {
-                            log::debug!("got a PEX message with an \"added\" field that is not divisible by 6, ignoring this message");
-                        } else {
-                            for i in (0..compact_contacts_info.len()).step_by(6) {
-                                let mut peer_ip_buf: [u8; 4] = [0; 4];
-                                peer_ip_buf.copy_from_slice(&compact_contacts_info[i..i + 4]);
-                                let ip = [
-                                    (peer_ip_buf[0]).to_string(),
-                                    (peer_ip_buf[1]).to_string(),
-                                    (peer_ip_buf[2]).to_string(),
-                                    peer_ip_buf[3].to_string(),
-                                ]
-                                .join(".");
-                                let mut peer_port_buf: [u8; 2] = [0; 2];
-                                peer_port_buf.copy_from_slice(&compact_contacts_info[i + 4..i + 6]);
-                                let port = u16::from_be_bytes(peer_port_buf);
-                                log::debug!(
-                                    "adding peer advertised by {peer_addr} from PEX: {ip}:{port}"
-                                );
-                                let p = tracker::Peer {
-                                    peer_id: None,
-                                    ip: ip.clone(),
-                                    port,
-                                };
-                                let mut advertised_peers_mg = self.advertised_peers.lock().unwrap();
-                                advertised_peers_mg.insert(
-                                    format!("{}:{}", ip, port),
-                                    (p, SystemTime::UNIX_EPOCH),
-                                );
-                                drop(advertised_peers_mg);
-                            }
-                        }
-                    }
-                }
+        }
+    }
+
+    fn handle_receive_extended_message_ut_pex(
+        &mut self,
+        extended_message: Value,
+        peer_addr: String,
+    ) {
+        let d = match extended_message {
+            Dict(d, _, _) => d,
+            _ => {
+                log::debug!("got a PEX message from {peer_addr}, it was a bencoded value but not a dict, ignoring it");
+                return;
             }
-            extension_id if extension_id == peer.ut_metadata_id => {
-                // this is an ut_metadata extended message
-                let d = match value {
-                    Dict(d, _, _) => d,
-                    _ => {
-                        log::debug!("got an ut_metadataextension message from {peer_addr}, it was a bencoded value but not a dict dict, droppping it");
-                        return;
-                    }
+        };
+        // todo: should we also use the dropped list? atm we are eager to hoarde all possible peers so we ignore it
+        if let Some(Str(compact_contacts_info)) = d.get(&b"added".to_vec()) {
+            // we don't support flags, dropped or ipv6 fields ATM
+            if compact_contacts_info.len() % 6 != 0 {
+                log::debug!("got a PEX message from {peer_addr} with an \"added\" field that is not divisible by 6, ignoring it");
+                return;
+            }
+            for i in (0..compact_contacts_info.len()).step_by(6) {
+                let mut peer_ip_buf: [u8; 4] = [0; 4];
+                peer_ip_buf.copy_from_slice(&compact_contacts_info[i..i + 4]);
+                let ip = [
+                    (peer_ip_buf[0]).to_string(),
+                    (peer_ip_buf[1]).to_string(),
+                    (peer_ip_buf[2]).to_string(),
+                    peer_ip_buf[3].to_string(),
+                ]
+                .join(".");
+                let mut peer_port_buf: [u8; 2] = [0; 2];
+                peer_port_buf.copy_from_slice(&compact_contacts_info[i + 4..i + 6]);
+                let port = u16::from_be_bytes(peer_port_buf);
+                log::debug!("adding peer advertised by {peer_addr} from PEX: {ip}:{port}");
+                let p = tracker::Peer {
+                    peer_id: None,
+                    ip: ip.clone(),
+                    port,
                 };
-                let msg_type = match d.get(&b"msg_type".to_vec()) {
-                    Some(Int(msg_type)) => msg_type,
-                    _ => {
-                        log::debug!("got an ut_metadataextension message from {peer_addr} but no msg_type key was found in the bencoded dict, droppping it");
-                        return;
-                    }
-                };
-                let piece = match d.get(&b"piece".to_vec()) {
-                    Some(Int(piece)) => piece,
-                    _ => {
-                        log::debug!("got an ut_metadataextension message from {peer_addr} but no piece key was found in the bencoded dict, droppping it");
-                        return;
-                    }
-                };
-                match *msg_type {
-                    METADATA_MESSAGE_REQUEST => {
-                        match &mut self.file_manager {
-                            Some(_) => {
-                                // if file_manager is initialized then raw_metadata_size is also completly known
-                                let block_start = *piece as usize * 16384;
-                                let block_end = min(
-                                    self.raw_metadata_size.unwrap() as usize,
-                                    block_start as usize + 16384,
-                                );
-                                if block_start >= block_end {
-                                    log::debug!("rejecting metadata message request for {piece} piece from {peer_addr}, requested pieces is out of range");
-                                    peer.send_metadata_extension_message(
-                                        &peer_addr,
-                                        MetadataMessage::Reject(*piece as u64),
-                                    )
-                                    .await;
-                                } else {
-                                    let mut block: Vec<u8> =
-                                        Vec::with_capacity(block_end - block_start);
-                                    block.copy_from_slice(
-                                        &self.raw_metadata.as_ref().unwrap()
-                                            [block_start..block_end],
-                                    );
-                                    peer.send_metadata_extension_message(
-                                        &peer_addr,
-                                        MetadataMessage::Data(
-                                            *piece as u64,
-                                            self.raw_metadata_size.unwrap() as u64,
-                                            block,
-                                        ),
-                                    )
-                                    .await;
-                                }
-                            }
-                            None => {
-                                // send reject
-                                peer.send_metadata_extension_message(
-                                    &peer_addr,
-                                    MetadataMessage::Reject(*piece as u64),
-                                )
-                                .await;
-                            }
-                        }
-                    }
-                    METADATA_MESSAGE_DATA => {
-                        self.handle_receive_extendend_message_metadata_message_data(
-                            *piece,
-                            additional_data,
-                        );
-                    }
-                    METADATA_MESSAGE_REJECT => {
-                        // todo magnet: implement
-                    }
-                    _ => {
-                        log::debug!("got an ut_metadataextension message from {peer_addr} but msg_type was not recognized as an extension we registered: {msg_type}");
-                    }
-                }
+                let mut advertised_peers_mg = self.advertised_peers.lock().unwrap();
+                advertised_peers_mg.insert(format!("{}:{}", ip, port), (p, SystemTime::UNIX_EPOCH));
+                drop(advertised_peers_mg);
+            }
+        }
+    }
+
+    async fn handle_receive_extended_message_ut_metadata(
+        &mut self,
+        value: Value,
+        peer_addr: String,
+        additional_data: Vec<u8>,
+    ) {
+        let d = match value {
+            Dict(d, _, _) => d,
+            _ => {
+                log::debug!("got an ut_metadataextension message from {peer_addr}, it was a bencoded value but not a dict dict, ignoring it");
+                return;
+            }
+        };
+        let msg_type = match d.get(&b"msg_type".to_vec()) {
+            Some(Int(msg_type)) => msg_type,
+            _ => {
+                log::debug!("got an ut_metadataextension message from {peer_addr} but no msg_type key was found in the bencoded dict, ignoring it");
+                return;
+            }
+        };
+        let piece = match d.get(&b"piece".to_vec()) {
+            Some(Int(piece)) => piece,
+            _ => {
+                log::debug!("got an ut_metadataextension message from {peer_addr} but no piece key was found in the bencoded dict, ignoring it");
+                return;
+            }
+        };
+        match *msg_type {
+            METADATA_MESSAGE_REQUEST => {
+                self.handle_receive_extended_message_metadata_message_request(peer_addr, *piece)
+                    .await;
+            }
+            METADATA_MESSAGE_DATA => {
+                self.handle_receive_extendend_message_metadata_message_data(
+                    *piece,
+                    additional_data,
+                );
+            }
+            METADATA_MESSAGE_REJECT => {
+                // todo magnet: implement
             }
             _ => {
-                log::debug!("got an extension message from {peer_addr} but id was not recognized as an extension we registered: {extension_id}");
+                log::debug!("got an ut_metadataextension message from {peer_addr} but msg_type was not recognized as an extension we registered: {msg_type}");
+            }
+        }
+    }
+
+    async fn handle_receive_extended_message_metadata_message_request(
+        &mut self,
+        peer_addr: String,
+        piece: i64,
+    ) {
+        match (
+            &mut self.file_manager,
+            self.raw_metadata_size,
+            &mut self.raw_metadata,
+        ) {
+            // if file_manager is initialized then raw_metadata_size is also completly known
+            (Some(_), Some(raw_metadata_size), Some(raw_metadata)) => {
+                let block_start = piece as usize * 16384;
+                let block_end = min(raw_metadata_size as usize, block_start as usize + 16384);
+                if block_start < block_end {
+                    let mut block: Vec<u8> = Vec::with_capacity(block_end - block_start);
+                    block.copy_from_slice(&raw_metadata[block_start..block_end]);
+                    if let Some(peer) = self.peers.get_mut(&peer_addr) {
+                        peer.send_metadata_extension_message(
+                            &peer_addr,
+                            MetadataMessage::Data(piece as u64, raw_metadata_size as u64, block),
+                        )
+                        .await;
+                    }
+                } else {
+                    log::debug!("rejecting metadata message request for {piece} piece from {peer_addr}, requested pieces is out of range");
+                    if let Some(peer) = self.peers.get_mut(&peer_addr) {
+                        peer.send_metadata_extension_message(
+                            &peer_addr,
+                            MetadataMessage::Reject(piece as u64),
+                        )
+                        .await;
+                    }
+                }
+            }
+            (_, _, _) => {
+                // send reject, we don't have the full metadata
+                let peer = match self.peers.get_mut(&peer_addr) {
+                    Some(peer) => peer,
+                    None => return,
+                };
+                peer.send_metadata_extension_message(
+                    &peer_addr,
+                    MetadataMessage::Reject(piece as u64),
+                )
+                .await;
             }
         }
     }
@@ -891,6 +943,7 @@ impl TorrentManager {
                     piece_length,
                     piece_hashes,
                 ));
+                // todo magnet: reconnect to all peers, we must send interested
             }
             Err(e) => {
                 corrupted_metadata(
