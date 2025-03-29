@@ -124,6 +124,7 @@ async fn main() -> Result<()> {
                     // dht data
                     args.dht_port,
                     m.nodes,
+                    Vec::new(),
                 )
                 .start()
                 .await;
@@ -136,10 +137,21 @@ async fn main() -> Result<()> {
         }
     } else if let Some(magnet_uri) = args.magnet_uri {
         match magnet::Magnet::new(magnet_uri) {
-            Ok(_m) => {
-                // TorrentManager::new(base_path, args.port, args.dht_port, m)
-                //     .start()
-                //     .await;
+            Ok(magnet) => {
+                TorrentManager::new(
+                    magnet.info_hash,
+                    base_path,
+                    args.port,
+                    vec![magnet.tracker_urls],
+                    None,
+                    None,
+                    // dht data
+                    args.dht_port,
+                    Vec::new(),
+                    magnet.peer_addresses,
+                )
+                .start()
+                .await;
                 exit(0);
             }
             Err(e) => {

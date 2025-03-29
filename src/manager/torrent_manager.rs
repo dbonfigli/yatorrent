@@ -259,6 +259,7 @@ impl TorrentManager {
         // dht data
         listening_dht_port: u16,
         dht_nodes: Vec<String>,
+        inital_peers: Vec<String>,
     ) -> Self {
         let own_peer_id = generate_peer_id();
         let raw_metadata_size = raw_metadata.as_ref().map(|m| m.len() as i64).or(None);
@@ -266,6 +267,17 @@ impl TorrentManager {
             Some(size) => metadata_blocks_from_size(size, true),
             None => Vec::<bool>::new(),
         };
+        let mut initial_advertised_peers = HashMap::new();
+        for peer_addr in inital_peers {
+            let ip_and_port = peer_addr.rsplit_once(':').unwrap();
+            let p = tracker::Peer {
+                peer_id: None,
+                ip: ip_and_port.0.to_string(),
+                port: ip_and_port.1.to_string().parse::<u16>().unwrap(),
+            };
+            initial_advertised_peers.insert(peer_addr, (p, SystemTime::UNIX_EPOCH));
+        }
+        let advertised_peers = Arc::new(Mutex::new(initial_advertised_peers));
         TorrentManager {
             file_manager: match files_data {
                 Some((file_list, piece_length, piece_hashes)) => Some(FileManager::new(
@@ -290,7 +302,7 @@ impl TorrentManager {
             own_peer_id: own_peer_id.clone(),
             listening_torrent_wire_protocol_port,
             peers: HashMap::new(),
-            advertised_peers: Arc::new(Mutex::new(HashMap::new())),
+            advertised_peers,
             bad_peers: HashSet::new(),
             last_bandwidth_poll: SystemTime::now(),
             uploaded_bytes: 0,
@@ -943,6 +955,7 @@ impl TorrentManager {
                     piece_length,
                     piece_hashes,
                 ));
+                log::warn!("metdata download completed, we can now start downloading the actual torrent data...");
                 // we finally have the metadata and can exchange files
                 // we discarded have messages (we could not save them because we could not know how many pieces there were in total)
                 // and, most importantly, bitfield messages from peers till now, so, let's disconnect from the current peers:
