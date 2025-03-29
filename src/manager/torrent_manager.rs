@@ -1,7 +1,9 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Error, Result};
+use sha1::{Digest, Sha1};
 use std::cmp::{min, Ordering};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use std::{iter, path::Path};
@@ -14,10 +16,12 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use crate::dht::dht_manager::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMsg};
 use crate::manager::peer::{self, PeerAddr, PeersToManagerMsg, ToPeerCancelMsg, ToPeerMsg};
+use crate::metadata::infodict::{self};
+use crate::metadata::metainfo::get_files;
 use crate::persistence::piece::Piece;
 use crate::torrent_protocol::wire_protocol::Message;
-use crate::tracker;
 use crate::util::start_tick;
+use crate::{bencoding, tracker};
 use crate::{
     persistence::file_manager::FileManager,
     tracker::{Event, Response, TrackerClient},
@@ -210,6 +214,8 @@ pub struct TorrentManager {
     file_manager: Option<FileManager>,
     raw_metadata: Option<Vec<u8>>,
     raw_metadata_size: Option<i64>,
+    downloaded_metadata_blocks: Vec<bool>,
+    base_path: PathBuf,
     tracker_client: Arc<Mutex<TrackerClient>>,
     last_tracker_request_time: SystemTime,
     info_hash: [u8; 20],
@@ -256,6 +262,10 @@ impl TorrentManager {
     ) -> Self {
         let own_peer_id = generate_peer_id();
         let raw_metadata_size = raw_metadata.as_ref().map(|m| m.len() as i64).or(None);
+        let downloaded_metadata_blocks = match raw_metadata_size {
+            Some(size) => metadata_blocks_from_size(size, true),
+            None => Vec::<bool>::new(),
+        };
         TorrentManager {
             file_manager: match files_data {
                 Some((file_list, piece_length, piece_hashes)) => Some(FileManager::new(
@@ -268,6 +278,8 @@ impl TorrentManager {
             },
             raw_metadata,
             raw_metadata_size,
+            downloaded_metadata_blocks,
+            base_path: PathBuf::from(base_path),
             tracker_client: Arc::new(Mutex::new(TrackerClient::new(
                 own_peer_id.clone(),
                 announce_list,
@@ -661,6 +673,9 @@ impl TorrentManager {
                                     log::debug!("got an ut_metadata extension handshake where \"metadata_size\" was <= 0, ignoring this message");
                                 } else if self.raw_metadata_size.is_none() {
                                     self.raw_metadata_size = Some(*metadata_size);
+                                    self.downloaded_metadata_blocks =
+                                        metadata_blocks_from_size(*metadata_size, false);
+                                    self.raw_metadata = Some(vec![0; *metadata_size as usize]);
                                 }
                                 // this peer supports the ut_metadata extension, registered at number ut_metadata_id
                                 peer.ut_metadata_id = *ut_metadata_id as u8;
@@ -781,15 +796,10 @@ impl TorrentManager {
                         }
                     }
                     METADATA_MESSAGE_DATA => {
-                        let metadata_size = match d.get(&b"total_size".to_vec()) {
-                            Some(Int(piece)) => piece,
-                            _ => {
-                                log::debug!("got an ut_metadataextension message from {peer_addr} but no total_size key was found in the bencoded dict, droppping it");
-                                return;
-                            }
-                        };
-                        let piece_block_data = additional_data;
-                        // todo magnet: implement
+                        self.handle_receive_extendend_message_metadata_message_data(
+                            *piece,
+                            additional_data,
+                        );
                     }
                     METADATA_MESSAGE_REJECT => {
                         // todo magnet: implement
@@ -801,6 +811,94 @@ impl TorrentManager {
             }
             _ => {
                 log::debug!("got an extension message from {peer_addr} but id was not recognized as an extension we registered: {extension_id}");
+            }
+        }
+    }
+
+    fn handle_receive_extendend_message_metadata_message_data(
+        &mut self,
+        piece: i64,
+        piece_block_data: Vec<u8>,
+    ) {
+        // todo check why the protocol is also passing this? it seems useless
+        // let metadata_size = match d.get(&b"total_size".to_vec()) {
+        //     Some(Int(piece)) => piece,
+        //     _ => {
+        //         log::debug!("got an ut_metadataextension message from {peer_addr} but no total_size key was found in the bencoded dict, droppping it");
+        //         return;
+        //     }
+        // };
+        if self.file_manager.is_some()
+            || piece < 0
+            || (piece as usize) >= self.downloaded_metadata_blocks.len()
+            || self.downloaded_metadata_blocks[piece as usize]
+        {
+            // we are not intersted in this message
+            return;
+        }
+
+        let raw_metadata_start = piece as usize * 16384;
+        let raw_metadata_end = min(
+            self.raw_metadata_size.unwrap() as usize,
+            raw_metadata_start + 16384,
+        );
+        self.raw_metadata.as_deref_mut().unwrap()[raw_metadata_start..raw_metadata_end]
+            .copy_from_slice(&piece_block_data[..raw_metadata_end - raw_metadata_start]);
+        self.downloaded_metadata_blocks[piece as usize] = true;
+
+        // check if metadata is complete
+        let metadata_download_complete = self
+            .downloaded_metadata_blocks
+            .iter()
+            .all(|completed| *completed);
+        if !metadata_download_complete {
+            return;
+        }
+
+        // check hash
+        let info_hash: [u8; 20] = Sha1::digest(&self.raw_metadata.as_ref().unwrap())
+            .as_slice()
+            .try_into()
+            .unwrap();
+        if info_hash != self.info_hash {
+            corrupted_metadata(
+                Error::msg("hash mishatch"),
+                &mut self.downloaded_metadata_blocks,
+                self.raw_metadata.as_mut().unwrap(),
+                self.raw_metadata_size.unwrap(),
+            );
+            return;
+        }
+
+        let info_dict = match bencoding::Value::new(self.raw_metadata.as_ref().unwrap()) {
+            Dict(info_dict, _, _) => info_dict,
+            _ => {
+                corrupted_metadata(
+                    Error::msg("not a bencoded dict"),
+                    &mut self.downloaded_metadata_blocks,
+                    self.raw_metadata.as_mut().unwrap(),
+                    self.raw_metadata_size.unwrap(),
+                );
+                return;
+            }
+        };
+
+        match infodict::get_infodict(&info_dict) {
+            Ok((piece_length, piece_hashes, m)) => {
+                self.file_manager = Some(FileManager::new(
+                    self.base_path.as_path(),
+                    get_files(&m),
+                    piece_length,
+                    piece_hashes,
+                ));
+            }
+            Err(e) => {
+                corrupted_metadata(
+                    e,
+                    &mut self.downloaded_metadata_blocks,
+                    self.raw_metadata.as_mut().unwrap(),
+                    self.raw_metadata_size.unwrap(),
+                );
             }
         }
     }
@@ -1451,4 +1549,22 @@ fn ip_port_list_to_compact_format(addrs: Vec<String>) -> Vec<u8> {
         compact_format.append(&mut port.to_vec());
     }
     compact_format
+}
+
+fn metadata_blocks_from_size(size: i64, default_value: bool) -> Vec<bool> {
+    vec![default_value; (size as f64 / 16384.).ceil() as usize]
+}
+
+fn corrupted_metadata(
+    error: Error,
+    downloaded_metadata_blocks: &mut Vec<bool>,
+    raw_metadata: &mut Vec<u8>,
+    raw_metadata_size: i64,
+) {
+    log::warn!(
+        "downloaded metadata is corrupted ({}), starting over its download...",
+        error
+    );
+    *downloaded_metadata_blocks = metadata_blocks_from_size(raw_metadata_size, false);
+    *raw_metadata = vec![0; raw_metadata_size as usize];
 }

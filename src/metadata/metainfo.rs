@@ -179,17 +179,21 @@ impl Metainfo {
     }
 
     pub fn get_files(&self) -> Vec<(String, u64)> {
-        match &self.file {
-            MetainfoFile::SingleFile(m) => {
-                vec![(m.name.clone(), m.length)]
+        get_files(&self.file)
+    }
+}
+
+pub fn get_files(metainfo_file: &MetainfoFile) -> Vec<(String, u64)> {
+    match metainfo_file {
+        MetainfoFile::SingleFile(m) => {
+            vec![(m.name.clone(), m.length)]
+        }
+        MetainfoFile::MultiFile(m) => {
+            let mut files = Vec::new();
+            for file in &m.files {
+                files.push((file.path.join("/"), file.length))
             }
-            MetainfoFile::MultiFile(m) => {
-                let mut files = Vec::new();
-                for file in &m.files {
-                    files.push((file.path.join("/"), file.length))
-                }
-                files
-            }
+            files
         }
     }
 }
