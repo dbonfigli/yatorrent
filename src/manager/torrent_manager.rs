@@ -943,7 +943,20 @@ impl TorrentManager {
                     piece_length,
                     piece_hashes,
                 ));
-                // todo magnet: reconnect to all peers, we must send interested
+                // we finally have the metadata and can exchange files
+                // we discarded have messages (we could not save them because we could not know how many pieces there were in total)
+                // and, most importantly, bitfield messages from peers till now, so, let's disconnect from the current peers:
+                // the reconnection will trigger the necessary bitfield message that we need to request pieces
+                // let's also ignore the last connection attemp for connected peers
+                let mut advertised_peers_mg = self.advertised_peers.lock().unwrap();
+                for (peer_addr, _) in self.peers.iter() {
+                    if let Some((advertised_peer, _)) = advertised_peers_mg.remove(peer_addr) {
+                        advertised_peers_mg
+                            .insert(peer_addr.clone(), (advertised_peer, SystemTime::UNIX_EPOCH));
+                    }
+                }
+                drop(advertised_peers_mg);
+                self.peers = HashMap::new();
             }
             Err(e) => {
                 corrupted_metadata(
@@ -1092,11 +1105,10 @@ impl TorrentManager {
                     !self.peers.contains_key(*k)
                     // avoid selecting peers we know are bad
                     && !self.bad_peers.contains(*k)
-                        // use peers we didn't try to connect to recently
-                        // this cooloff time is also important to avoid new connections to peers we attempted few secs ago
-                        // and for which a connection attempt is still inflight
-                        && now.duration_since(*last_connection_attempt).unwrap()
-                            > NEW_CONNECTION_COOL_OFF_PERIOD
+                    // use peers we didn't try to connect to recently
+                    // this cooloff time is also important to avoid new connections to peers we attempted few secs ago
+                    // and for which a connection attempt is still inflight
+                    && now.duration_since(*last_connection_attempt).unwrap() > NEW_CONNECTION_COOL_OFF_PERIOD
                 })
                 .collect::<Vec<_>>();
 
@@ -1236,13 +1248,13 @@ impl TorrentManager {
         }
 
         // send torrent file request
-        self.send_torrent_file_reqs().await;
+        self.send_metadata_reqs().await;
 
         // send piece requests
         self.send_pieces_reqs().await;
     }
 
-    async fn send_torrent_file_reqs(&mut self) {
+    async fn send_metadata_reqs(&mut self) {
         if self.file_manager.is_some() {
             return;
         }
