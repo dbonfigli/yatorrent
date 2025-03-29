@@ -120,6 +120,7 @@ async fn main() -> Result<()> {
                     args.port,
                     m.announce_list.clone(),
                     Some((m.get_files(), m.piece_length as u64, m.pieces)),
+                    Some(m.raw_metadata),
                     // dht data
                     args.dht_port,
                     m.nodes,

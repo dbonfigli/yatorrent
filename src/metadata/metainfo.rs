@@ -15,6 +15,7 @@ pub struct Metainfo {
     pub pieces: Vec<[u8; 20]>, // 20-byte SHA1 of each piece
     pub info_hash: [u8; 20], // 20-byte SHA1 hash of the value of the info key from the Metainfo file
     pub file: MetainfoFile,
+    pub raw_metadata: Vec<u8>, // metadata, i.e. the info dict, in bytes
 }
 
 impl fmt::Display for Metainfo {
@@ -173,6 +174,7 @@ impl Metainfo {
             pieces,
             info_hash,
             file,
+            raw_metadata: Value::encode(&(Value::Dict((*info_dict).clone(), 0, 0))),
         })
     }
 

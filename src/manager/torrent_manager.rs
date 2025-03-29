@@ -208,6 +208,8 @@ impl Peer {
 
 pub struct TorrentManager {
     file_manager: Option<FileManager>,
+    raw_metadata: Option<Vec<u8>>,
+    raw_metadata_size: Option<i64>,
     tracker_client: Arc<Mutex<TrackerClient>>,
     last_tracker_request_time: SystemTime,
     info_hash: [u8; 20],
@@ -247,11 +249,13 @@ impl TorrentManager {
             u64,                // piece_lenght
             Vec<[u8; 20]>,      // piece_hashes
         )>,
+        raw_metadata: Option<Vec<u8>>,
         // dht data
         listening_dht_port: u16,
         dht_nodes: Vec<String>,
     ) -> Self {
         let own_peer_id = generate_peer_id();
+        let raw_metadata_size = raw_metadata.as_ref().map(|m| m.len() as i64).or(None);
         TorrentManager {
             file_manager: match files_data {
                 Some((file_list, piece_length, piece_hashes)) => Some(FileManager::new(
@@ -262,6 +266,8 @@ impl TorrentManager {
                 )),
                 None => None,
             },
+            raw_metadata,
+            raw_metadata_size,
             tracker_client: Arc::new(Mutex::new(TrackerClient::new(
                 own_peer_id.clone(),
                 announce_list,
@@ -651,7 +657,11 @@ impl TorrentManager {
                         }
                         if let Some(Int(ut_metadata_id)) = m.get(&b"ut_metadata".to_vec()) {
                             if let Some(Int(metadata_size)) = d.get(&b"metadata_size".to_vec()) {
-                                // todo magnet: do somethig with metadata_size
+                                if *metadata_size <= 0 {
+                                    log::debug!("got an ut_metadata extension handshake where \"metadata_size\" was <= 0, ignoring this message");
+                                } else if self.raw_metadata_size.is_none() {
+                                    self.raw_metadata_size = Some(*metadata_size);
+                                }
                                 // this peer supports the ut_metadata extension, registered at number ut_metadata_id
                                 peer.ut_metadata_id = *ut_metadata_id as u8;
                             } else {
