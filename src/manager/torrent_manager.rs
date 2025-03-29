@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use std::cmp::Ordering;
+use std::cmp::{min, Ordering};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
@@ -738,15 +738,37 @@ impl TorrentManager {
                 match *msg_type {
                     METADATA_MESSAGE_REQUEST => {
                         match &mut self.file_manager {
-                            Some(file_manager) => {
-                                // todo magnet: send data
-                                // get proper block of data in metadata
-                                // send metedata block
-                                // peer.send_metadata_extension_message(
-                                //     &peer_addr,
-                                //     MetadataMessage::Data( .... ),
-                                // )
-                                // .await;
+                            Some(_) => {
+                                // if file_manager is initialized then raw_metadata_size is also completly known
+                                let block_start = *piece as usize * 16384;
+                                let block_end = min(
+                                    self.raw_metadata_size.unwrap() as usize,
+                                    block_start as usize + 16384,
+                                );
+                                if block_start >= block_end {
+                                    log::debug!("rejecting metadata message request for {piece} piece from {peer_addr}, requested pieces is out of range");
+                                    peer.send_metadata_extension_message(
+                                        &peer_addr,
+                                        MetadataMessage::Reject(*piece as u64),
+                                    )
+                                    .await;
+                                } else {
+                                    let mut block: Vec<u8> =
+                                        Vec::with_capacity(block_end - block_start);
+                                    block.copy_from_slice(
+                                        &self.raw_metadata.as_ref().unwrap()
+                                            [block_start..block_end],
+                                    );
+                                    peer.send_metadata_extension_message(
+                                        &peer_addr,
+                                        MetadataMessage::Data(
+                                            *piece as u64,
+                                            self.raw_metadata_size.unwrap() as u64,
+                                            block,
+                                        ),
+                                    )
+                                    .await;
+                                }
                             }
                             None => {
                                 // send reject
