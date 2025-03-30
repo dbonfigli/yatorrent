@@ -13,6 +13,15 @@ const UDP_TIMEOUT: Duration = Duration::from_secs(15);
 const UDP_RETRY_COOLOFF_SEC: u64 = 15;
 const UDP_MAX_RETRIES: u32 = 3; // according to https://www.bittorrent.org/beps/bep_0015.html it should be 8, but it is way too much
 
+#[derive(Debug)]
+pub(crate) struct NoTrackerError;
+
+impl std::fmt::Display for NoTrackerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "no trackers in list")
+    }
+}
+
 #[derive(PartialEq, Debug, Clone)]
 pub struct Peer {
     pub peer_id: Option<String>, // peer's self-selected ID, as described above for the tracker request (string)
@@ -168,7 +177,7 @@ impl TrackerClient {
             }
         }
         if error_message.len() == 0 {
-            error_message.push("no trackers in list".to_string());
+            bail!(NoTrackerError);
         }
         bail!(error_message.join("; "));
     }

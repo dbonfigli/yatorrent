@@ -24,7 +24,7 @@ use crate::util::start_tick;
 use crate::{bencoding, tracker};
 use crate::{
     persistence::file_manager::FileManager,
-    tracker::{Event, Response, TrackerClient},
+    tracker::{Event, NoTrackerError, Response, TrackerClient},
 };
 
 use crate::bencoding::Value::{self, Dict, Int, Str};
@@ -1508,7 +1508,10 @@ async fn request_to_tracker(
         .await
     {
         Err(e) => {
-            log::error!("could not perform request to tracker: {e}");
+            match e.downcast_ref() {
+                Some(NoTrackerError) => log::info!("could not perform request to tracker: {e}"),
+                _ => log::error!("could not perform request to tracker: {e}"),
+            }
             bail!(e);
         }
         Ok(Response::Failure(msg)) => {
