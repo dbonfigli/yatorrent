@@ -246,7 +246,7 @@ impl TrackerClient {
         )?;
 
         if let Some(left) = left {
-            url.set_query(Some(&("left=".to_string() + &left.to_string())));
+            url.query_pairs_mut().append_pair("left", &left.to_string());
         }
 
         // we need this so to avoid reqwest to urlencode again info_hash - binary array cannot be natively url encoded by it
