@@ -39,7 +39,7 @@ pub enum PeerError {
     Others,
 }
 
-pub type ToPeerCancelMsg = (u32, u32, u32, SystemTime); // piece_idx, begin, lenght, cancel time
+pub type ToPeerCancelMsg = (u32, u32, u32, SystemTime); // piece_idx, begin, length, cancel time
 
 pub async fn connect_to_new_peer(
     host: String,
@@ -380,10 +380,10 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                 // avoid sending data if the request has already been canceled by the peer
                 if let Message::Piece(piece_idx, begin, data) = &proto_msg {
                     // receive pending cancellations
-                    while let Ok((piece_idx, begin, lenght, cancel_time)) =
+                    while let Ok((piece_idx, begin, length, cancel_time)) =
                         to_peer_cancel_rx.try_recv()
                     {
-                        cancellations.insert((piece_idx, begin, lenght), cancel_time);
+                        cancellations.insert((piece_idx, begin, length), cancel_time);
                     }
                     // remove expired cancellations
                     let cancellations_keys: Vec<(u32, u32, u32)> =

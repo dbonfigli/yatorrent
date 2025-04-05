@@ -25,7 +25,7 @@ pub struct MetainfoMultiFile {
 #[derive(PartialEq, Debug)]
 pub struct MultifileFile {
     pub length: u64,       // length of the file in bytes. (integer)
-    pub path: Vec<String>, // a list containing one or more string elements that together represent the path and filename. Each element in the list corresponds to either a directory name or (in the case of the final element) the filename. For example, a the file "dir1/dir2/file.ext" would consist of three string elements: "dir1", "dir2", and "file.ext". This is encoded as a bencoded list of strings such as l4:dir14:dir28:file.exte
+    pub path: Vec<String>, // a list containing one or more string elements that together represent the path and filename. Each element in the list corresponds to either a directory name or (in the case of the final element) the filename. For example, the file "dir1/dir2/file.ext" would consist of three string elements: "dir1", "dir2", and "file.ext". This is encoded as a bencoded list of strings such as l4:dir14:dir28:file.exte
 }
 
 pub fn get_infodict(
@@ -86,7 +86,7 @@ pub fn get_infodict(
                 }
             };
 
-            // lenght
+            // length
             let entry_length = match entry.get(&b"length".to_vec()) {
                 Some(Value::Int(a)) => a,
                 _ => bail!(
@@ -125,7 +125,7 @@ pub fn get_infodict(
         }
         metainfo_file = MetainfoFile::MultiFile(MetainfoMultiFile {
             name: name_string,
-            files: files,
+            files,
         })
     } else {
         bail!(

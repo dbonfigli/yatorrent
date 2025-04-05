@@ -36,11 +36,11 @@ impl Protocol for TcpStream {
                 buf[27] = 1u8; // send support for DHT
                 buf[28..48].copy_from_slice(&info_hash);
                 buf[48..68].copy_from_slice(&peer_id);
-                if let Err(e) = write.write_all(&buf).await {
-                    return Err(e);
+                return if let Err(e) = write.write_all(&buf).await {
+                    Err(e)
                 } else {
                     log::trace!("peer {}: full handshake sent", &peer_addr);
-                    return Ok(());
+                    Ok(())
                 }
             },
             // receive
@@ -88,7 +88,7 @@ impl Protocol for TcpStream {
         if let Err(e) = write_result {
             bail!(e);
         }
-        return Ok(read_result?);
+        Ok(read_result?)
     }
 }
 
@@ -98,18 +98,18 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
             Message::KeepAlive => {
                 let buf: [u8; 4] = [0; 4];
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
             Message::Choke => {
                 let mut buf: [u8; 5] = [0; 5];
                 buf[3] = 1;
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
             Message::Unchoke => {
@@ -117,9 +117,9 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                 buf[3] = 1;
                 buf[4] = 1;
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
             Message::Interested => {
@@ -127,9 +127,9 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                 buf[3] = 1;
                 buf[4] = 2;
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
             Message::NotInterested => {
@@ -137,9 +137,9 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                 buf[3] = 1;
                 buf[4] = 3;
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
             Message::Have(piece_num) => {
@@ -148,17 +148,17 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                 buf[4] = 4;
                 buf[5..9].copy_from_slice(&piece_num.to_be_bytes());
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
             Message::Bitfield(bitfield) => {
                 let buf = encode_bitfield(bitfield);
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
             Message::Request(index, begin, end) => {
@@ -169,9 +169,9 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                 buf[9..13].copy_from_slice(&begin.to_be_bytes());
                 buf[13..17].copy_from_slice(&end.to_be_bytes());
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
             Message::Piece(index, begin, block) => {
@@ -182,9 +182,9 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                 buf[9..13].copy_from_slice(&begin.to_be_bytes());
                 buf[13..].copy_from_slice(&block);
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
             Message::Cancel(index, begin, end) => {
@@ -195,9 +195,9 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                 buf[9..13].copy_from_slice(&begin.to_be_bytes());
                 buf[13..17].copy_from_slice(&end.to_be_bytes());
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
             Message::Port(port) => {
@@ -206,9 +206,9 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                 buf[4] = 9;
                 buf[5..7].copy_from_slice(&port.to_be_bytes());
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
             Message::Extended(id, value, additional_data) => {
@@ -222,9 +222,9 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                 buf[6..].copy_from_slice(&encoded_value);
                 buf[6 + encoded_value.len()..].copy_from_slice(&additional_data);
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
         }
@@ -250,20 +250,20 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
         }
         match type_message_buf[0] {
             // choke
-            0 => return Ok(Message::Choke),
+            0 => Ok(Message::Choke),
             // unchoke
-            1 => return Ok(Message::Unchoke),
+            1 => Ok(Message::Unchoke),
             // interested
-            2 => return Ok(Message::Interested),
+            2 => Ok(Message::Interested),
             // not interested
-            3 => return Ok(Message::NotInterested),
+            3 => Ok(Message::NotInterested),
             // have
             4 => {
                 let mut buf: [u8; 4] = [0; 4];
                 if let Err(e) = self.read_exact(&mut buf).await {
                     return Err(e.into());
                 }
-                return Ok(Message::Have(u32::from_be_bytes(buf)));
+                Ok(Message::Have(u32::from_be_bytes(buf)))
             }
             // bitfield
             5 => {
@@ -273,7 +273,7 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                     return Err(e.into());
                 }
                 let bitfield = decode_bitfield(buf);
-                return Ok(Message::Bitfield(bitfield));
+                Ok(Message::Bitfield(bitfield))
             }
             // request
             6 => {
@@ -289,11 +289,11 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                 if let Err(e) = self.read_exact(&mut end_buf).await {
                     return Err(e.into());
                 }
-                return Ok(Message::Request(
+                Ok(Message::Request(
                     u32::from_be_bytes(index_buf),
                     u32::from_be_bytes(begin_buf),
                     u32::from_be_bytes(end_buf),
-                ));
+                ))
             }
             // piece
             7 => {
@@ -310,11 +310,11 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                 if let Err(e) = self.read_exact(&mut block_buf).await {
                     return Err(e.into());
                 }
-                return Ok(Message::Piece(
+                Ok(Message::Piece(
                     u32::from_be_bytes(index_buf),
                     u32::from_be_bytes(begin_buf),
                     block_buf,
-                ));
+                ))
             }
             // cancel
             8 => {
@@ -330,11 +330,11 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                 if let Err(e) = self.read_exact(&mut end_buf).await {
                     return Err(e.into());
                 }
-                return Ok(Message::Cancel(
+                Ok(Message::Cancel(
                     u32::from_be_bytes(index_buf),
                     u32::from_be_bytes(begin_buf),
                     u32::from_be_bytes(end_buf),
-                ));
+                ))
             }
             // port
             9 => {
@@ -342,7 +342,7 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                 if let Err(e) = self.read_exact(&mut buf).await {
                     return Err(e.into());
                 }
-                return Ok(Message::Port(u16::from_be_bytes(buf)));
+                Ok(Message::Port(u16::from_be_bytes(buf)))
             }
             // extension message
             20 => {
@@ -357,17 +357,17 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                     return Err(e.into());
                 }
                 let (extended_message, dict_size) = Value::new_with_size(&buf);
-                return Ok(Message::Extended(
+                Ok(Message::Extended(
                     extended_message_id,
                     extended_message,
                     buf[dict_size..].to_vec(),
-                ));
+                ))
             }
             unknown_message_id => {
-                return Err(ProtocolError::new(
+                Err(ProtocolError::new(
                     format!("could not parse message type id: {}", unknown_message_id).to_string(),
                 )
-                .into())
+                    .into())
             }
         }
     }

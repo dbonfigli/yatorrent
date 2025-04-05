@@ -107,7 +107,7 @@ async fn main() -> Result<()> {
                 log::info!("torrent file metainfo:\n{m}");
                 if m.announce_list.len() == 0 {
                     if m.url_list.len() != 0 {
-                        log::warn!("The .torrent file contains a \"url-list\" field, this means the torrent can be dowloaded via HTTP/FTP http://www.bittorrent.org/beps/bep_0019.html), this is not supported by this client");
+                        log::warn!("The .torrent file contains a \"url-list\" field, this means the torrent can be downloaded via HTTP/FTP http://www.bittorrent.org/beps/bep_0019.html), this is not supported by this client");
                     }
                     log::warn!("The .torrent file does not contain valid announces (\"announce-list\" or \"announce\" fields): this is a trackless torrent relying only on DHT");
                 }
@@ -119,7 +119,7 @@ async fn main() -> Result<()> {
                     base_path,
                     args.port,
                     m.announce_list.clone(),
-                    Some((m.get_files(), m.piece_length as u64, m.pieces)),
+                    Some((m.get_files(), m.piece_length, m.pieces)),
                     Some(m.raw_metadata),
                     // dht data
                     args.dht_port,

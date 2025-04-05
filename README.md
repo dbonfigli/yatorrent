@@ -23,7 +23,7 @@ and run with:
 $ yatorrent -t <path to torrent file>
 ```
 
-All command line arguments (show them with the `--help`), also definible via environment variables:
+All command line arguments (show them with the `--help`), also definable via environment variables:
 
 ```
 Usage: yatorrent [OPTIONS]
@@ -44,10 +44,10 @@ Things yet to be implemented / todos:
 - optionally limit upload/download speed
 - do not over-request blocks
 - better choking algorithm
-- better block requests pipelining algorithm: use also peer bandwith stats, tune request queue size
+- better block requests pipelining algorithm: use also peer bandwidth stats, tune request queue size
 - check for stalled downloads / try new peers if no current one has a piece we want
-- better algorithm to exlude bad peers for new connections
+- better algorithm to exclude bad peers for new connections
 - remove not interested peers if we are also not interested
-- avoid re-requesting blocks after receiving choke message for awhile - requested blocks could still come
+- avoid re-requesting blocks after receiving choke message for a while - requested blocks could still come
 - text-based UI / ncourses
 - [Extension for Peers to Send Metadata Files (Magnet links)](https://www.bittorrent.org/beps/bep_0009.html)

@@ -155,7 +155,7 @@ impl FileManager {
         log::info!("checking pieces already downloaded...");
         for idx in 0..self.piece_hashes.len() {
             // print progress
-            if idx % (std::cmp::max(10, self.piece_to_files.len()) / 10) == 0 {
+            if idx % (cmp::max(10, self.piece_to_files.len()) / 10) == 0 {
                 log::info!(
                     "{:>3}%...",
                     f64::round((idx as f64 * 100.0) / self.piece_to_files.len() as f64)
@@ -241,12 +241,12 @@ impl FileManager {
         block_begin: u64,
         block_length: u64,
     ) -> Result<Vec<u8>> {
-        return self.read_piece_block_with_have_piece_check(
+        self.read_piece_block_with_have_piece_check(
             piece_idx,
             block_begin,
             block_length,
             true,
-        );
+        )
     }
 
     fn read_piece_block_with_have_piece_check(
@@ -277,7 +277,7 @@ impl FileManager {
             if current_piece_offset != block_begin {
                 let piece_fragment_size_in_file = end - start;
                 if piece_fragment_size_in_file < block_begin - current_piece_offset {
-                    // the current chunk of data in the file is not enough to reach the begin of the block we want to read
+                    // the current chunk of data in the file is not enough to reach the beginning of the block we want to read
                     // move forward to the next file
                     current_piece_offset += piece_fragment_size_in_file;
                     continue;
@@ -342,7 +342,7 @@ impl FileManager {
         }
         let piece = self.incomplete_pieces.get_mut(&piece_idx).unwrap();
         if piece.contains(block_begin, block_begin + data_len) {
-            log::trace!("we already have written all the data in this block (begin: {block_begin} lenght: {data_len}) for piece {piece_idx}, will avoid writing it again");
+            log::trace!("we already have written all the data in this block (begin: {block_begin} length: {data_len}) for piece {piece_idx}, will avoid writing it again");
             self.wasted_bytes += data.len();
             return Ok(false);
         }
@@ -392,9 +392,9 @@ impl FileManager {
                 self.piece_completion_status[piece_idx] = true;
                 self.refresh_completed_files(); //todo: optimize this
             }
-            return Ok(true);
+            Ok(true)
         } else {
-            return Ok(false);
+            Ok(false)
         }
     }
 

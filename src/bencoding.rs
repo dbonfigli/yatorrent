@@ -93,7 +93,7 @@ impl Value {
     }
 
     pub fn new_with_size(source: &Vec<u8>) -> (Value, usize) {
-        return from_char_vec(&source, 0);
+        from_char_vec(&source, 0)
     }
 
     fn new_error(elem: ErrorElem, index: IndexOfError) -> Self {
@@ -188,10 +188,10 @@ fn parse_str(source: &Vec<u8>, index: usize) -> (Value, usize) {
             index,
         );
     }
-    return (
+    (
         Value::Str(source[index..end_string_index].to_vec()),
         end_string_index,
-    );
+    )
 }
 
 fn parse_int(source: &Vec<u8>, index: usize) -> (Value, usize) {
@@ -224,8 +224,8 @@ fn parse_int(source: &Vec<u8>, index: usize) -> (Value, usize) {
     // parse int and return
     let int_opt = int_str.parse::<i64>();
     match int_opt {
-        Ok(int_val) => return (Value::Int(int_val), end_int_index + 1),
-        Err(_) => return (Value::new_error(ErrorElem::Int, start_int_index), index),
+        Ok(int_val) => (Value::Int(int_val), end_int_index + 1),
+        Err(_) => (Value::new_error(ErrorElem::Int, start_int_index), index),
     }
 }
 

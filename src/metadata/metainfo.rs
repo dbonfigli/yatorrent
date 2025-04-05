@@ -28,7 +28,7 @@ impl fmt::Display for Metainfo {
             .join("\n");
         write!(
             f,
-            "announces: {:?}\nurl-list: {:?}\nnodes:{:?}\npiece_lenght: {}\nn. pieces: {}\ninfo_hash: {}\nfiles:\n{}",
+            "announces: {:?}\nurl-list: {:?}\nnodes:{:?}\npiece_length: {}\nn. pieces: {}\ninfo_hash: {}\nfiles:\n{}",
             self.announce_list,
             self.url_list,
             self.nodes,
