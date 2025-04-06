@@ -17,9 +17,7 @@ impl Piece {
     pub fn contains(&self, begin: u64, end: u64) -> bool {
         assert!(begin < end || end < self.length);
         match self.get_fragment_idx_containing_value(begin) {
-            None => {
-                false
-            }
+            None => false,
             Some(idx) => {
                 if end <= self.fragments[idx].1 {
                     return true;

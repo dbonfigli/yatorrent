@@ -480,16 +480,14 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
 
     match (&nodes, &values) {
         // if values nor nodes were there, this is a GetPeersOrFindNodeResp
-        (Some(_), None) | (None, Some(_)) | (Some(_), Some(_)) => {
-            Ok(KRPCMessage::GetPeersOrFindNodeResp(
-                GetPeersOrFindNodeRespData {
-                    target_id: id_arr,
-                    token: token_opt,
-                    nodes,
-                    values,
-                },
-            ))
-        }
+        (Some(_), None) | (None, Some(_)) | (Some(_), Some(_)) => Ok(
+            KRPCMessage::GetPeersOrFindNodeResp(GetPeersOrFindNodeRespData {
+                target_id: id_arr,
+                token: token_opt,
+                nodes,
+                values,
+            }),
+        ),
         // else, it is a PingOrAnnouncePeerResp
         _ => Ok(KRPCMessage::PingOrAnnouncePeerResp(id_arr)),
     }

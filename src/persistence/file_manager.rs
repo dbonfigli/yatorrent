@@ -241,12 +241,7 @@ impl FileManager {
         block_begin: u64,
         block_length: u64,
     ) -> Result<Vec<u8>> {
-        self.read_piece_block_with_have_piece_check(
-            piece_idx,
-            block_begin,
-            block_length,
-            true,
-        )
+        self.read_piece_block_with_have_piece_check(piece_idx, block_begin, block_length, true)
     }
 
     fn read_piece_block_with_have_piece_check(

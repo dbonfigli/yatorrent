@@ -7,8 +7,8 @@ use tokio::{
 use crate::bencoding::Value;
 use anyhow::{bail, Result};
 use rand::seq::SliceRandom;
-use std::{fmt, io::Read, str, time::Duration};
 use std::fmt::Display;
+use std::{fmt, io::Read, str, time::Duration};
 
 const UDP_TIMEOUT: Duration = Duration::from_secs(15);
 const UDP_RETRY_COOL_OFF_SEC: u64 = 15;
@@ -86,7 +86,7 @@ impl Display for Event {
             Event::Stopped => "stopped",
             Event::Completed => "completed",
         }
-            .to_string();
+        .to_string();
         write!(f, "{}", str)
     }
 }
@@ -195,8 +195,7 @@ impl TrackerClient {
     ) -> Result<Response> {
         if url.starts_with("http") {
             log::debug!("trying reaching http tracker {url}...");
-            self
-                .request_to_http_tracker(url, info_hash, uploaded, downloaded, left, event)
+            self.request_to_http_tracker(url, info_hash, uploaded, downloaded, left, event)
                 .await
         } else if url.starts_with("udp") {
             let mut attempts = 0;

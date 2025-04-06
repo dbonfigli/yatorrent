@@ -41,7 +41,7 @@ impl Protocol for TcpStream {
                 } else {
                     log::trace!("peer {}: full handshake sent", &peer_addr);
                     Ok(())
-                }
+                };
             },
             // receive
             async {
@@ -363,12 +363,10 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                     buf[dict_size..].to_vec(),
                 ))
             }
-            unknown_message_id => {
-                Err(ProtocolError::new(
-                    format!("could not parse message type id: {}", unknown_message_id).to_string(),
-                )
-                    .into())
-            }
+            unknown_message_id => Err(ProtocolError::new(
+                format!("could not parse message type id: {}", unknown_message_id).to_string(),
+            )
+            .into()),
         }
     }
 }
