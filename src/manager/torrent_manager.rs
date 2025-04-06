@@ -20,8 +20,8 @@ use crate::metadata::infodict::{self};
 use crate::metadata::metainfo::get_files;
 use crate::persistence::piece::Piece;
 use crate::torrent_protocol::wire_protocol::Message;
-use crate::util::start_tick;
 use crate::tracker;
+use crate::util::start_tick;
 use crate::{
     persistence::file_manager::FileManager,
     tracker::{Event, NoTrackerError, Response, TrackerClient},
@@ -591,8 +591,7 @@ impl TorrentManager {
 
         // remove outstanding requests that will be discarded because the peer is choking
         for (piece_idx, _) in peer.requested_pieces.iter() {
-            self.outstanding_piece_assignments
-                .remove(&(*piece_idx));
+            self.outstanding_piece_assignments.remove(&(*piece_idx));
         }
         peer.outstanding_block_requests = HashMap::new();
         peer.requested_pieces = HashMap::new();
@@ -724,6 +723,7 @@ impl TorrentManager {
                 if *metadata_size <= 0 {
                     log::debug!("got an ut_metadata extension handshake where \"metadata_size\" was <= 0, ignoring this message");
                 } else if self.raw_metadata_size.is_none() {
+                    // we we do not know yet the metdata size, take nodes of it
                     self.raw_metadata_size = Some(*metadata_size);
                     self.downloaded_metadata_blocks =
                         metadata_blocks_from_size(*metadata_size, false);
@@ -815,10 +815,7 @@ impl TorrentManager {
                     .await;
             }
             METADATA_MESSAGE_DATA => {
-                self.handle_receive_extended_message_metadata_message_data(
-                    *piece,
-                    additional_data,
-                );
+                self.handle_receive_extended_message_metadata_message_data(*piece, additional_data);
             }
             METADATA_MESSAGE_REJECT => {
                 // todo magnet: implement
@@ -1236,7 +1233,8 @@ impl TorrentManager {
         // send PEX messages
         for (peer_addr, peer) in self.peers.iter_mut().filter(|(_, p)| {
             p.support_pex_extension()
-                && now.duration_since(p.last_pex_message_sent).unwrap() > PEX_MESSAGE_COOL_OFF_PERIOD
+                && now.duration_since(p.last_pex_message_sent).unwrap()
+                    > PEX_MESSAGE_COOL_OFF_PERIOD
         }) {
             let elided_events = self
                 .added_dropped_peer_events
@@ -1605,7 +1603,7 @@ async fn assign_and_send_piece_reqs(
             Ordering::Greater
         } else {
             Ordering::Equal
-        }
+        };
     });
 
     if possible_peers.len() > 0 {
