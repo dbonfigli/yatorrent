@@ -299,24 +299,23 @@ async fn handshake(
 
     // if peer supports extensions, send PEX and metadata extension support
     if reserved[5] & 0x10 != 0 {
-        let extension_handshake = Value::Dict(
-            HashMap::from([(
-                b"m".to_vec(),
-                Value::Dict(
-                    HashMap::from([
-                        (b"ut_pex".to_vec(), Value::Int(UT_PEX_EXTENSION_ID)),
-                        (
-                            b"ut_metadata".to_vec(),
-                            Value::Int(UT_METADATA_EXTENSION_ID),
-                        ),
-                    ]),
-                    0,
-                    0,
-                ),
-            )]),
-            0,
-            0,
-        );
+        let handshake_dict = HashMap::from([(
+            b"m".to_vec(),
+            Value::Dict(
+                HashMap::from([
+                    (b"ut_pex".to_vec(), Value::Int(UT_PEX_EXTENSION_ID)),
+                    (
+                        b"ut_metadata".to_vec(),
+                        Value::Int(UT_METADATA_EXTENSION_ID),
+                    ),
+                ]),
+                0,
+                0,
+            ),
+        )]);
+        // todo magnet: here we must also add the metadata_size, if known
+        // handshake_dict.insert(b"metadata_size".to_vec(), metadata_size);
+        let extension_handshake = Value::Dict(handshake_dict, 0, 0);
         write
             .send(Message::Extended(0, extension_handshake, Vec::new()))
             .await?;
