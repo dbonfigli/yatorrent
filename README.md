@@ -7,6 +7,7 @@ A command line torrent client written in rust, implementing the [Torrent protoco
 - [DHT Protocol](http://bittorrent.org/beps/bep_0005.html);
 - [Extension Protocol](http://bittorrent.org/beps/bep_0010.html);
 - [Peer Exchange (PEX)](https://www.bittorrent.org/beps/bep_0011.html);
+- [Extension for Peers to Send Metadata Files (Magnet links)](https://www.bittorrent.org/beps/bep_0009.html);
 - [Tracker Returns Compact Peer Lists](https://www.bittorrent.org/beps/bep_0023.html).
 
 This is a didactic project I created purely to learn rust, it is far from feature complete or production ready, albeit working: it has been tested to saturate a 1Gb/s internet connection with low cpu usage.
@@ -50,4 +51,3 @@ Things yet to be implemented / todos:
 - remove not interested peers if we are also not interested
 - avoid re-requesting blocks after receiving choke message for a while - requested blocks could still come
 - text-based UI / ncourses
-- [Extension for Peers to Send Metadata Files (Magnet links)](https://www.bittorrent.org/beps/bep_0009.html)
