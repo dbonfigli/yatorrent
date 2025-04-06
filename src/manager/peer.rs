@@ -48,6 +48,7 @@ pub async fn connect_to_new_peer(
     own_peer_id: String,
     tcp_wire_protocol_listening_port: u16,
     piece_completion_status: Option<Vec<bool>>,
+    metadata_size: Option<i64>,
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
 ) {
     let dest = format!("{host}:{port}");
@@ -95,6 +96,7 @@ pub async fn connect_to_new_peer(
                     own_peer_id.clone(),
                     tcp_wire_protocol_listening_port,
                     piece_completion_status,
+                    metadata_size,
                 ),
             )
             .await
@@ -133,8 +135,10 @@ pub async fn run_new_incoming_peers_handler(
     tcp_wire_protocol_listening_port: u16,
     piece_completion_status: Option<Vec<bool>>,
     mut ok_to_accept_connection_rx: Receiver<bool>,
+    mut metadata_size_rx: Receiver<i64>,
     mut piece_completion_status_rx: Receiver<Vec<bool>>,
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
+    raw_metadata_size: Option<i64>,
 ) {
     let ok_to_accept_connection_for_rcv: Arc<Mutex<bool>> = Arc::new(Mutex::new(true)); // accept new connections at start
     let ok_to_accept_connection = ok_to_accept_connection_for_rcv.clone();
@@ -145,6 +149,17 @@ pub async fn run_new_incoming_peers_handler(
                 ok_to_accept_connection_for_rcv.lock().await;
             *ok_to_accept_connection_for_rcv_lock = msg;
             drop(ok_to_accept_connection_for_rcv_lock);
+        }
+    });
+
+    let metadata_size_for_rcv: Arc<Mutex<Option<i64>>> = Arc::new(Mutex::new(raw_metadata_size));
+    let metadata_size = metadata_size_for_rcv.clone();
+    tokio::spawn(async move {
+        while let Some(msg) = metadata_size_rx.recv().await {
+            log::trace!("got message for newly known metadata size: {msg}");
+            let mut metadata_size_for_rcv_lock = metadata_size_for_rcv.lock().await;
+            *metadata_size_for_rcv_lock = Some(msg);
+            drop(metadata_size_for_rcv_lock);
         }
     });
 
@@ -183,12 +198,16 @@ pub async fn run_new_incoming_peers_handler(
             }
 
             let piece_completion_status_for_spawn = piece_completion_status.clone();
+            let metadata_size_for_spawn = metadata_size.clone();
             let own_peer_id_for_spawn = own_peer_id.clone();
             let peers_to_torrent_manager_tx_for_spawn = peers_to_torrent_manager_tx.clone();
             tokio::spawn(async move {
                 let pcs_lock = piece_completion_status_for_spawn.lock().await;
                 let pcs = pcs_lock.clone();
                 drop(pcs_lock);
+                let metadata_size_lock = metadata_size_for_spawn.lock().await;
+                let metadata_size = metadata_size_lock.clone();
+                drop(metadata_size_lock);
                 let remote_addr = addr_or_unknown(&stream);
                 match timeout(
                     DEFAULT_TIMEOUT,
@@ -198,6 +217,7 @@ pub async fn run_new_incoming_peers_handler(
                         own_peer_id_for_spawn,
                         tcp_wire_protocol_listening_port,
                         pcs,
+                        metadata_size,
                     ),
                 )
                 .await
@@ -263,6 +283,7 @@ async fn handshake(
     own_peer_id: String,
     tcp_wire_protocol_listening_port: u16,
     piece_completion_status: Option<Vec<bool>>,
+    metadata_size: Option<i64>,
 ) -> Result<TcpStream> {
     let (peer_protocol, reserved, peer_info_hash, peer_id) = stream
         .handshake(info_hash, own_peer_id.as_bytes().try_into()?)
@@ -299,7 +320,7 @@ async fn handshake(
 
     // if peer supports extensions, send PEX and metadata extension support
     if reserved[5] & 0x10 != 0 {
-        let handshake_dict = HashMap::from([(
+        let mut handshake_dict = HashMap::from([(
             b"m".to_vec(),
             Value::Dict(
                 HashMap::from([
@@ -313,8 +334,9 @@ async fn handshake(
                 0,
             ),
         )]);
-        // todo magnet: here we must also add the metadata_size, if known
-        // handshake_dict.insert(b"metadata_size".to_vec(), metadata_size);
+        if let Some(metadata_size) = metadata_size {
+            handshake_dict.insert(b"metadata_size".to_vec(), Value::Int(metadata_size));
+        }
         let extension_handshake = Value::Dict(handshake_dict, 0, 0);
         write
             .send(Message::Extended(0, extension_handshake, Vec::new()))

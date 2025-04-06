@@ -337,6 +337,7 @@ impl TorrentManager {
 
         // start incoming peer connections handler
         let (ok_to_accept_connection_tx, ok_to_accept_connection_rx) = mpsc::channel(10);
+        let (metadata_size_tx, metadata_size_rx) = mpsc::channel(1);
         let (piece_completion_status_tx, piece_completion_status_rx) = mpsc::channel(100);
         let (peers_to_torrent_manager_tx, peers_to_torrent_manager_rx) =
             mpsc::channel::<PeersToManagerMsg>(PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY);
@@ -348,8 +349,10 @@ impl TorrentManager {
                 .as_ref()
                 .map(|f| f.piece_completion_status.clone()),
             ok_to_accept_connection_rx,
+            metadata_size_rx,
             piece_completion_status_rx,
             peers_to_torrent_manager_tx.clone(),
+            self.raw_metadata_size,
         )
         .await;
 
@@ -360,6 +363,7 @@ impl TorrentManager {
         // start control loop to handle channel messages - will block forever
         self.control_loop(
             ok_to_accept_connection_tx.clone(),
+            metadata_size_tx.clone(),
             piece_completion_status_tx.clone(),
             peers_to_torrent_manager_tx,
             peers_to_torrent_manager_rx,
@@ -373,6 +377,7 @@ impl TorrentManager {
     async fn control_loop(
         &mut self,
         ok_to_accept_connection_tx: Sender<bool>,
+        metadata_size_tx: Sender<i64>,
         piece_completion_status_channel_tx: Sender<Vec<bool>>,
         peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
         mut peers_to_torrent_manager_rx: Receiver<PeersToManagerMsg>,
@@ -388,7 +393,7 @@ impl TorrentManager {
                             self.handle_peer_error(peer_addr, error_type, ok_to_accept_connection_tx.clone()).await;
                         }
                         PeersToManagerMsg::Receive(peer_addr, msg) => {
-                            self.handle_receive_message(peer_addr, msg, piece_completion_status_channel_tx.clone(), peers_to_torrent_manager_tx.capacity(), to_dht_manager_tx.clone()).await;
+                            self.handle_receive_message(peer_addr, msg, metadata_size_tx.clone(), piece_completion_status_channel_tx.clone(), peers_to_torrent_manager_tx.capacity(), to_dht_manager_tx.clone()).await;
                         }
                         PeersToManagerMsg::NewPeer(tcp_stream) => {
                             self.handle_new_peer(tcp_stream, peers_to_torrent_manager_tx.clone(), ok_to_accept_connection_tx.clone(), to_dht_manager_tx.clone()).await;
@@ -413,6 +418,7 @@ impl TorrentManager {
         &mut self,
         peer_addr: String,
         msg: Message,
+        metadata_size_tx: Sender<i64>,
         piece_completion_status_tx: Sender<Vec<bool>>,
         peers_to_torrent_manager_channel_capacity: usize,
         to_dht_manager_tx: Sender<ToDhtManagerMsg>,
@@ -492,6 +498,7 @@ impl TorrentManager {
                     extension_id,
                     extended_message,
                     additional_data,
+                    metadata_size_tx,
                 )
                 .await;
             }
@@ -649,6 +656,7 @@ impl TorrentManager {
         extension_id: u8,
         extended_message: Value,
         additional_data: Vec<u8>,
+        metadata_size_tx: Sender<i64>,
     ) {
         let peer = match self.peers.get(&peer_addr) {
             Some(peer) => peer,
@@ -670,6 +678,7 @@ impl TorrentManager {
                     extended_message,
                     peer_addr,
                     additional_data,
+                    metadata_size_tx,
                 )
                 .await;
             }
@@ -718,21 +727,19 @@ impl TorrentManager {
                 .await;
         }
         if let Some(Int(ut_metadata_id)) = m.get(&b"ut_metadata".to_vec()) {
+            // this peer supports the ut_metadata extension, registered at number ut_metadata_id
+            peer.ut_metadata_id = *ut_metadata_id as u8;
             if let Some(Int(metadata_size)) = extended_message_dict.get(&b"metadata_size".to_vec())
             {
                 if *metadata_size <= 0 {
                     log::debug!("got an ut_metadata extension handshake where \"metadata_size\" was <= 0, ignoring this message");
                 } else if self.raw_metadata_size.is_none() {
-                    // we we do not know yet the metdata size, take nodes of it
+                    // we we do not know yet the metdata size, take notes
                     self.raw_metadata_size = Some(*metadata_size);
                     self.downloaded_metadata_blocks =
                         metadata_blocks_from_size(*metadata_size, false);
                     self.raw_metadata = Some(vec![0; *metadata_size as usize]);
                 }
-                // this peer supports the ut_metadata extension, registered at number ut_metadata_id
-                peer.ut_metadata_id = *ut_metadata_id as u8;
-            } else {
-                log::debug!("got an ut_metadata extension handshake without the required an \"metadata_size\", ignoring this message");
             }
         }
     }
@@ -787,6 +794,7 @@ impl TorrentManager {
         value: Value,
         peer_addr: String,
         additional_data: Vec<u8>,
+        metadata_size_tx: Sender<i64>,
     ) {
         let d = match value {
             Dict(d, _, _) => d,
@@ -815,7 +823,21 @@ impl TorrentManager {
                     .await;
             }
             METADATA_MESSAGE_DATA => {
-                self.handle_receive_extended_message_metadata_message_data(*piece, additional_data);
+                if let Some(Int(metadata_size)) = d.get(&b"total_size".to_vec()) {
+                    if self.raw_metadata_size.is_none() {
+                        // we we do not know yet the metdata size, take notes
+                        self.raw_metadata_size = Some(*metadata_size);
+                        self.downloaded_metadata_blocks =
+                            metadata_blocks_from_size(*metadata_size, false);
+                        self.raw_metadata = Some(vec![0; *metadata_size as usize]);
+                    }
+                };
+                self.handle_receive_extended_message_metadata_message_data(
+                    *piece,
+                    additional_data,
+                    metadata_size_tx,
+                )
+                .await;
             }
             METADATA_MESSAGE_REJECT => {
                 // todo magnet: implement
@@ -876,19 +898,12 @@ impl TorrentManager {
         }
     }
 
-    fn handle_receive_extended_message_metadata_message_data(
+    async fn handle_receive_extended_message_metadata_message_data(
         &mut self,
         piece: i64,
         piece_block_data: Vec<u8>,
+        metadata_size_tx: Sender<i64>,
     ) {
-        // todo check why the protocol is also passing this? it seems useless
-        // let metadata_size = match d.get(&b"total_size".to_vec()) {
-        //     Some(Int(piece)) => piece,
-        //     _ => {
-        //         log::debug!("got an ut_metadata extension message from {peer_addr} but no total_size key was found in the bencoded dict, dropping it");
-        //         return;
-        //     }
-        // };
         if self.file_manager.is_some()
             || piece < 0
             || (piece as usize) >= self.downloaded_metadata_blocks.len()
@@ -967,6 +982,10 @@ impl TorrentManager {
                 }
                 drop(advertised_peers_mg);
                 self.peers = HashMap::new();
+                metadata_size_tx
+                    .send(self.raw_metadata_size.unwrap())
+                    .await
+                    .unwrap();
             }
             Err(e) => {
                 corrupted_metadata(
@@ -1139,6 +1158,7 @@ impl TorrentManager {
                     self.file_manager
                         .as_ref()
                         .map(|f| f.piece_completion_status.clone()),
+                    self.raw_metadata_size,
                     peers_to_torrent_manager_tx.clone(),
                 ));
             }
@@ -1271,8 +1291,14 @@ impl TorrentManager {
         }
         // we still have to download the metadata, ask it to peers
         // todo magnet: implement
-        // peer.send_metadata_extension_message(&peer_addr, MetadataMessage::Request( ... ))
-        //     .await;
+        // for (peer_addr, peer) in self.peers.iter_mut() {
+        //     if peer.support_metadata_extension() {
+        //         for n in 0..100 {
+        //             peer.send_metadata_extension_message(peer_addr, MetadataMessage::Request(n))
+        //                 .await;
+        //         }
+        //     }
+        // }
     }
 
     fn remove_stale_requests(&mut self) {
