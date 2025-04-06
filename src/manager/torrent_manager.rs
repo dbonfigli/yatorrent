@@ -161,7 +161,7 @@ impl Peer {
                     (b"piece".to_vec(), Int(piece as i64)),
                 ]);
                 let metadata_msg =
-                    Message::Extended(self.ut_pex_id, Dict(h, 0, 0), Vec::new());
+                    Message::Extended(self.ut_metadata_id, Dict(h, 0, 0), Vec::new());
                 log::trace!("sending metadata request message to peer {peer_addr}: {metadata_msg}");
                 self.send(ToPeerMsg::Send(metadata_msg)).await;
             }
@@ -171,7 +171,7 @@ impl Peer {
                     (b"piece".to_vec(), Int(piece as i64)),
                     (b"total_size".to_vec(), Int(metadata_size as i64)),
                 ]);
-                let metadata_msg = Message::Extended(self.ut_pex_id, Dict(h, 0, 0), data);
+                let metadata_msg = Message::Extended(self.ut_metadata_id, Dict(h, 0, 0), data);
                 log::trace!("sending metadata data message to peer {peer_addr}: {metadata_msg}");
                 self.send(ToPeerMsg::Send(metadata_msg)).await;
             }
@@ -181,7 +181,7 @@ impl Peer {
                     (b"piece".to_vec(), Int(piece as i64)),
                 ]);
                 let metadata_msg =
-                    Message::Extended(self.ut_pex_id, Dict(h, 0, 0), Vec::new());
+                    Message::Extended(self.ut_metadata_id, Dict(h, 0, 0), Vec::new());
                 log::trace!("sending metadata reject message to peer {peer_addr}: {metadata_msg}");
                 self.send(ToPeerMsg::Send(metadata_msg)).await;
             }
