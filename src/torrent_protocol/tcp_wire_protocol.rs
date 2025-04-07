@@ -36,12 +36,12 @@ impl Protocol for TcpStream {
                 buf[27] = 1u8; // send support for DHT
                 buf[28..48].copy_from_slice(&info_hash);
                 buf[48..68].copy_from_slice(&peer_id);
-                if let Err(e) = write.write_all(&buf).await {
-                    return Err(e);
+                return if let Err(e) = write.write_all(&buf).await {
+                    Err(e)
                 } else {
                     log::trace!("peer {}: full handshake sent", &peer_addr);
-                    return Ok(());
-                }
+                    Ok(())
+                };
             },
             // receive
             async {
@@ -88,7 +88,7 @@ impl Protocol for TcpStream {
         if let Err(e) = write_result {
             bail!(e);
         }
-        return Ok(read_result?);
+        Ok(read_result?)
     }
 }
 
@@ -98,18 +98,18 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
             Message::KeepAlive => {
                 let buf: [u8; 4] = [0; 4];
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
             Message::Choke => {
                 let mut buf: [u8; 5] = [0; 5];
                 buf[3] = 1;
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
             Message::Unchoke => {
@@ -117,9 +117,9 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                 buf[3] = 1;
                 buf[4] = 1;
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
             Message::Interested => {
@@ -127,9 +127,9 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                 buf[3] = 1;
                 buf[4] = 2;
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
             Message::NotInterested => {
@@ -137,9 +137,9 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                 buf[3] = 1;
                 buf[4] = 3;
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
             Message::Have(piece_num) => {
@@ -148,17 +148,17 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                 buf[4] = 4;
                 buf[5..9].copy_from_slice(&piece_num.to_be_bytes());
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
             Message::Bitfield(bitfield) => {
                 let buf = encode_bitfield(bitfield);
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
             Message::Request(index, begin, end) => {
@@ -169,9 +169,9 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                 buf[9..13].copy_from_slice(&begin.to_be_bytes());
                 buf[13..17].copy_from_slice(&end.to_be_bytes());
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
             Message::Piece(index, begin, block) => {
@@ -182,9 +182,9 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                 buf[9..13].copy_from_slice(&begin.to_be_bytes());
                 buf[13..].copy_from_slice(&block);
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
             Message::Cancel(index, begin, end) => {
@@ -195,9 +195,9 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                 buf[9..13].copy_from_slice(&begin.to_be_bytes());
                 buf[13..17].copy_from_slice(&end.to_be_bytes());
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
             Message::Port(port) => {
@@ -206,22 +206,25 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                 buf[4] = 9;
                 buf[5..7].copy_from_slice(&port.to_be_bytes());
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
-            Message::Extended(id, value) => {
+            Message::Extended(id, value, additional_data) => {
                 let encoded_value = value.encode();
-                let mut buf = vec![0; 6 + encoded_value.len()];
-                buf[0..4].copy_from_slice(&(2 + encoded_value.len() as u32).to_be_bytes());
+                let mut buf = vec![0; 6 + encoded_value.len() + additional_data.len()];
+                buf[0..4].copy_from_slice(
+                    &(2 + encoded_value.len() as u32 + additional_data.len() as u32).to_be_bytes(),
+                );
                 buf[4] = 20; // extension protocol magic number
                 buf[5] = id;
                 buf[6..].copy_from_slice(&encoded_value);
+                buf[6 + encoded_value.len()..].copy_from_slice(&additional_data);
                 if let Err(e) = self.write_all(&buf).await {
-                    return Err(e.into());
+                    Err(e.into())
                 } else {
-                    return Ok(());
+                    Ok(())
                 }
             }
         }
@@ -247,30 +250,30 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
         }
         match type_message_buf[0] {
             // choke
-            0 => return Ok(Message::Choke),
+            0 => Ok(Message::Choke),
             // unchoke
-            1 => return Ok(Message::Unchoke),
+            1 => Ok(Message::Unchoke),
             // interested
-            2 => return Ok(Message::Interested),
+            2 => Ok(Message::Interested),
             // not interested
-            3 => return Ok(Message::NotInterested),
+            3 => Ok(Message::NotInterested),
             // have
             4 => {
                 let mut buf: [u8; 4] = [0; 4];
                 if let Err(e) = self.read_exact(&mut buf).await {
                     return Err(e.into());
                 }
-                return Ok(Message::Have(u32::from_be_bytes(buf)));
+                Ok(Message::Have(u32::from_be_bytes(buf)))
             }
             // bitfield
             5 => {
                 let bitfield_byte_size: usize = (size_message - 1).try_into()?;
-                let mut buf = Box::new(vec![0; bitfield_byte_size]);
+                let mut buf = vec![0; bitfield_byte_size];
                 if let Err(e) = self.read_exact(&mut buf).await {
                     return Err(e.into());
                 }
                 let bitfield = decode_bitfield(buf);
-                return Ok(Message::Bitfield(bitfield));
+                Ok(Message::Bitfield(bitfield))
             }
             // request
             6 => {
@@ -286,11 +289,11 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                 if let Err(e) = self.read_exact(&mut end_buf).await {
                     return Err(e.into());
                 }
-                return Ok(Message::Request(
+                Ok(Message::Request(
                     u32::from_be_bytes(index_buf),
                     u32::from_be_bytes(begin_buf),
                     u32::from_be_bytes(end_buf),
-                ));
+                ))
             }
             // piece
             7 => {
@@ -303,15 +306,15 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                     return Err(e.into());
                 }
                 let block_size: usize = (size_message - 9).try_into()?;
-                let mut block_buf = Box::new(vec![0; block_size]);
+                let mut block_buf = vec![0; block_size];
                 if let Err(e) = self.read_exact(&mut block_buf).await {
                     return Err(e.into());
                 }
-                return Ok(Message::Piece(
+                Ok(Message::Piece(
                     u32::from_be_bytes(index_buf),
                     u32::from_be_bytes(begin_buf),
                     block_buf,
-                ));
+                ))
             }
             // cancel
             8 => {
@@ -327,11 +330,11 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                 if let Err(e) = self.read_exact(&mut end_buf).await {
                     return Err(e.into());
                 }
-                return Ok(Message::Cancel(
+                Ok(Message::Cancel(
                     u32::from_be_bytes(index_buf),
                     u32::from_be_bytes(begin_buf),
                     u32::from_be_bytes(end_buf),
-                ));
+                ))
             }
             // port
             9 => {
@@ -339,7 +342,7 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                 if let Err(e) = self.read_exact(&mut buf).await {
                     return Err(e.into());
                 }
-                return Ok(Message::Port(u16::from_be_bytes(buf)));
+                Ok(Message::Port(u16::from_be_bytes(buf)))
             }
             // extension message
             20 => {
@@ -349,25 +352,27 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                 }
                 let extended_message_id = buf[0]; // i.e. id of the extension. 0 means this message is an extension handshake
                 let payload_extended_message_size: usize = (size_message - 2).try_into()?;
-                let mut buf = Box::new(vec![0; payload_extended_message_size]);
+                let mut buf = vec![0; payload_extended_message_size];
                 if let Err(e) = self.read_exact(&mut buf).await {
                     return Err(e.into());
                 }
-                let extended_message = Value::new(&buf);
-                return Ok(Message::Extended(extended_message_id, extended_message));
+                let (extended_message, dict_size) = Value::new_with_size(&buf);
+                Ok(Message::Extended(
+                    extended_message_id,
+                    extended_message,
+                    buf[dict_size..].to_vec(),
+                ))
             }
-            unknown_message_id => {
-                return Err(ProtocolError::new(
-                    format!("could not parse message type id: {}", unknown_message_id).to_string(),
-                )
-                .into())
-            }
+            unknown_message_id => Err(ProtocolError::new(
+                format!("could not parse message type id: {}", unknown_message_id).to_string(),
+            )
+            .into()),
         }
     }
 }
 
-fn decode_bitfield(buf: Box<Vec<u8>>) -> Box<Vec<bool>> {
-    let mut bitfield = Box::new(vec![false; buf.len() * 8]);
+fn decode_bitfield(buf: Vec<u8>) -> Vec<bool> {
+    let mut bitfield = vec![false; buf.len() * 8];
     for i in 0..buf.len() {
         let mut mask: u8 = 0b10000000;
         for j in 0..8 {
@@ -378,7 +383,7 @@ fn decode_bitfield(buf: Box<Vec<u8>>) -> Box<Vec<bool>> {
     bitfield
 }
 
-fn encode_bitfield(bitfield: Box<Vec<bool>>) -> Vec<u8> {
+fn encode_bitfield(bitfield: Vec<bool>) -> Vec<u8> {
     let bitfield_bytes = (bitfield.len() / 8) + if bitfield.len() % 8 != 0 { 1 } else { 0 };
     let mut buf = vec![0; 5 + bitfield_bytes];
     let bitfield_bytes_u32: u32 = bitfield_bytes.try_into().unwrap();
@@ -408,7 +413,7 @@ mod tests {
 
     #[test]
     fn decode_bitfield_test() {
-        let buf = Box::new(vec![0b10000001, 0b00001100]);
+        let buf = vec![0b10000001, 0b00001100];
         let bitfield = decode_bitfield(buf);
         assert_eq!(
             *bitfield,
@@ -421,10 +426,10 @@ mod tests {
 
     #[test]
     fn encode_bitfield_test_1() {
-        let bitfield = Box::new(vec![
+        let bitfield = vec![
             true, false, false, false, false, false, false, true, // byte 1
             false, false, false, false, true, true, // byte 2, only 6 bits
-        ]);
+        ];
         let buf = encode_bitfield(bitfield);
         assert_eq!(
             buf,
@@ -438,10 +443,10 @@ mod tests {
 
     #[test]
     fn encode_bitfield_test_2() {
-        let bitfield = Box::new(vec![
+        let bitfield = vec![
             true, false, false, false, false, false, false, true, // byte 1
             false, false, false, false, true, true, false, true, // byte 2
-        ]);
+        ];
         let buf = encode_bitfield(bitfield);
         assert_eq!(
             buf,
@@ -455,9 +460,9 @@ mod tests {
 
     #[test]
     fn encode_bitfield_test_3() {
-        let bitfield = Box::new(vec![
+        let bitfield = vec![
             false, true, // byte 1
-        ]);
+        ];
         let buf = encode_bitfield(bitfield);
         assert_eq!(
             buf,

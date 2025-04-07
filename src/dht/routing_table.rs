@@ -3,7 +3,7 @@ use std::{net::Ipv4Addr, str::FromStr, time::SystemTime};
 use derivative::Derivative;
 use num_bigint::BigUint;
 
-pub static K_FACTOR: usize = 8; // maybe we can extend this to 20, like other clients
+pub const K_FACTOR: usize = 8; // maybe we can extend this to 20, like other clients
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct Bucket {
@@ -62,19 +62,19 @@ pub fn biguint_to_u8_20(n: &BigUint) -> [u8; 20] {
         vec.insert(0, 0);
     }
 
-    return vec.try_into().expect(
+    vec.try_into().expect(
         format!("could not convert biguint to [u8; 20] number is more than 20 bytes: {n}").as_str(),
-    );
+    )
 }
 
 impl Bucket {
     pub fn new(own_node_id: &[u8; 20]) -> Self {
-        return Bucket {
+        Bucket {
             from: BigUint::from_str("0").unwrap(),
             to: BigUint::from_str("2").unwrap().pow(160) - BigUint::from_str("1").unwrap(),
             content: BucketContent::Nodes(Vec::new()),
             own_node_id: BigUint::from_bytes_be(own_node_id),
-        };
+        }
     }
 
     pub fn get_mut(&mut self, node_id: &[u8; 20]) -> Option<&mut Node> {
@@ -112,7 +112,7 @@ impl Bucket {
                 for n in nodes.iter_mut() {
                     ret.push(n);
                 }
-                return ret;
+                ret
             }
         }
     }
@@ -141,7 +141,7 @@ impl Bucket {
                     .map(|(node_id, _)| (*node_id).clone())
                     .collect()
             }
-            BucketContent::Nodes(n) => return n.clone(),
+            BucketContent::Nodes(n) => n.clone(),
         }
     }
 
@@ -170,9 +170,9 @@ impl Bucket {
         match &mut self.content {
             BucketContent::Buckets(b) => {
                 if node.id <= b[0].to {
-                    return b[0].add(node);
+                    b[0].add(node)
                 } else {
-                    return b[1].add(node);
+                    b[1].add(node)
                 }
             }
             BucketContent::Nodes(bucket_nodes) => {
@@ -185,7 +185,7 @@ impl Bucket {
                     // there is space in the bucket, insert ordered
                     bucket_nodes.push(node);
                     bucket_nodes.sort();
-                    return true;
+                    true
                 } else if
                 // if our node id falls withing this bucket
                 self.from <= self.own_node_id && self.own_node_id <= self.to {
@@ -228,9 +228,9 @@ impl Bucket {
 
                     // update content of this bucket
                     self.content = BucketContent::Buckets(vec![left_bucket, right_bucket]);
-                    return added;
+                    added
                 } else {
-                    return false;
+                    false
                 }
             }
         }
@@ -239,10 +239,10 @@ impl Bucket {
 
 fn split(i: &BigUint, j: &BigUint) -> ((BigUint, BigUint), (BigUint, BigUint)) {
     let mid: BigUint = (j - i) >> 1;
-    return (
+    (
         (i.clone(), i + mid.clone()),
         (i + mid + BigUint::from_str("1").unwrap(), j.clone()),
-    );
+    )
 }
 
 fn distance_biguint(i: &BigUint, j: &BigUint) -> BigUint {
@@ -355,7 +355,7 @@ mod tests {
             last_pinged: SystemTime::UNIX_EPOCH,
         };
 
-        assert!(n1 == n2);
+        assert_eq!(n1, n2);
         assert!(n1 <= n2);
         assert!(n2 < n3);
         assert!(n1 < n3);

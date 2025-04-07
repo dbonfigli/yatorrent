@@ -29,12 +29,12 @@ use super::{messages::KRPCMessage, routing_table::Bucket};
 
 // NOTE! we are only supporting IPv4 DHT, i.e. BEP 32 (https://www.bittorrent.org/beps/bep_0032.html) is not implemented
 
-static INFLIGHT_FIND_NODE_TIMEOUT: Duration = Duration::from_secs(12);
-static INFLIGHT_GET_PEERS_TIMEOUT: Duration = Duration::from_secs(12);
-static INFLIGHT_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
-static ROUTING_TABLE_REFRESH_TIME: Duration = Duration::from_secs(60);
+const INFLIGHT_FIND_NODE_TIMEOUT: Duration = Duration::from_secs(12);
+const INFLIGHT_GET_PEERS_TIMEOUT: Duration = Duration::from_secs(12);
+const INFLIGHT_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+const ROUTING_TABLE_REFRESH_TIME: Duration = Duration::from_secs(60);
 
-static WELL_KNOWN_BOOTSTRAP_NODES: &[&str] = &[
+const WELL_KNOWN_BOOTSTRAP_NODES: &[&str] = &[
     "dht.libtorrent.org:25401",
     "router.utorrent.com:6881",
     "router.bittorrent.com:6881",
@@ -46,7 +46,7 @@ static WELL_KNOWN_BOOTSTRAP_NODES: &[&str] = &[
 fn generate_transaction_id() -> [u8; 10] {
     const CHARSET: &[u8] = b"0123456789";
     let mut rng = rand::thread_rng();
-    let mut one_char = || CHARSET[rng.gen_range(0..CHARSET.len())] as u8;
+    let mut one_char = || CHARSET[rng.gen_range(0..CHARSET.len())];
     let mut transaction_id: [u8; 10] = [0u8; 10];
     for i in 0..10 {
         transaction_id[i] = one_char();
@@ -85,7 +85,7 @@ struct GetPeersRequest {
     queried_nodes: HashSet<[u8; 20]>, // nodes for which we asked a get_peers request
     replying_nodes: Vec<([u8; 20], Ipv4Addr, u16, Option<Vec<u8>>)>, // list of nodes for which we got replies, that we can use in later announce_peer requests
     replying_nodes_with_peers: usize,
-    discovered_peers: HashSet<(Ipv4Addr, u16)>, // lits of peers we discovered
+    discovered_peers: HashSet<(Ipv4Addr, u16)>, // list of peers we discovered
 }
 
 struct FindNodeRequest {
@@ -107,7 +107,7 @@ struct MessageSender {
             String,           // dest addr
             SystemTime,       // req time
             KRPCMessage,      // message
-            Option<[u8; 20]>, // optinal request id (info hash or random id the request related to) in case it was a get_peers or find_node request
+            Option<[u8; 20]>, // optional request id (info hash or random id the request related to) in case it was a get_peers or find_node request
             usize, // depth of the nested request, if it is recursive (e.g. in case of get_peers or find_node)
         ),
     >,
@@ -175,7 +175,7 @@ impl DhtManager {
         for i in 0..10 {
             token_signing_secret[i] = rand::random();
         }
-        return DhtManager {
+        DhtManager {
             listening_dht_port,
             listening_torrent_wire_protocol_port,
             own_node_id,
@@ -187,7 +187,7 @@ impl DhtManager {
             inflight_get_peers_requests: HashMap::new(),
             inflight_find_node_requests: HashMap::new(),
             last_routing_table_refresh: SystemTime::now(),
-        };
+        }
     }
 
     pub async fn start(
@@ -314,7 +314,7 @@ impl DhtManager {
                     .await;
             }
 
-            // accumulate nodes to be removed if not active anymore in the last 15 mins
+            // accumulate nodes to be removed if not active anymore in the last 15 minutes
             if now.duration_since(n.last_replied).unwrap() > Duration::from_secs(900) {
                 nodes_to_be_removed.push(n.clone());
             }
@@ -568,7 +568,7 @@ impl DhtManager {
                     .inflight_requests
                     .remove(&transaction_id)
                     .unwrap();
-                log::trace!("got dht error respose for transaction id {} from {}; our message sent was: {:?}, error type: {:?}, error message: {}",
+                log::trace!("got dht error response for transaction id {} from {}; our message sent was: {:?}, error type: {:?}, error message: {}",
                     force_string(&transaction_id),remote_addr, inflight_req.2, error_type, msg
                 );
             }
@@ -641,7 +641,7 @@ impl DhtManager {
 
         if original_request.inflight_requests > 0 {
             // avoid overflowing when by pure bad luck we get a late replay for a not yet expired msg request for
-            // an expired get_peers request that has been recreated immediatelly after the previous has expired
+            // an expired get_peers request that has been recreated immediately after the previous has expired
             original_request.inflight_requests -= 1;
         }
 
@@ -700,7 +700,7 @@ impl DhtManager {
             for p in peers {
                 if !original_request.discovered_peers.contains(&p) {
                     original_request.discovered_peers.insert(p);
-                    // immediatelly send discovered peer to torrent manager
+                    // immediately send discovered peer to torrent manager
                     let _ = dht_to_torrent_manager_tx
                         .send(DhtToTorrentManagerMsg::NewPeer(p.0, p.1))
                         .await;
@@ -1011,7 +1011,7 @@ impl DhtManager {
             .await;
 
         // if we don't have it in the routing table, ping this node to eventually put it in the routing table:
-        // it could be a new node bootsrapping that is trying to let himself know
+        // it could be a new node bootstrapping that is trying to let himself know
         if let None = self.routing_table.get_mut(&querying_node_id) {
             self.msg_sender
                 .do_req(

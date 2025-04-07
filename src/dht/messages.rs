@@ -5,11 +5,11 @@ use std::{collections::HashMap, net::Ipv4Addr};
 #[derive(Debug, Clone)]
 pub enum KRPCMessage {
     PingReq([u8; 20]),                // querying nodes id
-    PingOrAnnouncePeerResp([u8; 20]), // queried nodes id, resps to ping or announce_peer messages cannot be distinghised by themselves without original transaciton id
+    PingOrAnnouncePeerResp([u8; 20]), // queried nodes id, resps to ping or announce_peer messages cannot be distinguished by themselves without original transaction id
     FindNodeReq([u8; 20], [u8; 20]),  // querying node id, id of target node
     GetPeersReq([u8; 20], [u8; 20]),  // querying node id, 20-byte infohash of target torrent
     GetPeersOrFindNodeResp(GetPeersOrFindNodeRespData),
-    AnnouncePeerReq([u8; 20], [u8; 20], u16, Vec<u8>, bool), // querying node id, 20-byte infohash of target torrent, port where we are listeing for torrent wire protocol, token received in response to a previous get_peers query, wether to imply port
+    AnnouncePeerReq([u8; 20], [u8; 20], u16, Vec<u8>, bool), // querying node id, 20-byte infohash of target torrent, port where we are listening for torrent wire protocol, token received in response to a previous get_peers query, whether to imply port
     Error(ErrorType, String),                                // error type, message
 }
 
@@ -215,7 +215,7 @@ pub fn decode_krpc_message(data: Vec<u8>) -> Result<(Vec<u8> /* transaction id *
             // check y key type
             if y_str == b"q" {
                 let msg = parse_req_message(&h)?;
-                return Ok((transaction_id, msg));
+                Ok((transaction_id, msg))
             } else if y_str == b"r" {
                 let msg = parse_response_message(&h)?;
                 return Ok((transaction_id, msg));
@@ -230,7 +230,7 @@ pub fn decode_krpc_message(data: Vec<u8>) -> Result<(Vec<u8> /* transaction id *
 }
 
 fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
-    // check a existance
+    // check "a" existence
     let a = match h.get(&b"a".to_vec()) {
         Some(a) => a,
         _ => {
@@ -238,7 +238,7 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
         }
     };
 
-    // check a is a dict
+    // check "a" is a dict
     let a_h = match a {
         Value::Dict(a_h, _, _) => a_h,
         _ => bail!("got krpc message that is a query (y=q) with \"a\" key that is not a dict"),
@@ -263,7 +263,7 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
     }
     let id_arr = id_str[0..20].try_into().unwrap();
 
-    // check q existance
+    // check q existence
     let q = match h.get(&b"q".to_vec()) {
         Some(q) => q,
         _ => bail!("got krpc message that is a query (y=q) but with no q key"),
@@ -277,7 +277,7 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
 
     // check q type
     if q_str == b"ping" {
-        return Ok(KRPCMessage::PingReq(id_arr));
+        Ok(KRPCMessage::PingReq(id_arr))
     } else if q_str == b"find_node" {
         // check a contains target
         let target = match a_h.get(&b"target".to_vec()) {
@@ -353,7 +353,7 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
                     _ => bail!("got krpc message that is a announce_peer query (y=q) with \"a\" key that is a dict with no port key"),
                 };
 
-        // check port is a int
+        // check port is an int
         let port_int: u16 = match port {
                     Value::Int(port_int) => match (*port_int).try_into() {
                         Ok(p) => p,
@@ -383,7 +383,7 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
 }
 
 fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
-    // check r existance
+    // check r existence
     let r = match h.get(&b"r".to_vec()) {
         Some(r) => r,
         None => bail!("got krpc message that is a response (y=r) but but with no r key"),
@@ -397,7 +397,7 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
         }
     };
 
-    // check id existance
+    // check id existence
     let id = match r_h.get(&b"id".to_vec()) {
         Some(id) => id,
         None => {
@@ -432,7 +432,7 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
                 _ => bail!("got krpc message that is a response (y=r) and has a nodes key in the r map that is not a bencoded string"),
             };
         if nodes_str.len() % 26 != 0 {
-            bail!("got krpc message that is a response (y=r) and has a nodes key in the r map that is not a bencoded string with lenght divisible by 26");
+            bail!("got krpc message that is a response (y=r) and has a nodes key in the r map that is not a bencoded string with length divisible by 26");
         }
         let mut nodes = Vec::new();
         for i in (0..nodes_str.len()).step_by(26) {
@@ -463,7 +463,7 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
                     _ => bail!("got krpc message that is a response (y=r) and has a values list with a value that is not a bencoded string"),
                 };
             if peer_str.len() % 6 != 0 {
-                bail!("got krpc message that is a response (y=r) and has a values list with a value in the r map that is not a bencoded string with lenght divisible by 6");
+                bail!("got krpc message that is a response (y=r) and has a values list with a value in the r map that is not a bencoded string with length divisible by 6");
             }
             let mut peer_ip_buf: [u8; 4] = [0; 4];
             peer_ip_buf.copy_from_slice(&peer_str[0..4]);
@@ -480,18 +480,16 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
 
     match (&nodes, &values) {
         // if values nor nodes were there, this is a GetPeersOrFindNodeResp
-        (Some(_), None) | (None, Some(_)) | (Some(_), Some(_)) => {
-            return Ok(KRPCMessage::GetPeersOrFindNodeResp(
-                GetPeersOrFindNodeRespData {
-                    target_id: id_arr,
-                    token: token_opt,
-                    nodes,
-                    values,
-                },
-            ));
-        }
+        (Some(_), None) | (None, Some(_)) | (Some(_), Some(_)) => Ok(
+            KRPCMessage::GetPeersOrFindNodeResp(GetPeersOrFindNodeRespData {
+                target_id: id_arr,
+                token: token_opt,
+                nodes,
+                values,
+            }),
+        ),
         // else, it is a PingOrAnnouncePeerResp
-        _ => return Ok(KRPCMessage::PingOrAnnouncePeerResp(id_arr)),
+        _ => Ok(KRPCMessage::PingOrAnnouncePeerResp(id_arr)),
     }
 }
 
@@ -515,5 +513,5 @@ fn parse_error_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
         Value::Str(error_message) => error_message,
         _ => bail!("got krpc message that is an error (y=e) but the second element in the e key list is not a bencoded string"),
     };
-    return Ok(KRPCMessage::Error(error_type, force_string(&error_message)));
+    Ok(KRPCMessage::Error(error_type, force_string(&error_message)))
 }

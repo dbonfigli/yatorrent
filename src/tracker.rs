@@ -7,11 +7,21 @@ use tokio::{
 use crate::bencoding::Value;
 use anyhow::{bail, Result};
 use rand::seq::SliceRandom;
+use std::fmt::Display;
 use std::{fmt, io::Read, str, time::Duration};
 
-static UDP_TIMEOUT: Duration = Duration::from_secs(15);
-static UDP_RETRY_COOLOFF_SEC: u64 = 15;
-static UDP_MAX_RETRIES: u32 = 3; // according to https://www.bittorrent.org/beps/bep_0015.html it should be 8, but it is way too much
+const UDP_TIMEOUT: Duration = Duration::from_secs(15);
+const UDP_RETRY_COOL_OFF_SEC: u64 = 15;
+const UDP_MAX_RETRIES: u32 = 3; // according to https://www.bittorrent.org/beps/bep_0015.html it should be 8, but it is way too much
+
+#[derive(Debug)]
+pub(crate) struct NoTrackerError;
+
+impl Display for NoTrackerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "no trackers in list")
+    }
+}
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct Peer {
@@ -24,7 +34,7 @@ pub struct Peer {
 pub struct OkResponse {
     pub warning_message: Option<String>, // Similar to failure reason, but the response still gets processed normally. The warning message is shown just like an error.
     pub interval: i64, // Interval in seconds that the client should wait between sending regular requests to the tracker
-    pub min_interval: Option<i64>, // (optional) Minimum announce interval. If present clients must not reannounce more frequently than this.
+    pub min_interval: Option<i64>, // (optional) Minimum announce interval. If present clients must not re-announce more frequently than this.
     pub tracker_id: Option<String>, // A string that the client should send back on its next announcements. If absent and a previous announce sent a tracker id, do not discard the old value; keep using it.
     pub complete: i64,              // number of peers with the entire file, i.e. seeders (integer)
     pub incomplete: i64,            // number of non-seeder peers, aka "leechers" (integer)
@@ -37,7 +47,7 @@ pub enum Response {
     Failure(String), // failure_reason; if present, then no other keys may be present. The value is a human-readable error message as to why the request failed (string).
 }
 
-impl fmt::Display for Response {
+impl Display for Response {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Response::Ok(ok_response) => {
@@ -68,15 +78,16 @@ pub enum Event {
     Completed,
 }
 
-impl ToString for Event {
-    fn to_string(&self) -> String {
-        match self {
+impl Display for Event {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let str = match self {
             Event::None => "",
             Event::Started => "started",
             Event::Stopped => "stopped",
             Event::Completed => "completed",
         }
-        .to_string()
+        .to_string();
+        write!(f, "{}", str)
     }
 }
 
@@ -102,11 +113,11 @@ impl TrackerClient {
             randomized_tiers.push(randomized_tier);
         }
         TrackerClient {
-            peer_id: peer_id,
-            tracker_id: Option::None,
+            peer_id,
+            tracker_id: None,
             listening_port,
             trackers_url: randomized_tiers,
-            tracker_request_interval: Duration::from_secs(600), // high inteval by default to avoid bombarding tracker before we get the proper interval from it
+            tracker_request_interval: Duration::from_secs(600), // high interval by default to avoid bombarding tracker before we get the proper interval from it
         }
     }
 
@@ -115,7 +126,7 @@ impl TrackerClient {
         info_hash: [u8; 20],
         uploaded: u64,
         downloaded: u64,
-        left: u64,
+        left: Option<u64>,
         event: Event,
     ) -> Result<Response> {
         let mut error_message = Vec::new();
@@ -128,7 +139,7 @@ impl TrackerClient {
                         info_hash,
                         uploaded,
                         downloaded,
-                        left,
+                        left.clone(),
                         event.clone(),
                     )
                     .await
@@ -168,7 +179,7 @@ impl TrackerClient {
             }
         }
         if error_message.len() == 0 {
-            error_message.push("no trackers in list".to_string());
+            bail!(NoTrackerError);
         }
         bail!(error_message.join("; "));
     }
@@ -179,14 +190,13 @@ impl TrackerClient {
         info_hash: [u8; 20],
         uploaded: u64,
         downloaded: u64,
-        left: u64,
+        left: Option<u64>,
         event: Event,
     ) -> Result<Response> {
         if url.starts_with("http") {
             log::debug!("trying reaching http tracker {url}...");
-            return self
-                .request_to_http_tracker(url, info_hash, uploaded, downloaded, left, event)
-                .await;
+            self.request_to_http_tracker(url, info_hash, uploaded, downloaded, left, event)
+                .await
         } else if url.starts_with("udp") {
             let mut attempts = 0;
             loop {
@@ -208,7 +218,7 @@ impl TrackerClient {
                             return Err(e);
                         } else {
                             sleep(Duration::from_secs(
-                                UDP_RETRY_COOLOFF_SEC * 2u64.pow(attempts),
+                                UDP_RETRY_COOL_OFF_SEC * 2u64.pow(attempts),
                             ))
                             .await;
                             attempts += 1;
@@ -228,23 +238,26 @@ impl TrackerClient {
         info_hash: [u8; 20],
         uploaded: u64,
         downloaded: u64,
-        left: u64,
+        left: Option<u64>,
         event: Event,
     ) -> Result<Response> {
         let mut url = reqwest::Url::parse_with_params(
             url.as_str(),
             &[
-                ("key", self.peer_id.clone()), // some trackers want this otherwise they will reply "This tracker requires support for the "key" announce paramater. Please update or change your client.". todo: still i could not find the related BEP
+                ("key", self.peer_id.clone()), // some trackers want this otherwise they will reply "This tracker requires support for the "key" announce parameter. Please update or change your client.". todo: still i could not find the related BEP
                 ("peer_id", self.peer_id.clone()),
                 ("port", self.listening_port.to_string()),
                 ("uploaded", uploaded.to_string()),
                 ("downloaded", downloaded.to_string()),
-                ("left", left.to_string()),
                 ("compact", COMPACT.to_string()),
                 ("event", event.to_string()),
                 ("numwant", "50".to_string()),
             ],
         )?;
+
+        if let Some(left) = left {
+            url.query_pairs_mut().append_pair("left", &left.to_string());
+        }
 
         // we need this so to avoid reqwest to urlencode again info_hash - binary array cannot be natively url encoded by it
         if let Some(query) = url.query() {
@@ -289,10 +302,10 @@ impl TrackerClient {
         // warning message
         let warning_message = match response_map.get(&b"warning message".to_vec()) {
             Some(Value::Str(warning_message_vec)) => match str::from_utf8(&warning_message_vec) {
-                Ok(w) => Option::Some(w.to_string()),
-                _ => bail!("Warining message key provided in bencoded dict response but it is not an UTF8 string"),
+                Ok(w) => Some(w.to_string()),
+                _ => bail!("Warning message key provided in bencoded dict response but it is not an UTF8 string"),
             }
-            _ => Option::None
+            _ => None
         };
 
         // interval
@@ -303,17 +316,17 @@ impl TrackerClient {
 
         // min interval
         let min_interval = match response_map.get(&b"min interval".to_vec()) {
-            Some(Value::Int(i)) => Option::Some(*i),
-            _ => Option::None,
+            Some(Value::Int(i)) => Some(*i),
+            _ => None,
         };
 
         // tracker id
         let tracker_id = match response_map.get(&b"tracker id".to_vec()) {
             Some(Value::Str(tracker_id_vec)) => match str::from_utf8(&tracker_id_vec) {
-                Ok(w) => Option::Some(w.to_string()),
+                Ok(w) => Some(w.to_string()),
                 _ => bail!("Tracker id key provided in bencoded dict response but it is not an UTF8 string"),
             },
-            _ => Option::None,
+            _ => None,
         };
 
         // complete
@@ -330,19 +343,19 @@ impl TrackerClient {
 
         // peers
         let peers = match response_map.get(&b"peers".to_vec()) {
-            Some(Value::List(peers_list)) => get_peers_wiht_dict_model(peers_list)?,
-            Some(Value::Str(peers_bytes)) => get_peers_wiht_binary_model(peers_bytes)?,
+            Some(Value::List(peers_list)) => get_peers_with_dict_model(peers_list)?,
+            Some(Value::Str(peers_bytes)) => get_peers_with_binary_model(peers_bytes)?,
             _ => bail!("Peers key not provided in bencoded dict or provided but it was not a list or string"),
         };
 
         Ok(Response::Ok(OkResponse {
-            warning_message: warning_message,
-            interval: interval,
-            min_interval: min_interval,
-            tracker_id: tracker_id,
-            complete: complete,
-            incomplete: incomplete,
-            peers: peers,
+            warning_message,
+            interval,
+            min_interval,
+            tracker_id,
+            complete,
+            incomplete,
+            peers,
         }))
     }
 
@@ -352,7 +365,7 @@ impl TrackerClient {
         info_hash: [u8; 20],
         uploaded: u64,
         downloaded: u64,
-        left: u64,
+        left: Option<u64>,
         event: Event,
     ) -> Result<Response> {
         let url = reqwest::Url::parse(&url)?;
@@ -414,13 +427,13 @@ impl TrackerClient {
         // send announce
         let mut announce_buf = [0u8; 98];
         announce_buf[0..8].copy_from_slice(&connection_id.to_be_bytes());
-        announce_buf[8..12].copy_from_slice(&(1u32).to_be_bytes()); // action: announce
+        announce_buf[8..12].copy_from_slice(&1u32.to_be_bytes()); // action: announce
         let transaction_id: u32 = rand::random::<u32>();
         announce_buf[12..16].copy_from_slice(&transaction_id.to_be_bytes());
         announce_buf[16..36].copy_from_slice(&info_hash);
         announce_buf[36..56].copy_from_slice(self.peer_id.as_bytes());
         announce_buf[56..64].copy_from_slice(&downloaded.to_be_bytes());
-        announce_buf[64..72].copy_from_slice(&left.to_be_bytes());
+        announce_buf[64..72].copy_from_slice(&left.unwrap_or_default().to_be_bytes()); // BEP 0015 does not specify what to do if left is not provided, so we use 0
         announce_buf[72..80].copy_from_slice(&uploaded.to_be_bytes());
         let event_id: u32 = match event {
             Event::None => 0,
@@ -480,22 +493,22 @@ impl TrackerClient {
                     let mut address_buf = [0u8; 4];
                     address_buf.copy_from_slice(&recv_announce_buf[i..i + 4]);
                     let ip = [
-                        (address_buf[0]).to_string(),
-                        (address_buf[1]).to_string(),
-                        (address_buf[2]).to_string(),
+                        address_buf[0].to_string(),
+                        address_buf[1].to_string(),
+                        address_buf[2].to_string(),
                         address_buf[3].to_string(),
                     ]
                     .join(".");
                     let peer_port_bytes = &recv_announce_buf[i + 4..i + 6];
                     let port = peer_port_bytes[0] as u16 * 256 + peer_port_bytes[1] as u16;
                     peers.push(Peer {
-                        peer_id: Option::None,
+                        peer_id: None,
                         ip,
                         port,
                     });
                 }
 
-                return Ok(Response::Ok(OkResponse {
+                Ok(Response::Ok(OkResponse {
                     warning_message: None,
                     interval: interval as i64,
                     min_interval: None,
@@ -503,13 +516,13 @@ impl TrackerClient {
                     complete: seeders as i64,
                     incomplete: leechers as i64,
                     peers,
-                }));
+                }))
             }
         }
     }
 }
 
-fn get_peers_wiht_dict_model(peers_values: &Vec<Value>) -> Result<Vec<Peer>> {
+fn get_peers_with_dict_model(peers_values: &Vec<Value>) -> Result<Vec<Peer>> {
     let mut peers_list: Vec<Peer> = Vec::new();
     for v in peers_values {
         match v {
@@ -517,10 +530,10 @@ fn get_peers_wiht_dict_model(peers_values: &Vec<Value>) -> Result<Vec<Peer>> {
                 // peer id
                 let peer_id = match peer_dic.get(&b"peer id".to_vec()) {
                     Some(Value::Str(peer_id_vec)) => match str::from_utf8(&peer_id_vec) {
-                        Ok(w) => Option::Some(w.to_string()),
+                        Ok(w) => Some(w.to_string()),
                         _ => bail!("Peer id key provided in list of peers in bencoded dict response but it is not an UTF8 string"),
                     }
-                    _ => Option::None
+                    _ => None
                 };
 
                 // ip
@@ -546,7 +559,7 @@ fn get_peers_wiht_dict_model(peers_values: &Vec<Value>) -> Result<Vec<Peer>> {
     Ok(peers_list)
 }
 
-fn get_peers_wiht_binary_model(peers_bytes: &Vec<u8>) -> Result<Vec<Peer>> {
+fn get_peers_with_binary_model(peers_bytes: &Vec<u8>) -> Result<Vec<Peer>> {
     if peers_bytes.len() % 6 != 0 {
         bail!("Peers list is provided in binary model but it is not aligned to 6 bytes");
     }
@@ -554,9 +567,9 @@ fn get_peers_wiht_binary_model(peers_bytes: &Vec<u8>) -> Result<Vec<Peer>> {
     for i in (0..peers_bytes.len()).step_by(6) {
         let peer_ip_bytes = &peers_bytes[i..i + 4];
         let ip = [
-            (peer_ip_bytes[0]).to_string(),
-            (peer_ip_bytes[1]).to_string(),
-            (peer_ip_bytes[2]).to_string(),
+            peer_ip_bytes[0].to_string(),
+            peer_ip_bytes[1].to_string(),
+            peer_ip_bytes[2].to_string(),
             peer_ip_bytes[3].to_string(),
         ]
         .join(".");
@@ -564,7 +577,7 @@ fn get_peers_wiht_binary_model(peers_bytes: &Vec<u8>) -> Result<Vec<Peer>> {
         let port = peer_port_bytes[0] as u16 * 256 + peer_port_bytes[1] as u16;
 
         peers_list.push(Peer {
-            peer_id: Option::None,
+            peer_id: None,
             ip,
             port,
         });
@@ -592,15 +605,15 @@ mod tests {
             0x5, 0x6, 0x7, 0x8, /* ip 5.6.7.8 */ 0x04, 0xbd, /* port 1213 */
         ]
         .to_vec();
-        let peers_result = get_peers_wiht_binary_model(&byte_peers);
+        let peers_result = get_peers_with_binary_model(&byte_peers);
         let expected = [
             Peer {
-                peer_id: Option::None,
+                peer_id: None,
                 ip: "1.2.3.4".to_string(),
                 port: 80,
             },
             Peer {
-                peer_id: Option::None,
+                peer_id: None,
                 ip: "5.6.7.8".to_string(),
                 port: 1213,
             },

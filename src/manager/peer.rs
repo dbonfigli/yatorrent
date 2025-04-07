@@ -16,9 +16,10 @@ use crate::torrent_protocol::wire_protocol::{
 };
 use crate::util::{force_string, pretty_info_hash};
 
-static DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
-static CANCELLATION_DURATION: Duration = Duration::from_secs(120);
-
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+const CANCELLATION_DURATION: Duration = Duration::from_secs(120);
+const UT_PEX_EXTENSION_ID: i64 = 1;
+const UT_METADATA_EXTENSION_ID: i64 = 2;
 pub enum ToPeerMsg {
     Send(Message),
 }
@@ -38,7 +39,7 @@ pub enum PeerError {
     Others,
 }
 
-pub type ToPeerCancelMsg = (u32, u32, u32, SystemTime); // piece_idx, begin, lenght, cancel time
+pub type ToPeerCancelMsg = (u32, u32, u32, SystemTime); // piece_idx, begin, length, cancel time
 
 pub async fn connect_to_new_peer(
     host: String,
@@ -46,7 +47,8 @@ pub async fn connect_to_new_peer(
     info_hash: [u8; 20],
     own_peer_id: String,
     tcp_wire_protocol_listening_port: u16,
-    piece_completion_status: Vec<bool>,
+    piece_completion_status: Option<Vec<bool>>,
+    metadata_size: Option<i64>,
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
 ) {
     let dest = format!("{host}:{port}");
@@ -93,7 +95,8 @@ pub async fn connect_to_new_peer(
                     info_hash.clone(),
                     own_peer_id.clone(),
                     tcp_wire_protocol_listening_port,
-                    Box::from(piece_completion_status),
+                    piece_completion_status,
+                    metadata_size,
                 ),
             )
             .await
@@ -130,10 +133,12 @@ pub async fn run_new_incoming_peers_handler(
     info_hash: [u8; 20],
     own_peer_id: String,
     tcp_wire_protocol_listening_port: u16,
-    piece_completion_status: Vec<bool>,
+    piece_completion_status: Option<Vec<bool>>,
     mut ok_to_accept_connection_rx: Receiver<bool>,
+    mut metadata_size_rx: Receiver<i64>,
     mut piece_completion_status_rx: Receiver<Vec<bool>>,
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
+    raw_metadata_size: Option<i64>,
 ) {
     let ok_to_accept_connection_for_rcv: Arc<Mutex<bool>> = Arc::new(Mutex::new(true)); // accept new connections at start
     let ok_to_accept_connection = ok_to_accept_connection_for_rcv.clone();
@@ -147,7 +152,18 @@ pub async fn run_new_incoming_peers_handler(
         }
     });
 
-    let piece_completion_status_for_rcv: Arc<Mutex<Vec<bool>>> =
+    let metadata_size_for_rcv: Arc<Mutex<Option<i64>>> = Arc::new(Mutex::new(raw_metadata_size));
+    let metadata_size = metadata_size_for_rcv.clone();
+    tokio::spawn(async move {
+        while let Some(msg) = metadata_size_rx.recv().await {
+            log::trace!("got message for newly known metadata size: {msg}");
+            let mut metadata_size_for_rcv_lock = metadata_size_for_rcv.lock().await;
+            *metadata_size_for_rcv_lock = Some(msg);
+            drop(metadata_size_for_rcv_lock);
+        }
+    });
+
+    let piece_completion_status_for_rcv: Arc<Mutex<Option<Vec<bool>>>> =
         Arc::new(Mutex::new(piece_completion_status));
     let piece_completion_status = piece_completion_status_for_rcv.clone();
     tokio::spawn(async move {
@@ -155,7 +171,7 @@ pub async fn run_new_incoming_peers_handler(
             log::trace!("got message to update piece_completion_status");
             let mut piece_completion_status_for_rcv_lock =
                 piece_completion_status_for_rcv.lock().await;
-            *piece_completion_status_for_rcv_lock = msg;
+            *piece_completion_status_for_rcv_lock = Some(msg);
             drop(piece_completion_status_for_rcv_lock);
         }
     });
@@ -182,12 +198,16 @@ pub async fn run_new_incoming_peers_handler(
             }
 
             let piece_completion_status_for_spawn = piece_completion_status.clone();
+            let metadata_size_for_spawn = metadata_size.clone();
             let own_peer_id_for_spawn = own_peer_id.clone();
             let peers_to_torrent_manager_tx_for_spawn = peers_to_torrent_manager_tx.clone();
             tokio::spawn(async move {
                 let pcs_lock = piece_completion_status_for_spawn.lock().await;
                 let pcs = pcs_lock.clone();
                 drop(pcs_lock);
+                let metadata_size_lock = metadata_size_for_spawn.lock().await;
+                let metadata_size = metadata_size_lock.clone();
+                drop(metadata_size_lock);
                 let remote_addr = addr_or_unknown(&stream);
                 match timeout(
                     DEFAULT_TIMEOUT,
@@ -196,7 +216,8 @@ pub async fn run_new_incoming_peers_handler(
                         info_hash,
                         own_peer_id_for_spawn,
                         tcp_wire_protocol_listening_port,
-                        Box::from(pcs),
+                        pcs,
+                        metadata_size,
                     ),
                 )
                 .await
@@ -261,7 +282,8 @@ async fn handshake(
     info_hash: [u8; 20],
     own_peer_id: String,
     tcp_wire_protocol_listening_port: u16,
-    piece_completion_status: Box<Vec<bool>>,
+    piece_completion_status: Option<Vec<bool>>,
+    metadata_size: Option<i64>,
 ) -> Result<TcpStream> {
     let (peer_protocol, reserved, peer_info_hash, peer_id) = stream
         .handshake(info_hash, own_peer_id.as_bytes().try_into()?)
@@ -279,13 +301,14 @@ async fn handshake(
         bail!("own and their infohash did not match");
     }
 
-    // send bitfield
     let peer_addr = addr_or_unknown(&stream);
     let (read, mut write) = tokio::io::split(stream);
-    write
-        .send(Message::Bitfield(piece_completion_status))
-        .await?;
-    log::trace!("bitfield sent to peer {peer_addr}");
+
+    // send bitfield
+    if let Some(pcs) = piece_completion_status {
+        write.send(Message::Bitfield(pcs)).await?;
+        log::trace!("bitfield sent to peer {peer_addr}");
+    }
 
     // if peer supports DHT, send port
     if reserved[7] & 1u8 != 0 {
@@ -295,25 +318,28 @@ async fn handshake(
         log::trace!("port sent to peer {peer_addr}");
     }
 
-    // if peer supports extensions, send PEX support
+    // if peer supports extensions, send PEX and metadata extension support
     if reserved[5] & 0x10 != 0 {
-        let extension_handshake = Value::Dict(
-            HashMap::from([(
-                b"m".to_vec(),
-                Value::Dict(
-                    HashMap::from([(
-                        b"ut_pex".to_vec(),
-                        Value::Int(1), // we always register 1 as ut_pex extension since we don't support others ATM
-                    )]),
-                    0,
-                    0,
-                ),
-            )]),
-            0,
-            0,
-        );
+        let mut handshake_dict = HashMap::from([(
+            b"m".to_vec(),
+            Value::Dict(
+                HashMap::from([
+                    (b"ut_pex".to_vec(), Value::Int(UT_PEX_EXTENSION_ID)),
+                    (
+                        b"ut_metadata".to_vec(),
+                        Value::Int(UT_METADATA_EXTENSION_ID),
+                    ),
+                ]),
+                0,
+                0,
+            ),
+        )]);
+        if let Some(metadata_size) = metadata_size {
+            handshake_dict.insert(b"metadata_size".to_vec(), Value::Int(metadata_size));
+        }
+        let extension_handshake = Value::Dict(handshake_dict, 0, 0);
         write
-            .send(Message::Extended(0, extension_handshake))
+            .send(Message::Extended(0, extension_handshake, Vec::new()))
             .await?;
         log::trace!("extension handshake sent to peer {peer_addr}");
     }
@@ -375,10 +401,10 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                 // avoid sending data if the request has already been canceled by the peer
                 if let Message::Piece(piece_idx, begin, data) = &proto_msg {
                     // receive pending cancellations
-                    while let Ok((piece_idx, begin, lenght, cancel_time)) =
+                    while let Ok((piece_idx, begin, length, cancel_time)) =
                         to_peer_cancel_rx.try_recv()
                     {
-                        cancellations.insert((piece_idx, begin, lenght), cancel_time);
+                        cancellations.insert((piece_idx, begin, length), cancel_time);
                     }
                     // remove expired cancellations
                     let cancellations_keys: Vec<(u32, u32, u32)> =

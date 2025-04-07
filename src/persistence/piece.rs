@@ -17,14 +17,12 @@ impl Piece {
     pub fn contains(&self, begin: u64, end: u64) -> bool {
         assert!(begin < end || end < self.length);
         match self.get_fragment_idx_containing_value(begin) {
-            None => {
-                return false;
-            }
+            None => false,
             Some(idx) => {
                 if end <= self.fragments[idx].1 {
                     return true;
                 }
-                return false;
+                false
             }
         }
     }
@@ -74,20 +72,20 @@ impl Piece {
     pub fn get_next_fragment(&self, max_fragment_size: u64) -> Option<(u64, u64)> {
         assert!(max_fragment_size > 0);
         if self.complete() {
-            return None;
+            None
         } else if self.fragments.len() == 0 {
             let begin = 0;
             let end = cmp::min(max_fragment_size - 1, self.length - 1);
-            return Some((begin, end));
+            Some((begin, end))
         } else if self.fragments.len() == 1 {
             if self.fragments[0].0 == 0 {
                 let begin = self.fragments[0].1 + 1;
                 let end = cmp::min(begin + max_fragment_size - 1, self.length - 1);
-                return Some((begin, end));
+                Some((begin, end))
             } else {
                 let begin = 0;
                 let end = cmp::min(max_fragment_size - 1, self.fragments[0].0 - 1);
-                return Some((begin, end));
+                Some((begin, end))
             }
         } else {
             if self.fragments[0].0 == 0 {
@@ -95,11 +93,11 @@ impl Piece {
                 let end_with_max_fragment_size = begin + max_fragment_size - 1;
                 let end_with_next_fragment = begin + self.fragments[1].0 - 1;
                 let end = cmp::min(end_with_max_fragment_size, end_with_next_fragment);
-                return Some((begin, end));
+                Some((begin, end))
             } else {
                 let begin = 0;
                 let end = cmp::min(max_fragment_size - 1, self.fragments[0].0 - 1);
-                return Some((begin, end));
+                Some((begin, end))
             }
         }
     }
@@ -114,18 +112,18 @@ impl Piece {
         if j >= i {
             let mid = i + (j - i) / 2;
             if self.fragments[mid].0 <= value && value <= self.fragments[mid].1 {
-                return Some(mid);
+                Some(mid)
             } else if self.fragments[mid].0 > value {
                 // avoid subtract with overflow
                 if mid == 0 {
                     return None;
                 }
-                return self.get_fragment_idx_containing_value_in_slice(value, i, mid - 1);
+                self.get_fragment_idx_containing_value_in_slice(value, i, mid - 1)
             } else {
-                return self.get_fragment_idx_containing_value_in_slice(value, mid + 1, j);
+                self.get_fragment_idx_containing_value_in_slice(value, mid + 1, j)
             }
         } else {
-            return None;
+            None
         }
     }
 
@@ -146,15 +144,15 @@ impl Piece {
         if j >= i {
             let mid = i + (j - i) / 2;
             if self.fragments[mid].0 <= value && value <= self.fragments[mid].1 {
-                return mid;
+                mid
             } else if self.fragments[mid].0 > value {
                 // avoid subtract with overflow
                 if mid == 0 {
                     return 0;
                 }
-                return self.get_closest_fragment_idx_containing_value_in_slice(value, i, mid - 1);
+                self.get_closest_fragment_idx_containing_value_in_slice(value, i, mid - 1)
             } else {
-                return self.get_closest_fragment_idx_containing_value_in_slice(value, mid + 1, j);
+                self.get_closest_fragment_idx_containing_value_in_slice(value, mid + 1, j)
             }
         } else {
             if j == 0 {
@@ -162,7 +160,7 @@ impl Piece {
             } else if value < self.fragments[j].0 {
                 return j - 1;
             }
-            return j;
+            j
         }
     }
 
