@@ -443,7 +443,7 @@ impl TrackerClient {
         };
         announce_buf[80..84].copy_from_slice(&event_id.to_be_bytes());
         announce_buf[92..96].copy_from_slice(&(-1i32).to_be_bytes());
-        announce_buf[96..98].copy_from_slice(&port.to_be_bytes());
+        announce_buf[96..98].copy_from_slice(&self.listening_port.to_be_bytes());
         if let Err(e) = socket.send(&announce_buf).await {
             bail!(e);
         }
