@@ -163,10 +163,16 @@ fn parse_str(source: &Vec<u8>, index: usize) -> (Value, usize) {
             _ => return (Value::new_error(ErrorElem::Str, index), index),
         }
     }
-    let string_len_str: String =
-        str::from_utf8(&source[start_string_len_index..end_string_len_index])
-            .unwrap()
-            .to_string();
+    let string_len_str =
+        match str::from_utf8(&source[start_string_len_index..end_string_len_index]) {
+            Ok(s) => s,
+            Err(_) => {
+                return (
+                    Value::new_error(ErrorElem::Str, start_string_len_index),
+                    index,
+                )
+            }
+        };
     let string_len_opt = string_len_str.parse::<usize>();
     let string_len;
     match string_len_opt {
@@ -209,9 +215,15 @@ fn parse_int(source: &Vec<u8>, index: usize) -> (Value, usize) {
             _ => return (Value::new_error(ErrorElem::Int, index), index),
         }
     }
-    let int_str: String = str::from_utf8(&source[start_int_index..end_int_index])
-        .unwrap()
-        .to_string();
+    let int_str = match str::from_utf8(&source[start_int_index..end_int_index]) {
+        Ok(s) => s,
+        Err(_) => {
+            return (
+                Value::new_error(ErrorElem::Int, start_int_index),
+                index,
+            )
+        }
+    };
 
     // check invalid
     if int_str == "-0" || (int_str.starts_with("0") && int_str.len() > 1) {
