@@ -1736,8 +1736,8 @@ fn ip_port_list_to_compact_format(addrs: Vec<String>) -> Vec<u8> {
         }
         let ipv4_addr: Ipv4Addr = ip_port[0].parse().expect("addr was not an ipv4");
         compact_format.append(&mut ipv4_addr.octets().to_vec());
-        let port = ip_port[1].as_bytes();
-        compact_format.append(&mut port.to_vec());
+        let port: u16 = ip_port[1].parse().expect("port was not a u16");
+        compact_format.append(&mut port.to_be_bytes().to_vec());
     }
     compact_format
 }
