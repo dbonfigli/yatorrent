@@ -120,20 +120,23 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
             if let Some(nodes) = resp_data.nodes {
                 let mut compact_node_info = vec![0u8; nodes.len() * 26];
                 for (i, (node_id, ip, port)) in nodes.iter().enumerate() {
-                    compact_node_info[i..i + 20].copy_from_slice(node_id);
-                    compact_node_info[i + 20..i + 24].copy_from_slice(&ip.octets());
-                    compact_node_info[i + 24..i + 26].copy_from_slice(&port.to_be_bytes());
+                    let base = i * 26;
+                    compact_node_info[base..base + 20].copy_from_slice(node_id);
+                    compact_node_info[base + 20..base + 24].copy_from_slice(&ip.octets());
+                    compact_node_info[base + 24..base + 26].copy_from_slice(&port.to_be_bytes());
                 }
                 r.insert(b"nodes".to_vec(), Value::Str(compact_node_info));
             }
 
             if let Some(values) = resp_data.values {
-                let mut compact_peer_info = vec![0u8; values.len() * 6];
-                for (i, (ip, port)) in values.iter().enumerate() {
-                    compact_peer_info[i..i + 4].copy_from_slice(&ip.octets());
-                    compact_peer_info[i + 4..i + 6].copy_from_slice(&port.to_be_bytes());
+                let mut compact_peer_info: Vec<Value> = vec![];
+                for (ip, port) in values.iter() {
+                    let mut buf = vec![0u8; 6];
+                    buf[0..4].copy_from_slice(&ip.octets());
+                    buf[4..6].copy_from_slice(&port.to_be_bytes());
+                    compact_peer_info.push(Value::Str(buf));
                 }
-                r.insert(b"values".to_vec(), Value::Str(compact_peer_info));
+                r.insert(b"values".to_vec(), Value::List(compact_peer_info));
             }
 
             h.insert(b"y".to_vec(), Value::Str(b"r".to_vec()));
