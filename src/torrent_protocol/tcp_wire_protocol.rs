@@ -219,7 +219,7 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                 );
                 buf[4] = 20; // extension protocol magic number
                 buf[5] = id;
-                buf[6..].copy_from_slice(&encoded_value);
+                buf[6..6 + encoded_value.len()].copy_from_slice(&encoded_value);
                 buf[6 + encoded_value.len()..].copy_from_slice(&additional_data);
                 if let Err(e) = self.write_all(&buf).await {
                     Err(e.into())
