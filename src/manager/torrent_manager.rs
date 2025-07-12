@@ -53,7 +53,7 @@ const ADDED_DROPPED_PEER_EVENTS_RETENTION: Duration = Duration::from_secs(90);
 const PEX_MESSAGE_COOL_OFF_PERIOD: Duration = Duration::from_secs(60);
 const METDATA_BLOCK_REQUEST_TIMEOUT: Duration = Duration::from_secs(15); // timeout for waiting a requested metdata block
 const MAX_OUTSTANDING_BLOCK_REQUESTS_PER_PEER: i64 = 100;
-const PEER_METADATA_REQUEST_REJECTION_COLL_OFF_PERIOD: Duration = Duration::from_secs(30);
+const PEER_METADATA_REQUEST_REJECTION_COOL_OFF_PERIOD: Duration = Duration::from_secs(30);
 
 pub struct Peer {
     am_choking: bool,
@@ -1329,7 +1329,7 @@ impl TorrentManager {
                     && now
                         .duration_since(peer.last_metadata_request_rejection)
                         .unwrap()
-                        > PEER_METADATA_REQUEST_REJECTION_COLL_OFF_PERIOD
+                        > PEER_METADATA_REQUEST_REJECTION_COOL_OFF_PERIOD
             })
             .map(|(peer_addr, _)| {
                 let otustanding_req = inflight_metadata_block_requests_per_peer
