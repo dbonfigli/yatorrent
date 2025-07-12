@@ -874,8 +874,7 @@ impl TorrentManager {
                     block_start + METADATA_BLOCK_SIZE_B,
                 );
                 if block_start < block_end {
-                    let mut block: Vec<u8> = Vec::with_capacity(block_end - block_start);
-                    block.copy_from_slice(&raw_metadata[block_start..block_end]);
+                    let block = raw_metadata[block_start..block_end].to_vec();
                     if let Some(peer) = self.peers.get_mut(&peer_addr) {
                         peer.send_metadata_extension_message(
                             &peer_addr,
