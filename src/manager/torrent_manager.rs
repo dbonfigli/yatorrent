@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use std::{iter, path::Path};
 
-use rand::seq::SliceRandom;
+use rand::seq::{IndexedRandom, SliceRandom};
 use rand::Rng;
 use size::{Size, Style};
 use tokio::net::TcpStream;
@@ -115,7 +115,7 @@ impl Peer {
         }
         self.last_sent = SystemTime::now();
         let _ = self.to_peer_tx.send(msg).await;
-        // ignore errors: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors, 
+        // ignore errors: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors,
         // and the peer is still lingering in self.peers because the control message about the error is not yet handled
     }
 
@@ -1155,7 +1155,7 @@ impl TorrentManager {
 
             let candidates_for_new_connections: Vec<_> = possible_peers
                 .choose_multiple(
-                    &mut rand::thread_rng(),
+                    &mut rand::rng(),
                     CONNECTED_PEERS_TO_START_NEW_PEER_CONNECTIONS - current_peers_n,
                 )
                 .collect();
@@ -1339,7 +1339,7 @@ impl TorrentManager {
                 (outstanding_req, peer_addr.clone())
             })
             .collect::<Vec<(i64, String)>>();
-        possible_peers.shuffle(&mut rand::thread_rng());
+        possible_peers.shuffle(&mut rand::rng());
         possible_peers.sort_by_key(|k| k.0);
 
         if possible_peers.len() == 0 {
@@ -1587,8 +1587,8 @@ impl TorrentManager {
 
 fn generate_peer_id() -> String {
     const CHARSET: &[u8] = b"0123456789";
-    let mut rng = rand::thread_rng();
-    let one_char = || CHARSET[rng.gen_range(0..CHARSET.len())] as char;
+    let mut rng = rand::rng();
+    let one_char = || CHARSET[rng.random_range(0..CHARSET.len())] as char;
     let random_string: String = iter::repeat_with(one_char).take(12).collect();
     format!("-YT0001-{random_string}")
 }
@@ -1696,7 +1696,7 @@ async fn assign_and_send_piece_reqs(
         })
         .collect::<Vec<(&String, &mut Peer, usize, usize)>>();
 
-    possible_peers.shuffle(&mut rand::thread_rng());
+    possible_peers.shuffle(&mut rand::rng());
 
     possible_peers.sort_by(|a, b| {
         return if a.2 < b.2 {

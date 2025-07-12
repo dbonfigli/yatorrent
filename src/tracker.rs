@@ -6,7 +6,7 @@ use tokio::{
 
 use crate::bencoding::Value;
 use anyhow::{bail, Result};
-use rand::seq::SliceRandom;
+use rand::seq::IndexedRandom;
 use std::fmt::Display;
 use std::{fmt, io::Read, str, time::Duration};
 
@@ -107,7 +107,7 @@ impl TrackerClient {
         let mut randomized_tiers: Vec<Vec<String>> = Vec::new();
         for tier in trackers_url {
             let randomized_tier = tier
-                .choose_multiple(&mut rand::thread_rng(), tier.len())
+                .choose_multiple(&mut rand::rng(), tier.len())
                 .map(|e| e.clone())
                 .collect();
             randomized_tiers.push(randomized_tier);

@@ -45,8 +45,8 @@ const WELL_KNOWN_BOOTSTRAP_NODES: &[&str] = &[
 // todo: we should use only 2 chars and all the possible chars here, but this is much more useful during debugging
 fn generate_transaction_id() -> [u8; 10] {
     const CHARSET: &[u8] = b"0123456789";
-    let mut rng = rand::thread_rng();
-    let mut one_char = || CHARSET[rng.gen_range(0..CHARSET.len())];
+    let mut rng = rand::rng();
+    let mut one_char = || CHARSET[rng.random_range(0..CHARSET.len())];
     let mut transaction_id: [u8; 10] = [0u8; 10];
     for i in 0..10 {
         transaction_id[i] = one_char();
