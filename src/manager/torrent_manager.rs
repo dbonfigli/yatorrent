@@ -88,11 +88,10 @@ impl Peer {
         num_pieces: Option<usize>,
         to_peer_tx: Sender<ToPeerMsg>,
         to_peer_cancel_tx: Sender<ToPeerCancelMsg>,
-        am_choking: bool,
     ) -> Self {
         let now = SystemTime::now();
         Peer {
-            am_choking,
+            am_choking: true,
             am_choking_since: SystemTime::UNIX_EPOCH,
             am_interested: false,
             peer_choking: true,
@@ -1536,10 +1535,6 @@ impl TorrentManager {
                 self.file_manager.as_ref().map(|f| f.num_pieces()),
                 to_peer_tx,
                 to_peer_cancel_tx,
-                should_choke(
-                    peers_to_torrent_manager_tx.capacity(),
-                    self.file_manager.is_some(),
-                ),
             ),
         );
         log::debug!("new peer initialized: {peer_addr}");
@@ -1664,10 +1659,10 @@ fn update_tracker_client_and_advertised_peers(
 }
 
 fn should_choke(
-    peers_to_torrent_manager_channel_pending_msgs: usize,
+    peers_to_torrent_manager_channel_capacity: usize,
     file_manager_initialized: bool,
 ) -> bool {
-    peers_to_torrent_manager_channel_pending_msgs > PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY / 2
+    peers_to_torrent_manager_channel_capacity < PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY / 2
         || !file_manager_initialized
 }
 
