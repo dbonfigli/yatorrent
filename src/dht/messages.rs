@@ -247,7 +247,7 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
         _ => bail!("got krpc message that is a query (y=q) with \"a\" key that is not a dict"),
     };
 
-    // check a contains id
+    // check "a" contains id
     let id = match a_h.get(&b"id".to_vec()) {
         Some(id) => id,
         _ => bail!(
@@ -282,7 +282,7 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
     if q_str == b"ping" {
         Ok(KRPCMessage::PingReq(id_arr))
     } else if q_str == b"find_node" {
-        // check a contains target
+        // check "a" contains target
         let target = match a_h.get(&b"target".to_vec()) {
                 Some(target) => target,
                 _ => bail!("got krpc message that is a find_node query (y=q) with \"a\" key that is a dict with no target key"),

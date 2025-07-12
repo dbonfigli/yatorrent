@@ -233,7 +233,7 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
 
 impl ProtocolReadHalf for ReadHalf<TcpStream> {
     async fn receive(&mut self) -> Result<Message> {
-        // get size of  message
+        // get size of message
         let mut size_message_buf: [u8; 4] = [0; 4];
         if let Err(e) = self.read_exact(&mut size_message_buf).await {
             return Err(e.into());

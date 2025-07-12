@@ -114,7 +114,7 @@ impl Piece {
             if self.fragments[mid].0 <= value && value <= self.fragments[mid].1 {
                 Some(mid)
             } else if self.fragments[mid].0 > value {
-                // avoid subtract with overflow
+                // avoid subtracting with overflow
                 if mid == 0 {
                     return None;
                 }
@@ -146,7 +146,7 @@ impl Piece {
             if self.fragments[mid].0 <= value && value <= self.fragments[mid].1 {
                 mid
             } else if self.fragments[mid].0 > value {
-                // avoid subtract with overflow
+                // avoid subtracting with overflow
                 if mid == 0 {
                     return 0;
                 }

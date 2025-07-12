@@ -44,14 +44,14 @@ const METADATA_BLOCK_SIZE_B: usize = 16384;
 const TO_PEER_CHANNEL_CAPACITY: usize = 2000;
 const TO_PEER_CANCEL_CHANNEL_CAPACITY: usize = 1000;
 const PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY: usize = 50000;
-const BASE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120); // decreasing this will wast more bandwidth (needlessly requesting the same block again even if a peer would send it eventually) but will make retries for pieces requested to slow peers faster
+const BASE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120); // decreasing this will waste more bandwidth (needlessly requesting the same block again even if a peer sends it eventually) but will make retries for pieces requested to slow peers faster
 const ENDGAME_REQUEST_TIMEOUT: Duration = Duration::from_secs(15); // request timeout during the endgame phase: this will re-request a lot of pieces, wasting bandwidth, but will make endgame faster churning slow peers
 const ENDGAME_START_AT_COMPLETION_PERCENTAGE: f64 = 98.; // start endgame when we have this percentage of the torrent
 const MIN_CHOKE_TIME: Duration = Duration::from_secs(60);
 const NEW_CONNECTION_COOL_OFF_PERIOD: Duration = Duration::from_secs(180); // time to wait before attempting a new connection to a non bad (i.e. with no permanent errors) peer
 const ADDED_DROPPED_PEER_EVENTS_RETENTION: Duration = Duration::from_secs(90);
 const PEX_MESSAGE_COOL_OFF_PERIOD: Duration = Duration::from_secs(60);
-const METDATA_BLOCK_REQUEST_TIMEOUT: Duration = Duration::from_secs(15); // timeout for waiting a requested metdata block
+const METADATA_BLOCK_REQUEST_TIMEOUT: Duration = Duration::from_secs(15); // timeout for waiting a requested metadata block
 const MAX_OUTSTANDING_BLOCK_REQUESTS_PER_PEER: i64 = 100;
 const PEER_METADATA_REQUEST_REJECTION_COOL_OFF_PERIOD: Duration = Duration::from_secs(30);
 
@@ -75,7 +75,7 @@ pub struct Peer {
 
 enum MetadataMessage {
     Request(u64),            // piece
-    Data(u64, u64, Vec<u8>), // piece, total_size, data (16kb or less if last piece)
+    Data(u64, u64, Vec<u8>), // piece, total_size, data (16 kb or less if last piece)
     Reject(u64),             // piece
 }
 
@@ -115,8 +115,8 @@ impl Peer {
         }
         self.last_sent = SystemTime::now();
         let _ = self.to_peer_tx.send(msg).await;
-        // ignore errors: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors
-        // and the peer is still lingering in self.peers because the control message about the error is not yet been handled
+        // ignore errors: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors, 
+        // and the peer is still lingering in self.peers because the control message about the error is not yet handled
     }
 
     fn support_pex_extension(&self) -> bool {
@@ -739,7 +739,7 @@ impl TorrentManager {
                 if *metadata_size <= 0 {
                     log::debug!("got an ut_metadata extension handshake where \"metadata_size\" was <= 0, ignoring this message");
                 } else if self.raw_metadata_size.is_none() {
-                    // we we do not know yet the metdata size, take notes
+                    // we do not know the metadata size yet, take notes
                     self.raw_metadata_size = Some(*metadata_size);
                     self.downloaded_metadata_blocks =
                         metadata_blocks_from_size(*metadata_size, false);
@@ -830,7 +830,7 @@ impl TorrentManager {
             METADATA_MESSAGE_DATA => {
                 if let Some(Int(metadata_size)) = d.get(&b"total_size".to_vec()) {
                     if self.raw_metadata_size.is_none() {
-                        // we we do not know yet the metdata size, take notes
+                        // we do not know the metadata size yet, take notes
                         self.raw_metadata_size = Some(*metadata_size);
                         self.downloaded_metadata_blocks =
                             metadata_blocks_from_size(*metadata_size, false);
@@ -1147,7 +1147,7 @@ impl TorrentManager {
                     // avoid selecting peers we know are bad
                     && !self.bad_peers.contains(*k)
                     // use peers we didn't try to connect to recently
-                    // this cool off time is also important to avoid new connections to peers we attempted few secs ago
+                    // this cool-off time is also important to avoid new connections to peers we attempted few secs ago
                     // and for which a connection attempt is still inflight
                     && now.duration_since(*last_connection_attempt).unwrap() > NEW_CONNECTION_COOL_OFF_PERIOD
                 })
@@ -1301,7 +1301,7 @@ impl TorrentManager {
         if self.file_manager.is_some() {
             return;
         }
-        // we still have to download the metadata, ask metdata blocks to peers
+        // we still have to download the metadata, ask metadata blocks to peers
 
         // get inflight requests
         let mut inflight_metadata_block_requests_per_peer: HashMap<PeerAddr, i64> = HashMap::new();
@@ -1332,11 +1332,11 @@ impl TorrentManager {
                         > PEER_METADATA_REQUEST_REJECTION_COOL_OFF_PERIOD
             })
             .map(|(peer_addr, _)| {
-                let otustanding_req = inflight_metadata_block_requests_per_peer
+                let outstanding_req = inflight_metadata_block_requests_per_peer
                     .get(peer_addr)
                     .map(|reqs| *reqs)
                     .unwrap_or_default();
-                (otustanding_req, peer_addr.clone())
+                (outstanding_req, peer_addr.clone())
             })
             .collect::<Vec<(i64, String)>>();
         possible_peers.shuffle(&mut rand::thread_rng());
@@ -1352,7 +1352,7 @@ impl TorrentManager {
                 && now
                     .duration_since(self.downloaded_metadata_blocks[n].2)
                     .unwrap()
-                    > METDATA_BLOCK_REQUEST_TIMEOUT
+                    > METADATA_BLOCK_REQUEST_TIMEOUT
             {
                 metadata_blocks_to_request.push(n);
             }
