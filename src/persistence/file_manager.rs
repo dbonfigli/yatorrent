@@ -173,7 +173,7 @@ impl FileManager {
                     self.piece_completion_status[idx] = false;
                 }
                 Ok(buf) => {
-                    let piece_sha: [u8; 20] = Sha1::digest(&*buf).as_slice().try_into().unwrap();
+                    let piece_sha: [u8; 20] = Sha1::digest(&*buf).try_into().unwrap();
                     self.piece_completion_status[idx] = self.piece_hashes[idx] == piece_sha;
                 }
             }
@@ -387,10 +387,7 @@ impl FileManager {
             // final sha check
             let read_piece_data =
                 self.read_piece_block_with_have_piece_check(piece_idx, 0, piece_len, false)?;
-            let piece_sha: [u8; 20] = Sha1::digest(&*read_piece_data)
-                .as_slice()
-                .try_into()
-                .unwrap();
+            let piece_sha: [u8; 20] = Sha1::digest(&*read_piece_data).try_into().unwrap();
             if piece_sha != self.piece_hashes[piece_idx] {
                 bail!(
                     "the sha of the data we just wrote for piece {piece_idx} do not match the sha we expect, marking this piece as missing"

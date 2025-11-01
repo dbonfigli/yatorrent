@@ -852,10 +852,7 @@ impl DhtManager {
         };
         let mut expected_token_plain = self.token_signing_secret.to_vec();
         expected_token_plain.append(&mut remote_ipv4addr.octets().to_vec());
-        let expected_token: [u8; 20] = Sha1::digest(expected_token_plain)
-            .as_slice()
-            .try_into()
-            .unwrap();
+        let expected_token: [u8; 20] = Sha1::digest(expected_token_plain).try_into().unwrap();
         if expected_token != token_u8_20 {
             log::trace!(
                 "got an announce_peer from {source_req_addr_port} with a token ({}) that is not what we expected ({}), refusing it",
@@ -950,7 +947,7 @@ impl DhtManager {
         // generate token
         let mut token_plain = self.token_signing_secret.to_vec();
         token_plain.append(&mut remote_ipv4addr.octets().to_vec());
-        let token: [u8; 20] = Sha1::digest(token_plain).as_slice().try_into().unwrap();
+        let token: [u8; 20] = Sha1::digest(token_plain).try_into().unwrap();
         // response
         match self.known_peers.get(&info_hash) {
             Some(peers) => {

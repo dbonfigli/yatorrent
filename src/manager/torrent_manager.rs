@@ -966,7 +966,6 @@ impl TorrentManager {
 
         // check hash
         let info_hash: [u8; 20] = Sha1::digest(&self.raw_metadata.as_ref().unwrap())
-            .as_slice()
             .try_into()
             .unwrap();
         if info_hash != self.info_hash {
