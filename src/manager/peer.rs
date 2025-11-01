@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
-use tokio::sync::Mutex;
 use tokio::time::timeout;
 
 use crate::bencoding::Value;
@@ -297,7 +297,11 @@ async fn handshake(
         reserved,
     );
     if peer_info_hash != info_hash {
-        log::debug!("handshake errored: info hash received during handshake does not match to the one we want (own: {}, theirs: {})", pretty_info_hash(info_hash), pretty_info_hash(peer_info_hash));
+        log::debug!(
+            "handshake errored: info hash received during handshake does not match to the one we want (own: {}, theirs: {})",
+            pretty_info_hash(info_hash),
+            pretty_info_hash(peer_info_hash)
+        );
         bail!("own and their infohash did not match");
     }
 
@@ -358,7 +362,9 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
     loop {
         match timeout(Duration::from_secs(180), wire_proto.receive()).await {
             Err(_elapsed) => {
-                log::trace!("did not receive anything (not even keep-alive messages) from peer in 3 minutes {peer_addr}");
+                log::trace!(
+                    "did not receive anything (not even keep-alive messages) from peer in 3 minutes {peer_addr}"
+                );
                 send_to_torrent_manager(
                     &peers_to_torrent_manager_tx,
                     PeersToManagerMsg::Error(peer_addr, PeerError::Timeout),
@@ -421,7 +427,10 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                     let piece_request = (*piece_idx, *begin, data.len() as u32);
                     if cancellations.contains_key(&piece_request) {
                         cancellations.remove(&piece_request);
-                        log::trace!("avoided sending canceled request to peer {peer_addr} (block_idx: {piece_idx} begin: {begin}, end: {})", data.len());
+                        log::trace!(
+                            "avoided sending canceled request to peer {peer_addr} (block_idx: {piece_idx} begin: {begin}, end: {})",
+                            data.len()
+                        );
                         continue;
                     }
                 }

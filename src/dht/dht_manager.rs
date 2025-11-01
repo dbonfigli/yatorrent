@@ -18,9 +18,9 @@ use rand::Rng;
 use crate::{
     dht::{
         messages::{
-            decode_krpc_message, encode_krpc_message, ErrorType, GetPeersOrFindNodeRespData,
+            ErrorType, GetPeersOrFindNodeRespData, decode_krpc_message, encode_krpc_message,
         },
-        routing_table::{biguint_to_u8_20, distance, Node, K_FACTOR},
+        routing_table::{K_FACTOR, Node, biguint_to_u8_20, distance},
     },
     util::{force_string, pretty_info_hash, start_tick},
 };
@@ -481,7 +481,8 @@ impl DhtManager {
                 {
                     Some((_, _, _, Some(info_hash), depth)) => (info_hash, depth),
                     _ => {
-                        log::trace!("got a get_peers or find_node resp from {remote_addr} for an expired or unknown transaction id ({}) we didn't perform, ignoring it",
+                        log::trace!(
+                            "got a get_peers or find_node resp from {remote_addr} for an expired or unknown transaction id ({}) we didn't perform, ignoring it",
                             force_string(&transaction_id.to_vec())
                         );
                         return;
@@ -558,8 +559,10 @@ impl DhtManager {
                     .inflight_requests
                     .contains_key(&transaction_id)
                 {
-                    log::trace!("got a error resp from {} for an unknown or expired transaction id ({}) we didn't perform, ignoring it",
-                        remote_addr, force_string(&transaction_id.to_vec())
+                    log::trace!(
+                        "got a error resp from {} for an unknown or expired transaction id ({}) we didn't perform, ignoring it",
+                        remote_addr,
+                        force_string(&transaction_id.to_vec())
                     );
                     return;
                 }
@@ -568,8 +571,13 @@ impl DhtManager {
                     .inflight_requests
                     .remove(&transaction_id)
                     .unwrap();
-                log::trace!("got dht error response for transaction id {} from {}; our message sent was: {:?}, error type: {:?}, error message: {}",
-                    force_string(&transaction_id),remote_addr, inflight_req.2, error_type, msg
+                log::trace!(
+                    "got dht error response for transaction id {} from {}; our message sent was: {:?}, error type: {:?}, error message: {}",
+                    force_string(&transaction_id),
+                    remote_addr,
+                    inflight_req.2,
+                    error_type,
+                    msg
                 );
             }
         }
@@ -727,7 +735,9 @@ impl DhtManager {
         let nodes = match resp_data.nodes {
             Some(nodes) => nodes,
             None => {
-                log::trace!("we correlated a GetPeersOrFindNodeResp to an existing find_node request but the response had no nodes, skipping it");
+                log::trace!(
+                    "we correlated a GetPeersOrFindNodeResp to an existing find_node request but the response had no nodes, skipping it"
+                );
                 return;
             }
         };
@@ -822,7 +832,9 @@ impl DhtManager {
         let token_u8_20: [u8; 20] = match token.try_into() {
             Ok(t) => t,
             Err(_) => {
-                log::trace!("got an announce_peer from {source_req_addr_port} with a token that is not 20b as expected, refusing it");
+                log::trace!(
+                    "got an announce_peer from {source_req_addr_port} with a token that is not 20b as expected, refusing it"
+                );
                 self.msg_sender
                     .do_req(
                         &socket,
@@ -846,10 +858,10 @@ impl DhtManager {
             .unwrap();
         if expected_token != token_u8_20 {
             log::trace!(
-        "got an announce_peer from {source_req_addr_port} with a token ({}) that is not what we expected ({}), refusing it",
-        force_string(&token_u8_20.to_vec()),
-        force_string(&expected_token.to_vec())
-    );
+                "got an announce_peer from {source_req_addr_port} with a token ({}) that is not what we expected ({}), refusing it",
+                force_string(&token_u8_20.to_vec()),
+                force_string(&expected_token.to_vec())
+            );
             self.msg_sender
                 .do_req(
                     &socket,
@@ -902,7 +914,10 @@ impl DhtManager {
             .inflight_requests
             .contains_key(&transaction_id)
         {
-            log::trace!("got a ping or announce_peer resp from {remote_ipv4addr}:{remote_port} for an expired or unknown transaction id ({}) we didn't perform, ignoring it", force_string(&transaction_id.to_vec()));
+            log::trace!(
+                "got a ping or announce_peer resp from {remote_ipv4addr}:{remote_port} for an expired or unknown transaction id ({}) we didn't perform, ignoring it",
+                force_string(&transaction_id.to_vec())
+            );
             return;
         }
         self.msg_sender.inflight_requests.remove(&transaction_id);

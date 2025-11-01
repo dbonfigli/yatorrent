@@ -1,5 +1,5 @@
 use crate::{bencoding::Value, util::force_string};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::{collections::HashMap, net::Ipv4Addr};
 
 #[derive(Debug, Clone)]
@@ -257,12 +257,16 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
 
     // check id is a string
     let id_str = match id {
-            Value::Str(id_str) => id_str,
-            _ => bail!("got krpc message that is a query (y=q) with \"a\" key that is a dict with id key that is not a bencoded string"),
-        };
+        Value::Str(id_str) => id_str,
+        _ => bail!(
+            "got krpc message that is a query (y=q) with \"a\" key that is a dict with id key that is not a bencoded string"
+        ),
+    };
     // check id is 20b
     if id_str.len() != 20 {
-        bail!("got krpc message that is a query (y=q) with \"a\" key that is a dict with id key that is not a bencoded string of 20 chars");
+        bail!(
+            "got krpc message that is a query (y=q) with \"a\" key that is a dict with id key that is not a bencoded string of 20 chars"
+        );
     }
     let id_arr = id_str[0..20].try_into().unwrap();
 
@@ -284,20 +288,24 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
     } else if q_str == b"find_node" {
         // check "a" contains target
         let target = match a_h.get(&b"target".to_vec()) {
-                Some(target) => target,
-                _ => bail!("got krpc message that is a find_node query (y=q) with \"a\" key that is a dict with no target key"),
-
-            };
+            Some(target) => target,
+            _ => bail!(
+                "got krpc message that is a find_node query (y=q) with \"a\" key that is a dict with no target key"
+            ),
+        };
 
         // check target is a string
         let target_str = match target {
-                Value::Str(target_str) => target_str,
-                _ => bail!("got krpc message that is a find_node query (y=q) with \"a\" key that is a dict with target key that is not a bencoded string"),
-
-            };
+            Value::Str(target_str) => target_str,
+            _ => bail!(
+                "got krpc message that is a find_node query (y=q) with \"a\" key that is a dict with target key that is not a bencoded string"
+            ),
+        };
         // check target is 20b
         if target_str.len() != 20 {
-            bail!("got krpc message that is a find_node query (y=q) with \"a\" key that is a dict with target key that is not a bencoded string of 20 chars");
+            bail!(
+                "got krpc message that is a find_node query (y=q) with \"a\" key that is a dict with target key that is not a bencoded string of 20 chars"
+            );
         }
         let target_arr = target_str[0..20].try_into().unwrap();
 
@@ -305,17 +313,23 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
     } else if q_str == b"get_peers" {
         // check a contains info_hash
         let info_hash = match a_h.get(&b"info_hash".to_vec()) {
-                Some(info_hash) => info_hash,
-                _ => bail!("got krpc message that is a get_peers query (y=q) with \"a\" key that is a dict with no info_hash key"),
-            };
+            Some(info_hash) => info_hash,
+            _ => bail!(
+                "got krpc message that is a get_peers query (y=q) with \"a\" key that is a dict with no info_hash key"
+            ),
+        };
         // check info_hash is a string
         let info_hash_str = match info_hash {
-                Value::Str(info_hash_str) => info_hash_str,
-                _ => bail!("got krpc message that is a get_peers query (y=q) with \"a\" key that is a dict with info_hash key that is not a bencoded string"),
-            };
+            Value::Str(info_hash_str) => info_hash_str,
+            _ => bail!(
+                "got krpc message that is a get_peers query (y=q) with \"a\" key that is a dict with info_hash key that is not a bencoded string"
+            ),
+        };
         // check info_hash is 20b
         if info_hash_str.len() != 20 {
-            bail!("got krpc message that is a get_peers query (y=q) with \"a\" key that is a dict with info_hash key that is not a bencoded string of 20 chars");
+            bail!(
+                "got krpc message that is a get_peers query (y=q) with \"a\" key that is a dict with info_hash key that is not a bencoded string of 20 chars"
+            );
         }
         let info_hash_arr = info_hash_str[0..20].try_into().unwrap();
 
@@ -323,48 +337,63 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
     } else if q_str == b"announce_peer" {
         // check a contains info_hash
         let info_hash = match a_h.get(&b"info_hash".to_vec()) {
-                    Some(info_hash) => info_hash,
-                    _ => bail!("got krpc message that is a announce_peer query (y=q) with \"a\" key that is a dict with no info_hash key"),
-                };
+            Some(info_hash) => info_hash,
+            _ => bail!(
+                "got krpc message that is a announce_peer query (y=q) with \"a\" key that is a dict with no info_hash key"
+            ),
+        };
 
         // check info_hash is a string
         let info_hash_str = match info_hash {
-                    Value::Str(info_hash_str) => info_hash_str,
-                    _ => bail!("got krpc message that is a announce_peer query (y=q) with \"a\" key that is a dict with info_hash key that is not a bencoded string"),
-                };
+            Value::Str(info_hash_str) => info_hash_str,
+            _ => bail!(
+                "got krpc message that is a announce_peer query (y=q) with \"a\" key that is a dict with info_hash key that is not a bencoded string"
+            ),
+        };
         // check info_hash is 20b
         if info_hash_str.len() != 20 {
-            bail!("got krpc message that is a announce_peer query (y=q) with \"a\" key that is a dict with info_hash key that is not a bencoded string of 20 chars");
+            bail!(
+                "got krpc message that is a announce_peer query (y=q) with \"a\" key that is a dict with info_hash key that is not a bencoded string of 20 chars"
+            );
         }
         let info_hash_arr = info_hash_str[0..20].try_into().unwrap();
 
         // check a contains token
         let token = match a_h.get(&b"token".to_vec()) {
-                    Some(token) => token,
-                    _ => bail!("got krpc message that is a announce_peer query (y=q) with \"a\" key that is a dict with no token key"),
-                };
+            Some(token) => token,
+            _ => bail!(
+                "got krpc message that is a announce_peer query (y=q) with \"a\" key that is a dict with no token key"
+            ),
+        };
 
         // check token is a string
         let token_str = match token {
-                    Value::Str(token_str) => token_str,
-                    _ => bail!("got krpc message that is a announce_peer query (y=q) with \"a\" key that is a dict with token key that is not a bencoded string"),
-                };
+            Value::Str(token_str) => token_str,
+            _ => bail!(
+                "got krpc message that is a announce_peer query (y=q) with \"a\" key that is a dict with token key that is not a bencoded string"
+            ),
+        };
 
         // check a contains port
         let port = match a_h.get(&b"port".to_vec()) {
-                    Some(port) => port,
-                    _ => bail!("got krpc message that is a announce_peer query (y=q) with \"a\" key that is a dict with no port key"),
-                };
+            Some(port) => port,
+            _ => bail!(
+                "got krpc message that is a announce_peer query (y=q) with \"a\" key that is a dict with no port key"
+            ),
+        };
 
         // check port is an int
         let port_int: u16 = match port {
-                    Value::Int(port_int) => match (*port_int).try_into() {
-                        Ok(p) => p,
-                        Err(_) => bail!("got krpc message that is a announce_peer query (y=q) with \"a\" key that is a dict with port key that is a number that does not fit a u16"),
-
-                    },
-                    _ => bail!("got krpc message that is a announce_peer query (y=q) with \"a\" key that is a dict with with a port key that is not a number"),
-                };
+            Value::Int(port_int) => match (*port_int).try_into() {
+                Ok(p) => p,
+                Err(_) => bail!(
+                    "got krpc message that is a announce_peer query (y=q) with \"a\" key that is a dict with port key that is a number that does not fit a u16"
+                ),
+            },
+            _ => bail!(
+                "got krpc message that is a announce_peer query (y=q) with \"a\" key that is a dict with with a port key that is not a number"
+            ),
+        };
 
         let mut implied_port = false;
         if let Some(Value::Int(implied_port_int)) = a_h.get(&b"implied_port".to_vec()) {
@@ -411,31 +440,41 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
     // check id is a string
     let id_str = match id {
         Value::Str(id_str) => id_str,
-        _ => bail!("got krpc message that is a response (y=r) but but id key in r map is not a bencoded string"),
+        _ => bail!(
+            "got krpc message that is a response (y=r) but but id key in r map is not a bencoded string"
+        ),
     };
     // check id is 20b
     if id_str.len() != 20 {
-        bail!("got krpc message that is a response (y=r) but but id key in r map is not a bencoded string of 20 chars");
+        bail!(
+            "got krpc message that is a response (y=r) but but id key in r map is not a bencoded string of 20 chars"
+        );
     }
     let id_arr = id_str[0..20].try_into().unwrap();
 
     let token_opt;
     if let Some(token) = r_h.get(&b"token".to_vec()) {
         match token {
-                Value::Str(token_str) => { token_opt = Some(token_str.clone()) }
-                _ => bail!("got krpc message that is a response (y=r) and has a token key in the r map that is not a bencoded string"),
-            };
+            Value::Str(token_str) => token_opt = Some(token_str.clone()),
+            _ => bail!(
+                "got krpc message that is a response (y=r) and has a token key in the r map that is not a bencoded string"
+            ),
+        };
     } else {
         token_opt = None;
     };
 
     let nodes = if let Some(nodes_v) = r_h.get(&b"nodes".to_vec()) {
         let nodes_str = match nodes_v {
-                Value::Str(nodes_str) => nodes_str,
-                _ => bail!("got krpc message that is a response (y=r) and has a nodes key in the r map that is not a bencoded string"),
-            };
+            Value::Str(nodes_str) => nodes_str,
+            _ => bail!(
+                "got krpc message that is a response (y=r) and has a nodes key in the r map that is not a bencoded string"
+            ),
+        };
         if nodes_str.len() % 26 != 0 {
-            bail!("got krpc message that is a response (y=r) and has a nodes key in the r map that is not a bencoded string with length divisible by 26");
+            bail!(
+                "got krpc message that is a response (y=r) and has a nodes key in the r map that is not a bencoded string with length divisible by 26"
+            );
         }
         let mut nodes = Vec::new();
         for i in (0..nodes_str.len()).step_by(26) {
@@ -457,16 +496,22 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
     let values = if let Some(peers_v) = r_h.get(&b"values".to_vec()) {
         let mut peers = Vec::new();
         let peers_list = match peers_v {
-                Value::List(peers_list) => peers_list,
-                _ => bail!("got krpc message that is a response (y=r) and has a values key in the r map that is not a list"),
-            };
+            Value::List(peers_list) => peers_list,
+            _ => bail!(
+                "got krpc message that is a response (y=r) and has a values key in the r map that is not a list"
+            ),
+        };
         for peer in peers_list {
             let peer_str = match peer {
-                    Value::Str(peer_str) => peer_str,
-                    _ => bail!("got krpc message that is a response (y=r) and has a values list with a value that is not a bencoded string"),
-                };
+                Value::Str(peer_str) => peer_str,
+                _ => bail!(
+                    "got krpc message that is a response (y=r) and has a values list with a value that is not a bencoded string"
+                ),
+            };
             if peer_str.len() % 6 != 0 {
-                bail!("got krpc message that is a response (y=r) and has a values list with a value in the r map that is not a bencoded string with length divisible by 6");
+                bail!(
+                    "got krpc message that is a response (y=r) and has a values list with a value in the r map that is not a bencoded string with length divisible by 6"
+                );
             }
             let mut peer_ip_buf: [u8; 4] = [0; 4];
             peer_ip_buf.copy_from_slice(&peer_str[0..4]);
@@ -510,11 +555,15 @@ fn parse_error_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
     }
     let error_type = match e_l[0].clone() {
         Value::Int(e_code) => ErrorType::from_code(e_code)?,
-        _ => bail!("got krpc message that is an error (y=e) but the first element in the e key list is not a bencoded integer"),
+        _ => bail!(
+            "got krpc message that is an error (y=e) but the first element in the e key list is not a bencoded integer"
+        ),
     };
     let error_message = match e_l[1].clone() {
         Value::Str(error_message) => error_message,
-        _ => bail!("got krpc message that is an error (y=e) but the second element in the e key list is not a bencoded string"),
+        _ => bail!(
+            "got krpc message that is an error (y=e) but the second element in the e key list is not a bencoded string"
+        ),
     };
     Ok(KRPCMessage::Error(error_type, force_string(&error_message)))
 }

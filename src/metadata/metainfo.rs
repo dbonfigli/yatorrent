@@ -1,5 +1,5 @@
 use crate::{bencoding::Value, util::pretty_info_hash};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use sha1::{Digest, Sha1};
 use size::{Size, Style};
 use std::{fmt, str};
@@ -32,7 +32,9 @@ impl fmt::Display for Metainfo {
             self.announce_list,
             self.url_list,
             self.nodes,
-            Size::from_bytes(self.piece_length).format().with_style(Style::Abbreviated),
+            Size::from_bytes(self.piece_length)
+                .format()
+                .with_style(Style::Abbreviated),
             self.pieces.len(),
             pretty_info_hash(self.info_hash),
             files
@@ -61,14 +63,20 @@ impl Metainfo {
                                 if let Ok(a) = str::from_utf8(&announce_vec) {
                                     tier_list.push(a.to_string());
                                 } else {
-                                    bail!("The .torrent file \"announce-list\" has an element in a tier list that is not an UTF-8 string");
+                                    bail!(
+                                        "The .torrent file \"announce-list\" has an element in a tier list that is not an UTF-8 string"
+                                    );
                                 }
                             } else {
-                                bail!("The .torrent file \"announce-list\" has an element in a tier list that is not a string");
+                                bail!(
+                                    "The .torrent file \"announce-list\" has an element in a tier list that is not a string"
+                                );
                             }
                         }
                         if tier_list.len() == 0 {
-                            bail!("The .torrent file \"announce-list\" has a tier list without elements");
+                            bail!(
+                                "The .torrent file \"announce-list\" has a tier list without elements"
+                            );
                         }
                         announces.push(tier_list);
                     } else {
@@ -102,7 +110,9 @@ impl Metainfo {
                         if let Ok(url) = str::from_utf8(&url_v) {
                             url_list.push(url.to_string());
                         } else {
-                            bail!("The .torrent file \"url-list\" has an element that is not an UTF-8 string");
+                            bail!(
+                                "The .torrent file \"url-list\" has an element that is not an UTF-8 string"
+                            );
                         }
                     } else {
                         bail!("The .torrent file \"url-list\" has an element that is not a string");
@@ -113,10 +123,14 @@ impl Metainfo {
                 if let Ok(url) = str::from_utf8(&url_v) {
                     url_list.push(url.to_string());
                 } else {
-                    bail!("The .torrent file \"url-list\" has an element that is not an UTF-8 string");
+                    bail!(
+                        "The .torrent file \"url-list\" has an element that is not an UTF-8 string"
+                    );
                 }
             }
-            Some(_) => bail!( "The .torrent file has a \"url-list\" field but it does not contain a list or string")
+            Some(_) => bail!(
+                "The .torrent file has a \"url-list\" field but it does not contain a list or string"
+            ),
         }
 
         let mut node_list = Vec::new();
@@ -126,14 +140,18 @@ impl Metainfo {
                 for node_host_port_list_value in l {
                     if let Value::List(node_host_port_list) = node_host_port_list_value {
                         if node_host_port_list.len() != 2 {
-                            bail!("The .torrent file \"nodes\" has an element that is a list of size other than 2");
+                            bail!(
+                                "The .torrent file \"nodes\" has an element that is a list of size other than 2"
+                            );
                         }
                         let node_host;
                         if let Value::Str(node_host_vec) = node_host_port_list[0].clone() {
                             if let Ok(host) = str::from_utf8(&node_host_vec) {
                                 node_host = host.to_string();
                             } else {
-                                bail!("The .torrent file \"nodes\" has a host that is not an UTF-8 string");
+                                bail!(
+                                    "The .torrent file \"nodes\" has a host that is not an UTF-8 string"
+                                );
                             }
                         } else {
                             bail!("The .torrent file \"nodes\" has a host that is not a string");

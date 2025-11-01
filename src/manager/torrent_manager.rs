@@ -1,6 +1,6 @@
-use anyhow::{bail, Error, Result};
+use anyhow::{Error, Result, bail};
 use sha1::{Digest, Sha1};
-use std::cmp::{min, Ordering};
+use std::cmp::{Ordering, min};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use std::{iter, path::Path};
 
-use rand::seq::{IndexedRandom, SliceRandom};
 use rand::Rng;
+use rand::seq::{IndexedRandom, SliceRandom};
 use size::{Size, Style};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -536,7 +536,9 @@ impl TorrentManager {
                 peer.send(ToPeerMsg::Send(Message::Interested)).await;
             }
         } else {
-            log::warn!("got message \"have\" {piece_idx} from peer {peer_addr} but the torrent have only {pieces} pieces");
+            log::warn!(
+                "got message \"have\" {piece_idx} from peer {peer_addr} but the torrent have only {pieces} pieces"
+            );
             // todo: close connection with this bad peer
         }
     }
@@ -688,7 +690,9 @@ impl TorrentManager {
                 .await;
             }
             _ => {
-                log::debug!("got an extension message from {peer_addr} but id was not recognized as an extension we registered: {extension_id}");
+                log::debug!(
+                    "got an extension message from {peer_addr} but id was not recognized as an extension we registered: {extension_id}"
+                );
             }
         }
     }
@@ -701,14 +705,18 @@ impl TorrentManager {
         let extended_message_dict = match extended_message {
             Dict(extended_message_dict, _, _) => extended_message_dict,
             _ => {
-                log::debug!("got an ut_metadata extension handshake but data was not a dict, ignoring this message");
+                log::debug!(
+                    "got an ut_metadata extension handshake but data was not a dict, ignoring this message"
+                );
                 return;
             }
         };
         let m = match extended_message_dict.get(&b"m".to_vec()) {
             Some(Dict(m, _, _)) => m,
             _ => {
-                log::debug!("got an ut_metadata extension handshake but \"m\" entry was not found in dict or was not a dict itself, ignoring this message");
+                log::debug!(
+                    "got an ut_metadata extension handshake but \"m\" entry was not found in dict or was not a dict itself, ignoring this message"
+                );
                 return;
             }
         };
@@ -737,7 +745,9 @@ impl TorrentManager {
             if let Some(Int(metadata_size)) = extended_message_dict.get(&b"metadata_size".to_vec())
             {
                 if *metadata_size <= 0 {
-                    log::debug!("got an ut_metadata extension handshake where \"metadata_size\" was <= 0, ignoring this message");
+                    log::debug!(
+                        "got an ut_metadata extension handshake where \"metadata_size\" was <= 0, ignoring this message"
+                    );
                 } else if self.raw_metadata_size.is_none() {
                     // we do not know the metadata size yet, take notes
                     self.raw_metadata_size = Some(*metadata_size);
@@ -757,7 +767,9 @@ impl TorrentManager {
         let d = match extended_message {
             Dict(d, _, _) => d,
             _ => {
-                log::debug!("got a PEX message from {peer_addr}, it was a bencoded value but not a dict, ignoring it");
+                log::debug!(
+                    "got a PEX message from {peer_addr}, it was a bencoded value but not a dict, ignoring it"
+                );
                 return;
             }
         };
@@ -765,7 +777,9 @@ impl TorrentManager {
         if let Some(Str(compact_contacts_info)) = d.get(&b"added".to_vec()) {
             // we don't support flags, dropped or ipv6 fields ATM
             if compact_contacts_info.len() % 6 != 0 {
-                log::debug!("got a PEX message from {peer_addr} with an \"added\" field that is not divisible by 6, ignoring it");
+                log::debug!(
+                    "got a PEX message from {peer_addr} with an \"added\" field that is not divisible by 6, ignoring it"
+                );
                 return;
             }
             for i in (0..compact_contacts_info.len()).step_by(6) {
@@ -804,21 +818,27 @@ impl TorrentManager {
         let d = match value {
             Dict(d, _, _) => d,
             _ => {
-                log::debug!("got an ut_metadataextension message from {peer_addr}, it was a bencoded value but not a dict dict, ignoring it");
+                log::debug!(
+                    "got an ut_metadataextension message from {peer_addr}, it was a bencoded value but not a dict dict, ignoring it"
+                );
                 return;
             }
         };
         let msg_type = match d.get(&b"msg_type".to_vec()) {
             Some(Int(msg_type)) => msg_type,
             _ => {
-                log::debug!("got an ut_metadataextension message from {peer_addr} but no msg_type key was found in the bencoded dict, ignoring it");
+                log::debug!(
+                    "got an ut_metadataextension message from {peer_addr} but no msg_type key was found in the bencoded dict, ignoring it"
+                );
                 return;
             }
         };
         let piece = match d.get(&b"piece".to_vec()) {
             Some(Int(piece)) => piece,
             _ => {
-                log::debug!("got an ut_metadataextension message from {peer_addr} but no piece key was found in the bencoded dict, ignoring it");
+                log::debug!(
+                    "got an ut_metadataextension message from {peer_addr} but no piece key was found in the bencoded dict, ignoring it"
+                );
                 return;
             }
         };
@@ -850,7 +870,9 @@ impl TorrentManager {
                 }
             }
             _ => {
-                log::debug!("got an ut_metadataextension message from {peer_addr} but msg_type was not recognized as an extension we registered: {msg_type}");
+                log::debug!(
+                    "got an ut_metadataextension message from {peer_addr} but msg_type was not recognized as an extension we registered: {msg_type}"
+                );
             }
         }
     }
@@ -882,7 +904,9 @@ impl TorrentManager {
                         .await;
                     }
                 } else {
-                    log::debug!("rejecting metadata message request for {piece} piece from {peer_addr}, requested pieces is out of range");
+                    log::debug!(
+                        "rejecting metadata message request for {piece} piece from {peer_addr}, requested pieces is out of range"
+                    );
                     if let Some(peer) = self.peers.get_mut(&peer_addr) {
                         peer.send_metadata_extension_message(
                             &peer_addr,
@@ -970,7 +994,9 @@ impl TorrentManager {
 
         match infodict::get_infodict(&info_dict) {
             Ok((piece_length, piece_hashes, m)) => {
-                log::warn!("metadata download completed, we can now start downloading the actual torrent data...");
+                log::warn!(
+                    "metadata download completed, we can now start downloading the actual torrent data..."
+                );
                 self.file_manager = Some(FileManager::new(
                     self.base_path.as_path(),
                     get_files(&m),
@@ -1414,11 +1440,15 @@ impl TorrentManager {
                     peer.send_requests_for_piece(*piece_idx, incomplete_piece.clone())
                         .await;
                 } else {
-                    log::warn!("could not find requested piece {piece_idx} for peer {peer_addr}, this should never happen");
+                    log::warn!(
+                        "could not find requested piece {piece_idx} for peer {peer_addr}, this should never happen"
+                    );
                     piece_idx_to_remove.push(*piece_idx);
                 }
             } else {
-                log::warn!("could not find a peer for outstanding piece assigment (piece_idx: {piece_idx}, peer_addr: {peer_addr}), this should never happen");
+                log::warn!(
+                    "could not find a peer for outstanding piece assigment (piece_idx: {piece_idx}, peer_addr: {peer_addr}), this should never happen"
+                );
                 piece_idx_to_remove.push(*piece_idx);
             }
         }
@@ -1565,22 +1595,61 @@ impl TorrentManager {
         self.last_bandwidth_poll = now;
         log::info!(
             "left: {left}, pieces: {completed_pieces}/{total_pieces} metadata blocks: {known_metadata_blocks}/{total_metadata_blocks} | Up: {up_band}/s, Down: {down_band}/s (tot.: {tot_up}, {tot_down}), wasted: {wasted} | known peers from advertising: {known_peers} (bad: {bad_peers}), connected: {connected_peers}, unchoked: {unchoked_peers} | pending peers_to_torrent_manager msgs: {cur_ch_cap}/{tot_ch_cap}",
-            left=self.file_manager.as_ref().map(|f| Size::from_bytes(f.bytes_left()).to_string()).unwrap_or("?".to_string()),
-            completed_pieces=self.file_manager.as_ref().map(|f| f.completed_pieces()).unwrap_or(0),
-            total_pieces=self.file_manager.as_ref().map(|f| f.num_pieces().to_string()).unwrap_or("?".to_string()),
-            up_band=Size::from_bytes(bandwidth_up).format().with_style(Style::Abbreviated),
-            down_band=Size::from_bytes(bandwidth_down).format().with_style(Style::Abbreviated),
-            tot_up=Size::from_bytes(self.uploaded_bytes).format().with_style(Style::Abbreviated),
-            tot_down=Size::from_bytes(self.downloaded_bytes).format().with_style(Style::Abbreviated),
-            wasted=Size::from_bytes(self.file_manager.as_ref().map(|f| f.wasted_bytes).unwrap_or(0)).format().with_style(Style::Abbreviated),
-            known_peers=advertised_peers_len,
-            bad_peers=self.bad_peers.len(),
-            connected_peers=self.peers.len(),
-            unchoked_peers=self.peers.iter().fold(0, |acc, (_,p)| if !p.peer_choking { acc + 1 } else { acc }),
-            cur_ch_cap=PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY - peers_to_torrent_manager_channel_capacity,
-            known_metadata_blocks= self.downloaded_metadata_blocks.iter().fold(0, |acc, v| if v.0 { acc + 1 } else { acc }),
-            total_metadata_blocks=if self.downloaded_metadata_blocks.len() == 0 { "?".to_string() } else { self.downloaded_metadata_blocks.len().to_string() },
-            tot_ch_cap=PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY,
+            left = self
+                .file_manager
+                .as_ref()
+                .map(|f| Size::from_bytes(f.bytes_left()).to_string())
+                .unwrap_or("?".to_string()),
+            completed_pieces = self
+                .file_manager
+                .as_ref()
+                .map(|f| f.completed_pieces())
+                .unwrap_or(0),
+            total_pieces = self
+                .file_manager
+                .as_ref()
+                .map(|f| f.num_pieces().to_string())
+                .unwrap_or("?".to_string()),
+            up_band = Size::from_bytes(bandwidth_up)
+                .format()
+                .with_style(Style::Abbreviated),
+            down_band = Size::from_bytes(bandwidth_down)
+                .format()
+                .with_style(Style::Abbreviated),
+            tot_up = Size::from_bytes(self.uploaded_bytes)
+                .format()
+                .with_style(Style::Abbreviated),
+            tot_down = Size::from_bytes(self.downloaded_bytes)
+                .format()
+                .with_style(Style::Abbreviated),
+            wasted = Size::from_bytes(
+                self.file_manager
+                    .as_ref()
+                    .map(|f| f.wasted_bytes)
+                    .unwrap_or(0)
+            )
+            .format()
+            .with_style(Style::Abbreviated),
+            known_peers = advertised_peers_len,
+            bad_peers = self.bad_peers.len(),
+            connected_peers = self.peers.len(),
+            unchoked_peers = self.peers.iter().fold(0, |acc, (_, p)| if !p.peer_choking {
+                acc + 1
+            } else {
+                acc
+            }),
+            cur_ch_cap = PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY
+                - peers_to_torrent_manager_channel_capacity,
+            known_metadata_blocks = self
+                .downloaded_metadata_blocks
+                .iter()
+                .fold(0, |acc, v| if v.0 { acc + 1 } else { acc }),
+            total_metadata_blocks = if self.downloaded_metadata_blocks.len() == 0 {
+                "?".to_string()
+            } else {
+                self.downloaded_metadata_blocks.len().to_string()
+            },
+            tot_ch_cap = PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY,
         );
     }
 }

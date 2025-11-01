@@ -170,7 +170,7 @@ fn parse_str(source: &Vec<u8>, index: usize) -> (Value, usize) {
             return (
                 Value::new_error(ErrorElem::Str, start_string_len_index),
                 index,
-            )
+            );
         }
     };
     let string_len_opt = string_len_str.parse::<usize>();
@@ -181,7 +181,7 @@ fn parse_str(source: &Vec<u8>, index: usize) -> (Value, usize) {
             return (
                 Value::new_error(ErrorElem::Str, start_string_len_index),
                 index,
-            )
+            );
         }
     }
     if string_len == 0 {

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::bencoding::Value;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::str;
 
 #[derive(PartialEq, Debug)]
@@ -53,7 +53,9 @@ pub fn get_infodict(
     let pieces_vec = match info_dict.get(&b"pieces".to_vec()) {
         Some(Value::Str(pieces_byte_vec)) => {
             if pieces_byte_vec.len() % 20 != 0 {
-                bail!("The .torrent file contains \"info.pieces\" that is not a string of length divisible by 20");
+                bail!(
+                    "The .torrent file contains \"info.pieces\" that is not a string of length divisible by 20"
+                );
             }
             let mut pieces_vec = Vec::new();
             for p in (0..pieces_byte_vec.len()).step_by(20) {
@@ -111,9 +113,13 @@ pub fn get_infodict(
                 let p = match e {
                     Value::Str(a) => match str::from_utf8(a) {
                         Ok(a) => a.to_string(),
-                        _ => bail!("The .torrent file \"info.files\" kv has an entry with \"path\" with an element that is not an UTF8 string"),
-                    }
-                    _ => bail!("The .torrent file \"info.files\" kv has an entry with \"path\" with an element that is not a string"),
+                        _ => bail!(
+                            "The .torrent file \"info.files\" kv has an entry with \"path\" with an element that is not an UTF8 string"
+                        ),
+                    },
+                    _ => bail!(
+                        "The .torrent file \"info.files\" kv has an entry with \"path\" with an element that is not a string"
+                    ),
                 };
                 entry_path_list.push(p);
             }

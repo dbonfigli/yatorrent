@@ -255,7 +255,7 @@ pub fn distance(i: &[u8; 20], j: &[u8; 20]) -> BigUint {
 
 #[cfg(test)]
 mod tests {
-    use crate::dht::routing_table::{split, BucketContent};
+    use crate::dht::routing_table::{BucketContent, split};
     use num_bigint::BigUint;
     use std::{net::Ipv4Addr, str::FromStr, time::SystemTime};
 

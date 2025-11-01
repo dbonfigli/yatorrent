@@ -73,7 +73,11 @@ impl fmt::Display for Message {
                 write!(f, "port {p}")
             }
             Message::Extended(id, value, additional_data) => {
-                write!(f, "extension message: extension id: {id}, value: {value}, additional data len: {}", additional_data.len())
+                write!(
+                    f,
+                    "extension message: extension id: {id}, value: {value}, additional data len: {}",
+                    additional_data.len()
+                )
             }
         }
     }

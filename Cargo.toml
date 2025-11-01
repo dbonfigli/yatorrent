@@ -1,13 +1,13 @@
 [package]
 name = "yatorrent"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "Yet Another Torrent Client"
 
 [dependencies]
 sha1 = "0.10.6"
 reqwest = "0.12.22"
-tokio = { version = "1.46.1", features = ["full"]}
+tokio = { version = "1.46.1", features = ["full"] }
 assert_matches = "1.5"
 rand = "0.9.1"
 log = "0.4"

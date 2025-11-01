@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use percent_encoding;
 
 pub struct Magnet {
@@ -24,7 +24,9 @@ impl Magnet {
                         } else if info_hash.starts_with("urn:btmh:") {
                             bail!("Multi hash formatted info hash (urn:btmh) not yet supported");
                         } else {
-                            bail!("Unknown info hash format, not starting with either urn:btih: or urn:btmh:");
+                            bail!(
+                                "Unknown info hash format, not starting with either urn:btih: or urn:btmh:"
+                            );
                         }
                     }
                 };
@@ -124,17 +126,22 @@ mod tests {
         assert!(Magnet::new("magnet:?xt=urn:btih:abc123".to_string()).is_err());
 
         // Invalid tracker URL
-        assert!(Magnet::new(
-            "magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&tr=not_a_url".to_string()
-        )
-        .is_err());
+        assert!(
+            Magnet::new(
+                "magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&tr=not_a_url"
+                    .to_string()
+            )
+            .is_err()
+        );
 
         // Invalid peer address (no port)
-        assert!(Magnet::new(
-            "magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&x.pe=example.com"
-                .to_string()
-        )
-        .is_err());
+        assert!(
+            Magnet::new(
+                "magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&x.pe=example.com"
+                    .to_string()
+            )
+            .is_err()
+        );
 
         // Invalid peer address (invalid port)
         assert!(Magnet::new(

@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -69,7 +69,9 @@ impl FileManager {
             total_file_size += size;
         }
         if total_file_size > piece_length * piece_hashes.len() as u64 {
-            log::warn!("the total file size of all files exceed the #pieces * piece_length we have, the .torrent file could be malformed, the exceeding files will not be downloaded");
+            log::warn!(
+                "the total file size of all files exceed the #pieces * piece_length we have, the .torrent file could be malformed, the exceeding files will not be downloaded"
+            );
         }
 
         // generate file list
@@ -99,7 +101,9 @@ impl FileManager {
                         // this was the last piece, it is normal that the piece does not span the full piece_length size for the last file
                         break;
                     } else {
-                        panic!("there are no more files, but there are more pieces still to be matched to files, it seem piece_length * #pieces > sum of all the file sizes, this should never happen, the .torrent file is malformed")
+                        panic!(
+                            "there are no more files, but there are more pieces still to be matched to files, it seem piece_length * #pieces > sum of all the file sizes, this should never happen, the .torrent file is malformed"
+                        )
                     }
                 }
 
@@ -111,7 +115,9 @@ impl FileManager {
 
                 let file_name_path = Path::new(file_name);
                 if file_name_path.is_absolute() {
-                    panic!("the torrent file contained a file with absolute path, this is not acceptable")
+                    panic!(
+                        "the torrent file contained a file with absolute path, this is not acceptable"
+                    )
                 }
                 let path = Path::new(base_path).join(file_name_path);
 
@@ -259,7 +265,9 @@ impl FileManager {
         }
         let piece_length = self.piece_length(piece_idx);
         if piece_length < block_begin + block_length {
-            bail!("requested to read piece idx {piece_idx} out of range: block_begin {block_begin} + block_length {block_length} > piece_length {piece_length}");
+            bail!(
+                "requested to read piece idx {piece_idx} out of range: block_begin {block_begin} + block_length {block_length} > piece_length {piece_length}"
+            );
         }
         if check_if_have_piece && !self.piece_completion_status[piece_idx] {
             bail!("requested to read piece idx {piece_idx} that we don't have");
@@ -337,7 +345,9 @@ impl FileManager {
         }
         let piece = self.incomplete_pieces.get_mut(&piece_idx).unwrap();
         if piece.contains(block_begin, block_begin + data_len) {
-            log::trace!("we already have written all the data in this block (begin: {block_begin} length: {data_len}) for piece {piece_idx}, will avoid writing it again");
+            log::trace!(
+                "we already have written all the data in this block (begin: {block_begin} length: {data_len}) for piece {piece_idx}, will avoid writing it again"
+            );
             self.wasted_bytes += data.len();
             return Ok(false);
         }
@@ -382,7 +392,9 @@ impl FileManager {
                 .try_into()
                 .unwrap();
             if piece_sha != self.piece_hashes[piece_idx] {
-                bail!("the sha of the data we just wrote for piece {piece_idx} do not match the sha we expect, marking this piece as missing");
+                bail!(
+                    "the sha of the data we just wrote for piece {piece_idx} do not match the sha we expect, marking this piece as missing"
+                );
             } else {
                 self.piece_completion_status[piece_idx] = true;
                 self.refresh_completed_files(); //todo: optimize this

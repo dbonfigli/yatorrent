@@ -5,7 +5,7 @@ use tokio::{
 };
 
 use crate::bencoding::Value;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use rand::seq::IndexedRandom;
 use std::fmt::Display;
 use std::{fmt, io::Read, str, time::Duration};
@@ -60,7 +60,16 @@ impl Display for Response {
                     .map(|p| format!("  - {}:{} (id: {:#?})", p.ip, p.port, p.peer_id))
                     .collect::<Vec<String>>()
                     .join("\n");
-                write!(f, "interval: {}\nmin_interval: {:#?}\ntracker_id: {:#?}\nn. peers completed: {}\nn. peers incomplete: {}\npeers:\n{}", ok_response.interval, ok_response.min_interval, ok_response.tracker_id, ok_response.complete, ok_response.incomplete, peers)
+                write!(
+                    f,
+                    "interval: {}\nmin_interval: {:#?}\ntracker_id: {:#?}\nn. peers completed: {}\nn. peers incomplete: {}\npeers:\n{}",
+                    ok_response.interval,
+                    ok_response.min_interval,
+                    ok_response.tracker_id,
+                    ok_response.complete,
+                    ok_response.incomplete,
+                    peers
+                )
             }
             Response::Failure(failure_message) => {
                 write!(f, "FAILURE: {failure_message}")
@@ -295,7 +304,9 @@ impl TrackerClient {
             if let Ok(f) = str::from_utf8(&failure_reason_vec) {
                 return Ok(Response::Failure(f.to_string()));
             } else {
-                bail!("Failure reason key provided in bencoded dict response but it is not an UTF8 string");
+                bail!(
+                    "Failure reason key provided in bencoded dict response but it is not an UTF8 string"
+                );
             }
         }
 
@@ -303,15 +314,19 @@ impl TrackerClient {
         let warning_message = match response_map.get(&b"warning message".to_vec()) {
             Some(Value::Str(warning_message_vec)) => match str::from_utf8(&warning_message_vec) {
                 Ok(w) => Some(w.to_string()),
-                _ => bail!("Warning message key provided in bencoded dict response but it is not an UTF8 string"),
-            }
-            _ => None
+                _ => bail!(
+                    "Warning message key provided in bencoded dict response but it is not an UTF8 string"
+                ),
+            },
+            _ => None,
         };
 
         // interval
         let interval = match response_map.get(&b"interval".to_vec()) {
             Some(Value::Int(i)) => *i,
-            _ => bail!("Interval key not provided in bencoded dict response or provided but it is not a number"),
+            _ => bail!(
+                "Interval key not provided in bencoded dict response or provided but it is not a number"
+            ),
         };
 
         // min interval
@@ -324,7 +339,9 @@ impl TrackerClient {
         let tracker_id = match response_map.get(&b"tracker id".to_vec()) {
             Some(Value::Str(tracker_id_vec)) => match str::from_utf8(&tracker_id_vec) {
                 Ok(w) => Some(w.to_string()),
-                _ => bail!("Tracker id key provided in bencoded dict response but it is not an UTF8 string"),
+                _ => bail!(
+                    "Tracker id key provided in bencoded dict response but it is not an UTF8 string"
+                ),
             },
             _ => None,
         };
@@ -332,20 +349,26 @@ impl TrackerClient {
         // complete
         let complete = match response_map.get(&b"complete".to_vec()) {
             Some(Value::Int(i)) => *i,
-            _ => bail!("Complete key not provided in bencoded dict response or provided but it is not a number"),
+            _ => bail!(
+                "Complete key not provided in bencoded dict response or provided but it is not a number"
+            ),
         };
 
         // incomplete
         let incomplete = match response_map.get(&b"incomplete".to_vec()) {
             Some(Value::Int(i)) => *i,
-            _ => bail!("Incomplete key not provided in bencoded dict response or provided but it is not a number"),
+            _ => bail!(
+                "Incomplete key not provided in bencoded dict response or provided but it is not a number"
+            ),
         };
 
         // peers
         let peers = match response_map.get(&b"peers".to_vec()) {
             Some(Value::List(peers_list)) => get_peers_with_dict_model(peers_list)?,
             Some(Value::Str(peers_bytes)) => get_peers_with_binary_model(peers_bytes)?,
-            _ => bail!("Peers key not provided in bencoded dict or provided but it was not a list or string"),
+            _ => bail!(
+                "Peers key not provided in bencoded dict or provided but it was not a list or string"
+            ),
         };
 
         Ok(Response::Ok(OkResponse {
@@ -410,14 +433,18 @@ impl TrackerClient {
         action_buf.copy_from_slice(&recv_connect_buf[0..4]);
         let action = u32::from_be_bytes(action_buf);
         if action != 0 {
-            bail!("got connect response from udp tracker but received action was not 0 (i.e.: connect): {action}");
+            bail!(
+                "got connect response from udp tracker but received action was not 0 (i.e.: connect): {action}"
+            );
         }
 
         let mut transaction_id_buf = [0u8; 4];
         transaction_id_buf.copy_from_slice(&recv_connect_buf[4..8]);
         let recv_transaction_id = u32::from_be_bytes(transaction_id_buf);
         if recv_transaction_id != transaction_id {
-            bail!("got connect response from udp tracker but received transaction_id {recv_transaction_id} was different from the request ({transaction_id})");
+            bail!(
+                "got connect response from udp tracker but received transaction_id {recv_transaction_id} was different from the request ({transaction_id})"
+            );
         }
 
         let mut connection_id_buf = [0u8; 8];
@@ -462,14 +489,18 @@ impl TrackerClient {
                 action_buf.copy_from_slice(&recv_announce_buf[0..4]);
                 let action = u32::from_be_bytes(action_buf);
                 if action != 1 {
-                    bail!("got announce response from udp tracker but received action was not 1 (i.e.: announce): {action}");
+                    bail!(
+                        "got announce response from udp tracker but received action was not 1 (i.e.: announce): {action}"
+                    );
                 }
 
                 let mut transaction_id_buf = [0u8; 4];
                 transaction_id_buf.copy_from_slice(&recv_announce_buf[4..8]);
                 let recv_transaction_id = u32::from_be_bytes(transaction_id_buf);
                 if recv_transaction_id != transaction_id {
-                    bail!("got announce response from udp tracker but received transaction_id {recv_transaction_id} was different from the request ({transaction_id})");
+                    bail!(
+                        "got announce response from udp tracker but received transaction_id {recv_transaction_id} was different from the request ({transaction_id})"
+                    );
                 }
 
                 let mut interval_buf = [0u8; 4];
@@ -487,7 +518,10 @@ impl TrackerClient {
                 let mut peers = Vec::new();
                 let address_len = 4; // todo check if we are using ipv6
                 if (bytes_recv - 20) % 6 != 0 {
-                    bail!("gor announce response but size is not valid: addresses field is not divisible by 6: {}", bytes_recv - 20);
+                    bail!(
+                        "gor announce response but size is not valid: addresses field is not divisible by 6: {}",
+                        bytes_recv - 20
+                    );
                 }
                 for i in (20..bytes_recv).step_by(address_len + 2) {
                     let mut address_buf = [0u8; 4];
@@ -531,24 +565,32 @@ fn get_peers_with_dict_model(peers_values: &Vec<Value>) -> Result<Vec<Peer>> {
                 let peer_id = match peer_dic.get(&b"peer id".to_vec()) {
                     Some(Value::Str(peer_id_vec)) => match str::from_utf8(&peer_id_vec) {
                         Ok(w) => Some(w.to_string()),
-                        _ => bail!("Peer id key provided in list of peers in bencoded dict response but it is not an UTF8 string"),
-                    }
-                    _ => None
+                        _ => bail!(
+                            "Peer id key provided in list of peers in bencoded dict response but it is not an UTF8 string"
+                        ),
+                    },
+                    _ => None,
                 };
 
                 // ip
                 let ip = match peer_dic.get(&b"ip".to_vec()) {
                     Some(Value::Str(ip_vec)) => match str::from_utf8(&ip_vec) {
                         Ok(i) => i.to_string(),
-                        _ => bail!("Ip key provided in list of peers in bencoded dict response but it is not an UTF8 string"),
-                    }
-                    _ => bail!("Ip key not provided in list of peers in bencoded dict response or provided but it is not a string"),
+                        _ => bail!(
+                            "Ip key provided in list of peers in bencoded dict response but it is not an UTF8 string"
+                        ),
+                    },
+                    _ => bail!(
+                        "Ip key not provided in list of peers in bencoded dict response or provided but it is not a string"
+                    ),
                 };
 
                 // port
                 let port = match peer_dic.get(&b"port".to_vec()) {
                     Some(Value::Int(port_vec)) => u16::try_from(*port_vec)?,
-                    _ => bail!("Port key not provided in list of peers in bencoded dict response or provided but it is not a valid number"),
+                    _ => bail!(
+                        "Port key not provided in list of peers in bencoded dict response or provided but it is not a valid number"
+                    ),
                 };
 
                 peers_list.push(Peer { peer_id, ip, port });
