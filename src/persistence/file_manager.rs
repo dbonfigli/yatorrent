@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::{cmp, fs};
+use thiserror::Error;
 
 use std::fs::File;
 
@@ -10,6 +11,14 @@ use sha1::{Digest, Sha1};
 use size::Size;
 
 use crate::persistence::piece::Piece;
+
+#[derive(Error, Debug)]
+#[error(
+    "the sha of the data we just wrote for piece {piece_idx} do not match the sha we expect, marking this piece as missing"
+)]
+pub struct ShaCorruptedError {
+    piece_idx: usize,
+}
 
 pub struct FileManager {
     file_list: Vec<(PathBuf, u64, bool)>, // name with path, size, download completed / incomplete
@@ -389,9 +398,7 @@ impl FileManager {
                 self.read_piece_block_with_have_piece_check(piece_idx, 0, piece_len, false)?;
             let piece_sha: [u8; 20] = Sha1::digest(&*read_piece_data).try_into().unwrap();
             if piece_sha != self.piece_hashes[piece_idx] {
-                bail!(
-                    "the sha of the data we just wrote for piece {piece_idx} do not match the sha we expect, marking this piece as missing"
-                );
+                bail!(ShaCorruptedError { piece_idx });
             } else {
                 self.piece_completion_status[piece_idx] = true;
                 self.refresh_completed_files(); //todo: optimize this

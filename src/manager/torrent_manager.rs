@@ -18,6 +18,7 @@ use crate::dht::dht_manager::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMs
 use crate::manager::peer::{self, PeerAddr, PeersToManagerMsg, ToPeerCancelMsg, ToPeerMsg};
 use crate::metadata::infodict::{self};
 use crate::metadata::metainfo::get_files;
+use crate::persistence::file_manager::ShaCorruptedError;
 use crate::persistence::piece::Piece;
 use crate::torrent_protocol::wire_protocol::Message;
 use crate::tracker;
@@ -54,6 +55,7 @@ const PEX_MESSAGE_COOL_OFF_PERIOD: Duration = Duration::from_secs(60);
 const METADATA_BLOCK_REQUEST_TIMEOUT: Duration = Duration::from_secs(15); // timeout for waiting a requested metadata block
 const MAX_OUTSTANDING_BLOCK_REQUESTS_PER_PEER: i64 = 100;
 const PEER_METADATA_REQUEST_REJECTION_COOL_OFF_PERIOD: Duration = Duration::from_secs(30);
+const MAX_CORRUPTION_ERRORS: u32 = 20; // max sha1 corruption errors on blocks a peer can have before marking it as bad
 
 pub struct Peer {
     am_choking: bool,
@@ -71,6 +73,7 @@ pub struct Peer {
     last_pex_message_sent: SystemTime,
     ut_metadata_id: u8,
     last_metadata_request_rejection: SystemTime,
+    corruption_errors: u32,
 }
 
 enum MetadataMessage {
@@ -106,6 +109,7 @@ impl Peer {
             last_pex_message_sent: SystemTime::UNIX_EPOCH,
             ut_metadata_id: 0, // i.e. no support for metadata on this peer, initially
             last_metadata_request_rejection: SystemTime::UNIX_EPOCH,
+            corruption_errors: 0,
         }
     }
 
@@ -398,7 +402,7 @@ impl TorrentManager {
                             self.handle_peer_error(peer_addr, error_type, ok_to_accept_connection_tx.clone()).await;
                         }
                         PeersToManagerMsg::Receive(peer_addr, msg) => {
-                            self.handle_receive_message(peer_addr, msg, metadata_size_tx.clone(), piece_completion_status_channel_tx.clone(), peers_to_torrent_manager_tx.capacity(), to_dht_manager_tx.clone()).await;
+                            self.handle_receive_message(peer_addr, msg, metadata_size_tx.clone(), piece_completion_status_channel_tx.clone(), peers_to_torrent_manager_tx.capacity(), to_dht_manager_tx.clone(), ok_to_accept_connection_tx.clone()).await;
                         }
                         PeersToManagerMsg::NewPeer(tcp_stream) => {
                             self.handle_new_peer(tcp_stream, peers_to_torrent_manager_tx.clone(), ok_to_accept_connection_tx.clone(), to_dht_manager_tx.clone()).await;
@@ -427,6 +431,7 @@ impl TorrentManager {
         piece_completion_status_tx: Sender<Vec<bool>>,
         peers_to_torrent_manager_channel_capacity: usize,
         to_dht_manager_tx: Sender<ToDhtManagerMsg>,
+        ok_to_accept_connection_tx: Sender<bool>,
     ) {
         log::trace!("received message from peer {peer_addr}: {msg}");
         let now = SystemTime::now();
@@ -474,6 +479,7 @@ impl TorrentManager {
                     begin,
                     data,
                     piece_completion_status_tx,
+                    ok_to_accept_connection_tx,
                 )
                 .await
             }
@@ -1042,6 +1048,7 @@ impl TorrentManager {
         begin: u32,
         data: Vec<u8>,
         piece_completion_status_tx: Sender<Vec<bool>>,
+        ok_to_accept_connection_tx: Sender<bool>,
     ) {
         if self.file_manager.is_none() {
             return;
@@ -1119,7 +1126,24 @@ impl TorrentManager {
                 // todo: maybe re-compute assignations immediately here instead of waiting tick
             }
             Err(e) => {
-                log::error!("cannot write block: {e}");
+                log::error!("cannot write block received from {peer_addr}: {e}");
+
+                // keep track of corruptions, remove if too many
+                if let Some(_) = e.downcast_ref::<ShaCorruptedError>() {
+                    let peer = match self.peers.get_mut(&peer_addr) {
+                        Some(peer) => peer,
+                        None => return,
+                    };
+                    peer.corruption_errors += 1;
+                    if peer.corruption_errors > MAX_CORRUPTION_ERRORS {
+                        log::warn!(
+                            "removing peer {peer_addr} due to too many corrupted block received"
+                        );
+                        peer.send(ToPeerMsg::Disconnect()).await;
+                        self.remove_peer(peer_addr, ok_to_accept_connection_tx)
+                            .await;
+                    }
+                }
             }
         }
     }
@@ -1131,6 +1155,15 @@ impl TorrentManager {
         ok_to_accept_connection_tx: Sender<bool>,
     ) {
         log::debug!("removing errored peer {peer_addr}");
+        if error_type == PeerError::HandshakeError {
+            // todo: understand other error cases that are not recoverable and should stop trying again on this peer
+            self.bad_peers.insert(peer_addr.clone());
+        }
+        self.remove_peer(peer_addr, ok_to_accept_connection_tx)
+            .await;
+    }
+
+    async fn remove_peer(&mut self, peer_addr: String, ok_to_accept_connection_tx: Sender<bool>) {
         self.added_dropped_peer_events.push((
             SystemTime::now(),
             peer_addr.clone(),
@@ -1140,10 +1173,6 @@ impl TorrentManager {
             for (piece_idx, _) in removed_peer.requested_pieces {
                 self.outstanding_piece_assignments.remove(&piece_idx);
             }
-        }
-        if error_type == PeerError::HandshakeError {
-            // todo: understand other error cases that are not recoverable and should stop trying again on this peer
-            self.bad_peers.insert(peer_addr);
         }
         if self.peers.len() < CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS {
             ok_to_accept_connection_tx.send(true).await.unwrap();

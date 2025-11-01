@@ -22,6 +22,7 @@ const UT_PEX_EXTENSION_ID: i64 = 1;
 const UT_METADATA_EXTENSION_ID: i64 = 2;
 pub enum ToPeerMsg {
     Send(Message),
+    Disconnect(),
 }
 
 pub type PeerAddr = String;
@@ -271,8 +272,8 @@ pub fn start_peer_msg_handlers(
     ));
     tokio::spawn(async move {
         tokio::select! {
-            _ = &mut rcv => snd.abort(),
-            _ = &mut snd => rcv.abort(),
+            _ = &mut rcv => snd.abort(), // we dropped the read half, let's drop the write half, avoiding connection leaks
+            _ = &mut snd => rcv.abort(), // vice-versa
         }
     });
 }
@@ -457,6 +458,9 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                     }
                     Ok(Ok(_)) => {}
                 }
+            }
+            ToPeerMsg::Disconnect() => {
+                break;
             }
         }
     }
