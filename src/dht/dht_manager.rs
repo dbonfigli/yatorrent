@@ -2,7 +2,6 @@ use std::{
     cmp,
     collections::{HashMap, HashSet},
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    str::FromStr,
     time::{Duration, SystemTime},
 };
 
@@ -122,8 +121,9 @@ impl MessageSender {
 
     pub fn remove_expired(&mut self) {
         let now = SystemTime::now();
-        self.inflight_requests
-            .retain(|_, (_, t, _, _, _)| now.duration_since(*t).unwrap() < INFLIGHT_REQUEST_TIMEOUT)
+        self.inflight_requests.retain(|_, (_, t, _, _, _)| {
+            now.duration_since(*t).unwrap_or_default() < INFLIGHT_REQUEST_TIMEOUT
+        })
     }
 
     pub async fn do_req(
@@ -202,7 +202,7 @@ impl DhtManager {
         // open ipv4 socket
         let socket = UdpSocket::bind(format!("0.0.0.0:{}", self.listening_dht_port))
             .await
-            .unwrap();
+            .expect("failed binding to dht port");
 
         // bootstrap initial known nodes by finding nodes closest to self
         for i in 0..self.bootstrap_nodes.len() {
@@ -276,7 +276,9 @@ impl DhtManager {
         let expired_get_peers_requests: Vec<[u8; 20]> = self
             .inflight_get_peers_requests
             .iter()
-            .filter(|(_, v)| now.duration_since(v.start_time).unwrap() > INFLIGHT_GET_PEERS_TIMEOUT)
+            .filter(|(_, v)| {
+                now.duration_since(v.start_time).unwrap_or_default() > INFLIGHT_GET_PEERS_TIMEOUT
+            })
             .map(|(k, _)| *k)
             .collect();
         for info_hash in expired_get_peers_requests {
@@ -287,7 +289,9 @@ impl DhtManager {
         let expired_find_nodes_requests: Vec<[u8; 20]> = self
             .inflight_find_node_requests
             .iter()
-            .filter(|(_, v)| now.duration_since(v.start_time).unwrap() > INFLIGHT_FIND_NODE_TIMEOUT)
+            .filter(|(_, v)| {
+                now.duration_since(v.start_time).unwrap_or_default() > INFLIGHT_FIND_NODE_TIMEOUT
+            })
             .map(|(k, _)| *k)
             .collect();
         for req_id in expired_find_nodes_requests {
@@ -299,8 +303,8 @@ impl DhtManager {
 
         for n in self.routing_table.as_mut_vec() {
             // ping nodes if not seen a reply in the last 10 minutes and last pinged less than 2 minutes ago
-            if now.duration_since(n.last_replied).unwrap() > Duration::from_secs(600)
-                && now.duration_since(n.last_pinged).unwrap() > Duration::from_secs(60)
+            if now.duration_since(n.last_replied).unwrap_or_default() > Duration::from_secs(600)
+                && now.duration_since(n.last_pinged).unwrap_or_default() > Duration::from_secs(60)
             {
                 n.last_pinged = now;
                 self.msg_sender
@@ -315,7 +319,7 @@ impl DhtManager {
             }
 
             // accumulate nodes to be removed if not active anymore in the last 15 minutes
-            if now.duration_since(n.last_replied).unwrap() > Duration::from_secs(900) {
+            if now.duration_since(n.last_replied).unwrap_or_default() > Duration::from_secs(900) {
                 nodes_to_be_removed.push(n.clone());
             }
         }
@@ -333,7 +337,10 @@ impl DhtManager {
         }
 
         // every 1m randomly find new nodes - this is out of official bep05 specs, we do this to have a bigger routing table - maybe remove this
-        if now.duration_since(self.last_routing_table_refresh).unwrap() > ROUTING_TABLE_REFRESH_TIME
+        if now
+            .duration_since(self.last_routing_table_refresh)
+            .unwrap_or_default()
+            > ROUTING_TABLE_REFRESH_TIME
         {
             self.last_routing_table_refresh = now;
             let mut random_id: [u8; 20] = [0u8; 20];
@@ -554,11 +561,18 @@ impl DhtManager {
             }
 
             KRPCMessage::Error(error_type, msg) => {
-                if !self
-                    .msg_sender
-                    .inflight_requests
-                    .contains_key(&transaction_id)
+                if let Some(inflight_req) =
+                    self.msg_sender.inflight_requests.remove(&transaction_id)
                 {
+                    log::trace!(
+                        "got dht error response for transaction id {} from {}; our message sent was: {:?}, error type: {:?}, error message: {}",
+                        force_string(&transaction_id),
+                        remote_addr,
+                        inflight_req.2,
+                        error_type,
+                        msg
+                    )
+                } else {
                     log::trace!(
                         "got a error resp from {} for an unknown or expired transaction id ({}) we didn't perform, ignoring it",
                         remote_addr,
@@ -566,19 +580,6 @@ impl DhtManager {
                     );
                     return;
                 }
-                let inflight_req = self
-                    .msg_sender
-                    .inflight_requests
-                    .remove(&transaction_id)
-                    .unwrap();
-                log::trace!(
-                    "got dht error response for transaction id {} from {}; our message sent was: {:?}, error type: {:?}, error message: {}",
-                    force_string(&transaction_id),
-                    remote_addr,
-                    inflight_req.2,
-                    error_type,
-                    msg
-                );
             }
         }
     }
@@ -666,8 +667,7 @@ impl DhtManager {
 
         // act on response: nodes
         if let Some(nodes) = resp_data.nodes {
-            let mut max_distance_for_new_req =
-                BigUint::from_str("2").unwrap().pow(160) - BigUint::from_str("1").unwrap();
+            let mut max_distance_for_new_req = BigUint::from(2u8).pow(160) - BigUint::from(1u8);
             if original_request.replying_nodes.len() != 0 {
                 max_distance_for_new_req = distance(
                     &info_hash,
@@ -789,7 +789,11 @@ impl DhtManager {
             if distance(&original_request.node_id_to_find, &node_id)
                 <= distance(
                     &original_request.node_id_to_find,
-                    &original_request.closest_k_nodes.last().unwrap().0,
+                    &original_request
+                        .closest_k_nodes
+                        .last()
+                        .expect("at least of node present, it was just added above")
+                        .0,
                 )
             {
                 self.msg_sender
@@ -852,7 +856,7 @@ impl DhtManager {
         };
         let mut expected_token_plain = self.token_signing_secret.to_vec();
         expected_token_plain.append(&mut remote_ipv4addr.octets().to_vec());
-        let expected_token: [u8; 20] = Sha1::digest(expected_token_plain).try_into().unwrap();
+        let expected_token: [u8; 20] = Sha1::digest(expected_token_plain).into();
         if expected_token != token_u8_20 {
             log::trace!(
                 "got an announce_peer from {source_req_addr_port} with a token ({}) that is not what we expected ({}), refusing it",
@@ -947,7 +951,7 @@ impl DhtManager {
         // generate token
         let mut token_plain = self.token_signing_secret.to_vec();
         token_plain.append(&mut remote_ipv4addr.octets().to_vec());
-        let token: [u8; 20] = Sha1::digest(token_plain).try_into().unwrap();
+        let token: [u8; 20] = Sha1::digest(token_plain).into();
         // response
         match self.known_peers.get(&info_hash) {
             Some(peers) => {
