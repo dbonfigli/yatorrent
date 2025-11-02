@@ -458,7 +458,8 @@ impl TorrentManager {
                 }
             }
             Message::Have(piece_idx) => {
-                self.handle_receive_have_message(peer_addr, piece_idx).await
+                self.handle_receive_have_message(peer_addr, piece_idx, ok_to_accept_connection_tx)
+                    .await
             }
             Message::Bitfield(bitfield) => {
                 self.handle_receive_bitfield_message(peer_addr, bitfield)
@@ -518,7 +519,12 @@ impl TorrentManager {
         }
     }
 
-    async fn handle_receive_have_message(&mut self, peer_addr: String, piece_idx: u32) {
+    async fn handle_receive_have_message(
+        &mut self,
+        peer_addr: String,
+        piece_idx: u32,
+        ok_to_accept_connection_tx: Sender<bool>,
+    ) {
         let peer = match self.peers.get_mut(&peer_addr) {
             Some(peer) => peer,
             None => return,
@@ -547,7 +553,9 @@ impl TorrentManager {
             log::warn!(
                 "got message \"have\" {piece_idx} from peer {peer_addr} but the torrent have only {pieces} pieces"
             );
-            // todo: close connection with this bad peer
+            self.bad_peers.insert(peer_addr.clone());
+            self.remove_peer(peer_addr, ok_to_accept_connection_tx)
+                .await;
         }
     }
 
