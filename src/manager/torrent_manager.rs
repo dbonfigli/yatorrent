@@ -58,6 +58,7 @@ const PEER_METADATA_REQUEST_REJECTION_COOL_OFF_PERIOD: Duration = Duration::from
 const MAX_CORRUPTION_ERRORS: u32 = 20; // max sha1 corruption errors on blocks a peer can have before marking it as bad
 
 pub struct Peer {
+    peer_addr: String,
     am_choking: bool,
     am_choking_since: SystemTime,
     am_interested: bool,
@@ -88,12 +89,14 @@ const METADATA_MESSAGE_REJECT: i64 = 2;
 
 impl Peer {
     pub fn new(
+        peer_addr: String,
         num_pieces: Option<usize>,
         to_peer_tx: Sender<ToPeerMsg>,
         to_peer_cancel_tx: Sender<ToPeerCancelMsg>,
     ) -> Self {
         let now = SystemTime::now();
         Peer {
+            peer_addr,
             am_choking: true,
             am_choking_since: SystemTime::UNIX_EPOCH,
             am_interested: false,
@@ -131,12 +134,7 @@ impl Peer {
         self.ut_metadata_id != 0
     }
 
-    async fn send_pex_extension_message(
-        &mut self,
-        peer_addr: &String,
-        added: Vec<String>,
-        dropped: Vec<String>,
-    ) {
+    async fn send_pex_extension_message(&mut self, added: Vec<String>, dropped: Vec<String>) {
         let mut h = HashMap::new();
         if added.len() > 0 {
             h.insert(
@@ -153,16 +151,12 @@ impl Peer {
         self.last_pex_message_sent = SystemTime::now();
         if h.len() > 0 {
             let pex_msg = Message::Extended(self.ut_pex_id, Dict(h, 0, 0), Vec::new());
-            log::trace!("sending pex message to peer {peer_addr}: {pex_msg}");
+            log::trace!("sending pex message to peer {}: {pex_msg}", self.peer_addr);
             self.send(ToPeerMsg::Send(pex_msg)).await;
         }
     }
 
-    async fn send_metadata_extension_message(
-        &mut self,
-        peer_addr: &String, // todo this feels weird, self should know its own addr
-        metadata_message: MetadataMessage,
-    ) {
+    async fn send_metadata_extension_message(&mut self, metadata_message: MetadataMessage) {
         match metadata_message {
             MetadataMessage::Request(piece) => {
                 let h = HashMap::from([
@@ -171,7 +165,10 @@ impl Peer {
                 ]);
                 let metadata_msg =
                     Message::Extended(self.ut_metadata_id, Dict(h, 0, 0), Vec::new());
-                log::trace!("sending metadata request message to peer {peer_addr}: {metadata_msg}");
+                log::trace!(
+                    "sending metadata request message to peer {}: {metadata_msg}",
+                    self.peer_addr
+                );
                 self.send(ToPeerMsg::Send(metadata_msg)).await;
             }
             MetadataMessage::Data(piece, metadata_size, data) => {
@@ -181,7 +178,10 @@ impl Peer {
                     (b"total_size".to_vec(), Int(metadata_size as i64)),
                 ]);
                 let metadata_msg = Message::Extended(self.ut_metadata_id, Dict(h, 0, 0), data);
-                log::trace!("sending metadata data message to peer {peer_addr}: {metadata_msg}");
+                log::trace!(
+                    "sending metadata data message to peer {}: {metadata_msg}",
+                    self.peer_addr
+                );
                 self.send(ToPeerMsg::Send(metadata_msg)).await;
             }
             MetadataMessage::Reject(piece) => {
@@ -191,7 +191,10 @@ impl Peer {
                 ]);
                 let metadata_msg =
                     Message::Extended(self.ut_metadata_id, Dict(h, 0, 0), Vec::new());
-                log::trace!("sending metadata reject message to peer {peer_addr}: {metadata_msg}");
+                log::trace!(
+                    "sending metadata reject message to peer {}: {metadata_msg}",
+                    self.peer_addr
+                );
                 self.send(ToPeerMsg::Send(metadata_msg)).await;
             }
         }
@@ -738,7 +741,7 @@ impl TorrentManager {
             // this peer supports the PEX extension, registered at number ut_pex_id
             peer.ut_pex_id = *ut_pex_id as u8;
             // send first peer list
-            peer.send_pex_extension_message(&peer_addr, other_active_peers, Vec::new())
+            peer.send_pex_extension_message(other_active_peers, Vec::new())
                 .await;
         }
         if let Some(Int(ut_metadata_id)) = m.get(&b"ut_metadata".to_vec()) {
@@ -894,10 +897,11 @@ impl TorrentManager {
                 if block_start < block_end {
                     let block = raw_metadata[block_start..block_end].to_vec();
                     if let Some(peer) = self.peers.get_mut(&peer_addr) {
-                        peer.send_metadata_extension_message(
-                            &peer_addr,
-                            MetadataMessage::Data(piece as u64, raw_metadata_size as u64, block),
-                        )
+                        peer.send_metadata_extension_message(MetadataMessage::Data(
+                            piece as u64,
+                            raw_metadata_size as u64,
+                            block,
+                        ))
                         .await;
                     }
                 } else {
@@ -905,11 +909,8 @@ impl TorrentManager {
                         "rejecting metadata message request for {piece} piece from {peer_addr}, requested pieces is out of range"
                     );
                     if let Some(peer) = self.peers.get_mut(&peer_addr) {
-                        peer.send_metadata_extension_message(
-                            &peer_addr,
-                            MetadataMessage::Reject(piece as u64),
-                        )
-                        .await;
+                        peer.send_metadata_extension_message(MetadataMessage::Reject(piece as u64))
+                            .await;
                     }
                 }
             }
@@ -919,11 +920,8 @@ impl TorrentManager {
                     Some(peer) => peer,
                     None => return,
                 };
-                peer.send_metadata_extension_message(
-                    &peer_addr,
-                    MetadataMessage::Reject(piece as u64),
-                )
-                .await;
+                peer.send_metadata_extension_message(MetadataMessage::Reject(piece as u64))
+                    .await;
             }
         }
     }
@@ -1296,7 +1294,7 @@ impl TorrentManager {
             });
 
         // send PEX messages
-        for (peer_addr, peer) in self.peers.iter_mut().filter(|(_, p)| {
+        for peer in self.peers.values_mut().filter(|p| {
             p.support_pex_extension()
                 && now.duration_since(p.last_pex_message_sent).unwrap()
                     > PEX_MESSAGE_COOL_OFF_PERIOD
@@ -1319,8 +1317,7 @@ impl TorrentManager {
                 .filter(|(_, event_type)| **event_type == PexEvent::Dropped)
                 .map(|(p, _)| (*p).clone())
                 .collect();
-            peer.send_pex_extension_message(peer_addr, added, dropped)
-                .await;
+            peer.send_pex_extension_message(added, dropped).await;
         }
 
         // send torrent file request
@@ -1405,10 +1402,9 @@ impl TorrentManager {
                     self.peers
                         .get_mut(peer_addr)
                         .unwrap()
-                        .send_metadata_extension_message(
-                            peer_addr,
-                            MetadataMessage::Request(block_to_request as u64),
-                        )
+                        .send_metadata_extension_message(MetadataMessage::Request(
+                            block_to_request as u64,
+                        ))
                         .await;
                     metadata_blocks_to_request.remove(0);
                 }
@@ -1418,13 +1414,13 @@ impl TorrentManager {
 
     fn remove_stale_requests(&mut self) {
         let now = SystemTime::now();
-        for (peer_addr, peer) in self.peers.iter_mut() {
+        for peer in self.peers.values_mut() {
             peer.outstanding_block_requests
                 .retain(|(piece_idx, block_begin, data_len), req_time| {
                     return if now.duration_since(*req_time).unwrap() < self.request_timeout {
                         true
                     } else {
-                        log::debug!("removed stale request to peer: {peer_addr}: (piece idx: {piece_idx}, block begin: {block_begin}, length: {data_len})");
+                        log::debug!("removed stale request to peer: {}: (piece idx: {piece_idx}, block begin: {block_begin}, length: {data_len})", peer.peer_addr);
                         peer.requested_pieces.remove(&(*piece_idx as usize));
                         self.outstanding_piece_assignments.remove(&(*piece_idx as usize));
                         false
@@ -1563,6 +1559,7 @@ impl TorrentManager {
         self.peers.insert(
             peer_addr.clone(),
             Peer::new(
+                peer_addr.clone(),
                 self.file_manager.as_ref().map(|f| f.num_pieces()),
                 to_peer_tx,
                 to_peer_cancel_tx,
