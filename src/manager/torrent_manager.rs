@@ -245,12 +245,16 @@ pub struct TorrentManager {
     last_get_peers_requested_time: SystemTime,
     added_dropped_peer_events: Vec<(SystemTime, PeerAddr, PexEvent)>, // time of event, address of peer for this event, pex event. This field is used to support pex
     request_timeout: Duration,
+
+    // internal channels
     to_dht_manager_tx: Sender<ToDhtManagerMsg>,
     to_dht_manager_rx: Option<Receiver<ToDhtManagerMsg>>,
     ok_to_accept_connection_tx: Sender<bool>,
     ok_to_accept_connection_rx: Option<Receiver<bool>>,
     metadata_size_tx: Sender<i64>,
     metadata_size_rx: Option<Receiver<i64>>,
+    piece_completion_status_tx: Sender<Vec<bool>>,
+    piece_completion_status_rx: Option<Receiver<Vec<bool>>>,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -296,6 +300,7 @@ impl TorrentManager {
         let (to_dht_manager_tx, to_dht_manager_rx) = mpsc::channel(1000);
         let (ok_to_accept_connection_tx, ok_to_accept_connection_rx) = mpsc::channel(10);
         let (metadata_size_tx, metadata_size_rx) = mpsc::channel(1);
+        let (piece_completion_status_tx, piece_completion_status_rx) = mpsc::channel(100);
         TorrentManager {
             file_manager: match files_data {
                 Some((file_list, piece_length, piece_hashes)) => Some(FileManager::new(
@@ -341,6 +346,8 @@ impl TorrentManager {
             ok_to_accept_connection_rx: Some(ok_to_accept_connection_rx),
             metadata_size_tx,
             metadata_size_rx: Some(metadata_size_rx),
+            piece_completion_status_tx,
+            piece_completion_status_rx: Some(piece_completion_status_rx),
         }
     }
 
@@ -371,7 +378,10 @@ impl TorrentManager {
             .metadata_size_rx
             .take()
             .expect("no metadata_size_rx, has start been called twice?");
-        let (piece_completion_status_tx, piece_completion_status_rx) = mpsc::channel(100);
+        let piece_completion_status_rx = self
+            .piece_completion_status_rx
+            .take()
+            .expect("no piece_completion_status_rx, has start been called twice?");
         let (peers_to_torrent_manager_tx, peers_to_torrent_manager_rx) =
             mpsc::channel::<PeersToManagerMsg>(PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY);
         peer::run_new_incoming_peers_handler(
@@ -395,7 +405,6 @@ impl TorrentManager {
 
         // start control loop to handle channel messages - will block forever
         self.control_loop(
-            piece_completion_status_tx.clone(),
             peers_to_torrent_manager_tx,
             peers_to_torrent_manager_rx,
             tick_rx,
@@ -406,7 +415,6 @@ impl TorrentManager {
 
     async fn control_loop(
         &mut self,
-        piece_completion_status_channel_tx: Sender<Vec<bool>>,
         peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
         mut peers_to_torrent_manager_rx: Receiver<PeersToManagerMsg>,
         mut tick_rx: Receiver<()>,
@@ -420,7 +428,7 @@ impl TorrentManager {
                             self.handle_peer_error(peer_addr, error_type).await;
                         }
                         PeersToManagerMsg::Receive(peer_addr, msg) => {
-                            self.handle_receive_message(peer_addr, msg, piece_completion_status_channel_tx.clone(), peers_to_torrent_manager_tx.capacity()).await;
+                            self.handle_receive_message(peer_addr, msg, peers_to_torrent_manager_tx.capacity()).await;
                         }
                         PeersToManagerMsg::NewPeer(tcp_stream) => {
                             self.handle_new_peer(tcp_stream, peers_to_torrent_manager_tx.clone()).await;
@@ -445,7 +453,6 @@ impl TorrentManager {
         &mut self,
         peer_addr: String,
         msg: Message,
-        piece_completion_status_tx: Sender<Vec<bool>>,
         peers_to_torrent_manager_channel_capacity: usize,
     ) {
         log::trace!("received message from peer {peer_addr}: {msg}");
@@ -490,14 +497,8 @@ impl TorrentManager {
                 .await
             }
             Message::Piece(piece_idx, begin, data) => {
-                self.handle_receive_piece_message(
-                    peer_addr,
-                    piece_idx,
-                    begin,
-                    data,
-                    piece_completion_status_tx,
-                )
-                .await
+                self.handle_receive_piece_message(peer_addr, piece_idx, begin, data)
+                    .await
             }
             Message::Cancel(piece_idx, begin, length) => {
                 if let Some(peer) = self.peers.get_mut(&peer_addr) {
@@ -1057,7 +1058,6 @@ impl TorrentManager {
         piece_idx: u32,
         begin: u32,
         data: Vec<u8>,
-        piece_completion_status_tx: Sender<Vec<bool>>,
     ) {
         if self.file_manager.is_none() {
             return;
@@ -1095,7 +1095,8 @@ impl TorrentManager {
 
                     // ignore errors here: it can happen that the channel is closed on the other side if the rx handler loop exited
                     // due to network errors and the peer is still lingering in self.peers because the control message about the error is not yet been handled
-                    let _ = piece_completion_status_tx
+                    let _ = self
+                        .piece_completion_status_tx
                         .send(
                             self.file_manager
                                 .as_mut()
