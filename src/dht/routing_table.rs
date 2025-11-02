@@ -1,4 +1,4 @@
-use std::{net::Ipv4Addr, str::FromStr, time::SystemTime};
+use std::{net::Ipv4Addr, time::SystemTime};
 
 use derivative::Derivative;
 use num_bigint::BigUint;
@@ -70,8 +70,8 @@ pub fn biguint_to_u8_20(n: &BigUint) -> [u8; 20] {
 impl Bucket {
     pub fn new(own_node_id: &[u8; 20]) -> Self {
         Bucket {
-            from: BigUint::from_str("0").unwrap(),
-            to: BigUint::from_str("2").unwrap().pow(160) - BigUint::from_str("1").unwrap(),
+            from: BigUint::ZERO,
+            to: BigUint::from(2u8).pow(160) - BigUint::from(1u8),
             content: BucketContent::Nodes(Vec::new()),
             own_node_id: BigUint::from_bytes_be(own_node_id),
         }
@@ -241,7 +241,7 @@ fn split(i: &BigUint, j: &BigUint) -> ((BigUint, BigUint), (BigUint, BigUint)) {
     let mid: BigUint = (j - i) >> 1;
     (
         (i.clone(), i + mid.clone()),
-        (i + mid + BigUint::from_str("1").unwrap(), j.clone()),
+        (i + mid + BigUint::from(1u8), j.clone()),
     )
 }
 
@@ -257,66 +257,48 @@ pub fn distance(i: &[u8; 20], j: &[u8; 20]) -> BigUint {
 mod tests {
     use crate::dht::routing_table::{BucketContent, split};
     use num_bigint::BigUint;
-    use std::{net::Ipv4Addr, str::FromStr, time::SystemTime};
+    use std::{net::Ipv4Addr, time::SystemTime};
 
     use super::{Bucket, Node};
 
     #[test]
     fn test_split_1() {
-        let i = BigUint::from_str("0").unwrap();
-        let j = BigUint::from_str("10").unwrap();
+        let i = BigUint::ZERO;
+        let j = BigUint::from(10u8);
 
         assert_eq!(
             split(&i, &j),
             (
-                (
-                    BigUint::from_str("0").unwrap(),
-                    BigUint::from_str("5").unwrap()
-                ),
-                (
-                    BigUint::from_str("6").unwrap(),
-                    BigUint::from_str("10").unwrap()
-                )
+                (BigUint::ZERO, BigUint::from(5u8)),
+                (BigUint::from(6u8), BigUint::from(10u8))
             )
         );
     }
 
     #[test]
     fn test_split_2() {
-        let i = BigUint::from_str("0").unwrap();
-        let j = BigUint::from_str("63").unwrap();
+        let i = BigUint::ZERO;
+        let j = BigUint::from(63u8);
 
         assert_eq!(
             split(&i, &j),
             (
-                (
-                    BigUint::from_str("0").unwrap(),
-                    BigUint::from_str("31").unwrap()
-                ),
-                (
-                    BigUint::from_str("32").unwrap(),
-                    BigUint::from_str("63").unwrap()
-                )
+                (BigUint::ZERO, BigUint::from(31u8)),
+                (BigUint::from(32u8), BigUint::from(63u8))
             )
         );
     }
 
     #[test]
     fn test_split_3() {
-        let i = BigUint::from_str("31").unwrap();
-        let j = BigUint::from_str("63").unwrap();
+        let i = BigUint::from(31u8);
+        let j = BigUint::from(63u8);
 
         assert_eq!(
             split(&i, &j),
             (
-                (
-                    BigUint::from_str("31").unwrap(),
-                    BigUint::from_str("47").unwrap()
-                ),
-                (
-                    BigUint::from_str("48").unwrap(),
-                    BigUint::from_str("63").unwrap()
-                )
+                (BigUint::from(31u8), BigUint::from(47u8)),
+                (BigUint::from(48u8), BigUint::from(63u8))
             )
         );
     }
@@ -324,7 +306,7 @@ mod tests {
     #[test]
     fn test_comparison_with_derivative() {
         let n1 = Node {
-            id: BigUint::from_str("1").unwrap(),
+            id: BigUint::from(1u8),
             addr: Ipv4Addr::new(127, 0, 0, 1),
             port: 8080,
             last_replied: SystemTime::UNIX_EPOCH,
@@ -332,7 +314,7 @@ mod tests {
         };
 
         let n2 = Node {
-            id: BigUint::from_str("1").unwrap(),
+            id: BigUint::from(1u8),
             addr: Ipv4Addr::new(162, 168, 0, 1),
             port: 8081,
             last_replied: SystemTime::now(),
@@ -340,7 +322,7 @@ mod tests {
         };
 
         let n3 = Node {
-            id: BigUint::from_str("2").unwrap(),
+            id: BigUint::from(2u8),
             addr: Ipv4Addr::new(162, 168, 0, 1),
             port: 80,
             last_replied: SystemTime::now(),
@@ -348,7 +330,7 @@ mod tests {
         };
 
         let n4 = Node {
-            id: BigUint::from_str("3").unwrap(),
+            id: BigUint::from(3u8),
             addr: Ipv4Addr::new(162, 168, 0, 254),
             port: 8082,
             last_replied: SystemTime::now(),
@@ -370,8 +352,8 @@ mod tests {
         b.add(Node::new_fake(new_n_1));
         assert_eq!(b, {
             Bucket {
-                from: BigUint::from_str("0").unwrap(),
-                to: BigUint::from_str("2").unwrap().pow(160) - BigUint::from_str("1").unwrap(),
+                from: BigUint::ZERO,
+                to: BigUint::from(2u8).pow(160) - BigUint::from(1u8),
                 content: BucketContent::Nodes(vec![Node::new_fake(new_n_1)]),
                 own_node_id: BigUint::from_bytes_be(&[0; 20]),
             }
@@ -382,8 +364,8 @@ mod tests {
         b.add(Node::new_fake(new_n_2));
         assert_eq!(b, {
             Bucket {
-                from: BigUint::from_str("0").unwrap(),
-                to: BigUint::from_str("2").unwrap().pow(160) - BigUint::from_str("1").unwrap(),
+                from: BigUint::ZERO,
+                to: BigUint::from(2u8).pow(160) - BigUint::from(1u8),
                 content: BucketContent::Nodes(vec![
                     Node::new_fake(new_n_1),
                     Node::new_fake(new_n_2),
@@ -397,8 +379,8 @@ mod tests {
         b.add(Node::new_fake(new_n_3));
         assert_eq!(b, {
             Bucket {
-                from: BigUint::from_str("0").unwrap(),
-                to: BigUint::from_str("2").unwrap().pow(160) - BigUint::from_str("1").unwrap(),
+                from: BigUint::ZERO,
+                to: BigUint::from(2u8).pow(160) - BigUint::from(1u8),
                 content: BucketContent::Nodes(vec![
                     Node::new_fake(new_n_3),
                     Node::new_fake(new_n_1),
