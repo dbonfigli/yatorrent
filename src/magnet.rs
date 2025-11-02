@@ -14,13 +14,12 @@ impl Magnet {
                 let info_hash = match magnet_url.query_pairs().find(|(key, _)| key == "xt") {
                     None => bail!("No info hash found in magnet URI"),
                     Some((_, info_hash)) => {
-                        if info_hash.starts_with("urn:btih:") {
-                            let info_hash = info_hash.strip_prefix("urn:btih:").unwrap();
+                        if let Some(info_hash) = info_hash.strip_prefix("urn:btih:") {
                             if info_hash.len() != 40 {
                                 bail!("Info hash must be 40 hex characters long");
                             }
                             let info_hash = hex::decode(info_hash)?;
-                            info_hash.try_into().unwrap()
+                            info_hash.try_into().expect("a properly decoded 40 hex chart string must always be 20b long")
                         } else if info_hash.starts_with("urn:btmh:") {
                             bail!("Multi hash formatted info hash (urn:btmh) not yet supported");
                         } else {
