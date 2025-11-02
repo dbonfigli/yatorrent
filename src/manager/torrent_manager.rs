@@ -249,6 +249,8 @@ pub struct TorrentManager {
     to_dht_manager_rx: Option<Receiver<ToDhtManagerMsg>>,
     ok_to_accept_connection_tx: Sender<bool>,
     ok_to_accept_connection_rx: Option<Receiver<bool>>,
+    metadata_size_tx: Sender<i64>,
+    metadata_size_rx: Option<Receiver<i64>>,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -293,6 +295,7 @@ impl TorrentManager {
         let advertised_peers = Arc::new(Mutex::new(initial_advertised_peers));
         let (to_dht_manager_tx, to_dht_manager_rx) = mpsc::channel(1000);
         let (ok_to_accept_connection_tx, ok_to_accept_connection_rx) = mpsc::channel(10);
+        let (metadata_size_tx, metadata_size_rx) = mpsc::channel(1);
         TorrentManager {
             file_manager: match files_data {
                 Some((file_list, piece_length, piece_hashes)) => Some(FileManager::new(
@@ -336,6 +339,8 @@ impl TorrentManager {
             to_dht_manager_rx: Some(to_dht_manager_rx),
             ok_to_accept_connection_tx,
             ok_to_accept_connection_rx: Some(ok_to_accept_connection_rx),
+            metadata_size_tx,
+            metadata_size_rx: Some(metadata_size_rx),
         }
     }
 
@@ -362,7 +367,10 @@ impl TorrentManager {
             .ok_to_accept_connection_rx
             .take()
             .expect("no ok_to_accept_connection_rx, has start been called twice?");
-        let (metadata_size_tx, metadata_size_rx) = mpsc::channel(1);
+        let metadata_size_rx = self
+            .metadata_size_rx
+            .take()
+            .expect("no metadata_size_rx, has start been called twice?");
         let (piece_completion_status_tx, piece_completion_status_rx) = mpsc::channel(100);
         let (peers_to_torrent_manager_tx, peers_to_torrent_manager_rx) =
             mpsc::channel::<PeersToManagerMsg>(PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY);
@@ -387,7 +395,6 @@ impl TorrentManager {
 
         // start control loop to handle channel messages - will block forever
         self.control_loop(
-            metadata_size_tx.clone(),
             piece_completion_status_tx.clone(),
             peers_to_torrent_manager_tx,
             peers_to_torrent_manager_rx,
@@ -399,7 +406,6 @@ impl TorrentManager {
 
     async fn control_loop(
         &mut self,
-        metadata_size_tx: Sender<i64>,
         piece_completion_status_channel_tx: Sender<Vec<bool>>,
         peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
         mut peers_to_torrent_manager_rx: Receiver<PeersToManagerMsg>,
@@ -414,7 +420,7 @@ impl TorrentManager {
                             self.handle_peer_error(peer_addr, error_type).await;
                         }
                         PeersToManagerMsg::Receive(peer_addr, msg) => {
-                            self.handle_receive_message(peer_addr, msg, metadata_size_tx.clone(), piece_completion_status_channel_tx.clone(), peers_to_torrent_manager_tx.capacity()).await;
+                            self.handle_receive_message(peer_addr, msg, piece_completion_status_channel_tx.clone(), peers_to_torrent_manager_tx.capacity()).await;
                         }
                         PeersToManagerMsg::NewPeer(tcp_stream) => {
                             self.handle_new_peer(tcp_stream, peers_to_torrent_manager_tx.clone()).await;
@@ -439,7 +445,6 @@ impl TorrentManager {
         &mut self,
         peer_addr: String,
         msg: Message,
-        metadata_size_tx: Sender<i64>,
         piece_completion_status_tx: Sender<Vec<bool>>,
         peers_to_torrent_manager_channel_capacity: usize,
     ) {
@@ -521,7 +526,6 @@ impl TorrentManager {
                     extension_id,
                     extended_message,
                     additional_data,
-                    metadata_size_tx,
                 )
                 .await;
             }
@@ -683,7 +687,6 @@ impl TorrentManager {
         extension_id: u8,
         extended_message: Value,
         additional_data: Vec<u8>,
-        metadata_size_tx: Sender<i64>,
     ) {
         let peer = match self.peers.get(&peer_addr) {
             Some(peer) => peer,
@@ -705,7 +708,6 @@ impl TorrentManager {
                     extended_message,
                     peer_addr,
                     additional_data,
-                    metadata_size_tx,
                 )
                 .await;
             }
@@ -833,7 +835,6 @@ impl TorrentManager {
         value: Value,
         peer_addr: String,
         additional_data: Vec<u8>,
-        metadata_size_tx: Sender<i64>,
     ) {
         let d = match value {
             Dict(d, _, _) => d,
@@ -877,12 +878,8 @@ impl TorrentManager {
                         self.raw_metadata = Some(vec![0; *metadata_size as usize]);
                     }
                 };
-                self.handle_receive_extended_message_metadata_message_data(
-                    *piece,
-                    additional_data,
-                    metadata_size_tx,
-                )
-                .await;
+                self.handle_receive_extended_message_metadata_message_data(*piece, additional_data)
+                    .await;
             }
             METADATA_MESSAGE_REJECT => {
                 if let Some(peer) = self.peers.get_mut(&peer_addr) {
@@ -955,7 +952,6 @@ impl TorrentManager {
         &mut self,
         piece: i64,
         piece_block_data: Vec<u8>,
-        metadata_size_tx: Sender<i64>,
     ) {
         if self.file_manager.is_some()
             || piece < 0
@@ -1039,7 +1035,7 @@ impl TorrentManager {
                 }
                 drop(advertised_peers_mg);
                 self.peers = HashMap::new();
-                metadata_size_tx
+                self.metadata_size_tx
                     .send(self.raw_metadata_size.unwrap())
                     .await
                     .unwrap();
