@@ -245,6 +245,8 @@ pub struct TorrentManager {
     last_get_peers_requested_time: SystemTime,
     added_dropped_peer_events: Vec<(SystemTime, PeerAddr, PexEvent)>, // time of event, address of peer for this event, pex event. This field is used to support pex
     request_timeout: Duration,
+    to_dht_manager_tx: Sender<ToDhtManagerMsg>,
+    to_dht_manager_rx: Option<Receiver<ToDhtManagerMsg>>,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -287,6 +289,7 @@ impl TorrentManager {
             initial_advertised_peers.insert(peer_addr, (p, SystemTime::UNIX_EPOCH));
         }
         let advertised_peers = Arc::new(Mutex::new(initial_advertised_peers));
+        let (to_dht_manager_tx, to_dht_manager_rx) = mpsc::channel(1000);
         TorrentManager {
             file_manager: match files_data {
                 Some((file_list, piece_length, piece_hashes)) => Some(FileManager::new(
@@ -326,18 +329,23 @@ impl TorrentManager {
                 + DHT_BOOTSTRAP_TIME, // try to wait a bit before the first request, in hope that the dht has been bootstrapped, so that we don't waste time for the first request with an empty routing table
             added_dropped_peer_events: Vec::new(),
             request_timeout: BASE_REQUEST_TIMEOUT,
+            to_dht_manager_tx,
+            to_dht_manager_rx: Some(to_dht_manager_rx),
         }
     }
 
     pub async fn start(&mut self) {
         // start dht manager
-        let (to_dht_manager_tx, to_dht_manager_rx) = mpsc::channel(1000);
         let (dht_to_torrent_manager_tx, dht_to_torrent_manager_rx) = mpsc::channel(1000);
         let mut dht_manager = DhtManager::new(
             self.listening_torrent_wire_protocol_port,
             self.listening_dht_port,
             self.dht_nodes.clone(),
         );
+        let to_dht_manager_rx = self
+            .to_dht_manager_rx
+            .take()
+            .expect("no to_dht_manager_rx, has start been called twice?");
         tokio::spawn(async move {
             dht_manager
                 .start(to_dht_manager_rx, dht_to_torrent_manager_tx)
@@ -377,7 +385,6 @@ impl TorrentManager {
             peers_to_torrent_manager_tx,
             peers_to_torrent_manager_rx,
             tick_rx,
-            to_dht_manager_tx,
             dht_to_torrent_manager_rx,
         )
         .await;
@@ -391,7 +398,6 @@ impl TorrentManager {
         peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
         mut peers_to_torrent_manager_rx: Receiver<PeersToManagerMsg>,
         mut tick_rx: Receiver<()>,
-        to_dht_manager_tx: Sender<ToDhtManagerMsg>,
         mut dht_to_torrent_manager_rx: Receiver<DhtToTorrentManagerMsg>,
     ) {
         loop {
@@ -402,15 +408,15 @@ impl TorrentManager {
                             self.handle_peer_error(peer_addr, error_type, ok_to_accept_connection_tx.clone()).await;
                         }
                         PeersToManagerMsg::Receive(peer_addr, msg) => {
-                            self.handle_receive_message(peer_addr, msg, metadata_size_tx.clone(), piece_completion_status_channel_tx.clone(), peers_to_torrent_manager_tx.capacity(), to_dht_manager_tx.clone(), ok_to_accept_connection_tx.clone()).await;
+                            self.handle_receive_message(peer_addr, msg, metadata_size_tx.clone(), piece_completion_status_channel_tx.clone(), peers_to_torrent_manager_tx.capacity(), ok_to_accept_connection_tx.clone()).await;
                         }
                         PeersToManagerMsg::NewPeer(tcp_stream) => {
-                            self.handle_new_peer(tcp_stream, peers_to_torrent_manager_tx.clone(), ok_to_accept_connection_tx.clone(), to_dht_manager_tx.clone()).await;
+                            self.handle_new_peer(tcp_stream, peers_to_torrent_manager_tx.clone(), ok_to_accept_connection_tx.clone()).await;
                         }
                     }
                 }
                 Some(()) = tick_rx.recv() => {
-                    self.handle_ticker(peers_to_torrent_manager_tx.clone(), to_dht_manager_tx.clone()).await;
+                    self.handle_ticker(peers_to_torrent_manager_tx.clone()).await;
                 }
                 Some(DhtToTorrentManagerMsg::NewPeer(ip, port)) = dht_to_torrent_manager_rx.recv() => {
                     let p = tracker::Peer{peer_id: None, ip: ip.to_string(), port};
@@ -430,7 +436,6 @@ impl TorrentManager {
         metadata_size_tx: Sender<i64>,
         piece_completion_status_tx: Sender<Vec<bool>>,
         peers_to_torrent_manager_channel_capacity: usize,
-        to_dht_manager_tx: Sender<ToDhtManagerMsg>,
         ok_to_accept_connection_tx: Sender<bool>,
     ) {
         log::trace!("received message from peer {peer_addr}: {msg}");
@@ -503,7 +508,8 @@ impl TorrentManager {
             Message::Port(port) => {
                 // we know the peer supports DHT, send this to dht as new node
                 let peer_ip_addr = peer_addr.split(":").next().unwrap();
-                let _ = to_dht_manager_tx
+                let _ = self
+                    .to_dht_manager_tx
                     .send(ToDhtManagerMsg::NewNode(format!(
                         "{}:{}",
                         peer_ip_addr, port
@@ -1200,11 +1206,7 @@ impl TorrentManager {
         }
     }
 
-    async fn handle_ticker(
-        &mut self,
-        peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
-        to_dht_manager_tx: Sender<ToDhtManagerMsg>,
-    ) {
+    async fn handle_ticker(&mut self, peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>) {
         self.log_stats(peers_to_torrent_manager_tx.capacity());
 
         // connect to new peers
@@ -1326,7 +1328,8 @@ impl TorrentManager {
                 > DHT_NEW_PEER_COOL_OFF_PERIOD
         {
             self.last_get_peers_requested_time = now;
-            let _ = to_dht_manager_tx
+            let _ = self
+                .to_dht_manager_tx
                 .send(ToDhtManagerMsg::GetNewPeers(self.info_hash))
                 .await;
         }
@@ -1574,14 +1577,13 @@ impl TorrentManager {
         tcp_stream: TcpStream,
         peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
         ok_to_accept_connection_tx: Sender<bool>,
-        to_dht_manager_tx: Sender<ToDhtManagerMsg>,
     ) {
         let peer_addr = match tcp_stream.peer_addr() {
             Ok(s) => {
                 // send to dht manager the fact that we know a new good peer
                 let peer_port = s.port();
                 if let IpAddr::V4(peer_addr) = s.ip() {
-                    to_dht_manager_tx
+                    self.to_dht_manager_tx
                         .send(ToDhtManagerMsg::ConnectedToNewPeer(
                             self.info_hash,
                             peer_addr,
