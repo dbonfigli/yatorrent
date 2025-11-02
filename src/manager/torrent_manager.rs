@@ -247,6 +247,8 @@ pub struct TorrentManager {
     request_timeout: Duration,
     to_dht_manager_tx: Sender<ToDhtManagerMsg>,
     to_dht_manager_rx: Option<Receiver<ToDhtManagerMsg>>,
+    ok_to_accept_connection_tx: Sender<bool>,
+    ok_to_accept_connection_rx: Option<Receiver<bool>>,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -290,6 +292,7 @@ impl TorrentManager {
         }
         let advertised_peers = Arc::new(Mutex::new(initial_advertised_peers));
         let (to_dht_manager_tx, to_dht_manager_rx) = mpsc::channel(1000);
+        let (ok_to_accept_connection_tx, ok_to_accept_connection_rx) = mpsc::channel(10);
         TorrentManager {
             file_manager: match files_data {
                 Some((file_list, piece_length, piece_hashes)) => Some(FileManager::new(
@@ -331,6 +334,8 @@ impl TorrentManager {
             request_timeout: BASE_REQUEST_TIMEOUT,
             to_dht_manager_tx,
             to_dht_manager_rx: Some(to_dht_manager_rx),
+            ok_to_accept_connection_tx,
+            ok_to_accept_connection_rx: Some(ok_to_accept_connection_rx),
         }
     }
 
@@ -353,7 +358,10 @@ impl TorrentManager {
         });
 
         // start incoming peer connections handler
-        let (ok_to_accept_connection_tx, ok_to_accept_connection_rx) = mpsc::channel(10);
+        let ok_to_accept_connection_rx = self
+            .ok_to_accept_connection_rx
+            .take()
+            .expect("no ok_to_accept_connection_rx, has start been called twice?");
         let (metadata_size_tx, metadata_size_rx) = mpsc::channel(1);
         let (piece_completion_status_tx, piece_completion_status_rx) = mpsc::channel(100);
         let (peers_to_torrent_manager_tx, peers_to_torrent_manager_rx) =
@@ -379,7 +387,6 @@ impl TorrentManager {
 
         // start control loop to handle channel messages - will block forever
         self.control_loop(
-            ok_to_accept_connection_tx.clone(),
             metadata_size_tx.clone(),
             piece_completion_status_tx.clone(),
             peers_to_torrent_manager_tx,
@@ -392,7 +399,6 @@ impl TorrentManager {
 
     async fn control_loop(
         &mut self,
-        ok_to_accept_connection_tx: Sender<bool>,
         metadata_size_tx: Sender<i64>,
         piece_completion_status_channel_tx: Sender<Vec<bool>>,
         peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
@@ -405,13 +411,13 @@ impl TorrentManager {
                 Some(msg) = peers_to_torrent_manager_rx.recv() => {
                     match msg {
                         PeersToManagerMsg::Error(peer_addr, error_type) => {
-                            self.handle_peer_error(peer_addr, error_type, ok_to_accept_connection_tx.clone()).await;
+                            self.handle_peer_error(peer_addr, error_type).await;
                         }
                         PeersToManagerMsg::Receive(peer_addr, msg) => {
-                            self.handle_receive_message(peer_addr, msg, metadata_size_tx.clone(), piece_completion_status_channel_tx.clone(), peers_to_torrent_manager_tx.capacity(), ok_to_accept_connection_tx.clone()).await;
+                            self.handle_receive_message(peer_addr, msg, metadata_size_tx.clone(), piece_completion_status_channel_tx.clone(), peers_to_torrent_manager_tx.capacity()).await;
                         }
                         PeersToManagerMsg::NewPeer(tcp_stream) => {
-                            self.handle_new_peer(tcp_stream, peers_to_torrent_manager_tx.clone(), ok_to_accept_connection_tx.clone()).await;
+                            self.handle_new_peer(tcp_stream, peers_to_torrent_manager_tx.clone()).await;
                         }
                     }
                 }
@@ -436,7 +442,6 @@ impl TorrentManager {
         metadata_size_tx: Sender<i64>,
         piece_completion_status_tx: Sender<Vec<bool>>,
         peers_to_torrent_manager_channel_capacity: usize,
-        ok_to_accept_connection_tx: Sender<bool>,
     ) {
         log::trace!("received message from peer {peer_addr}: {msg}");
         let now = SystemTime::now();
@@ -463,16 +468,11 @@ impl TorrentManager {
                 }
             }
             Message::Have(piece_idx) => {
-                self.handle_receive_have_message(peer_addr, piece_idx, ok_to_accept_connection_tx)
-                    .await
+                self.handle_receive_have_message(peer_addr, piece_idx).await
             }
             Message::Bitfield(bitfield) => {
-                self.handle_receive_bitfield_message(
-                    peer_addr,
-                    bitfield,
-                    ok_to_accept_connection_tx,
-                )
-                .await
+                self.handle_receive_bitfield_message(peer_addr, bitfield)
+                    .await
             }
             Message::Request(piece_idx, begin, length) => {
                 self.handle_receive_request_message(
@@ -491,7 +491,6 @@ impl TorrentManager {
                     begin,
                     data,
                     piece_completion_status_tx,
-                    ok_to_accept_connection_tx,
                 )
                 .await
             }
@@ -529,12 +528,7 @@ impl TorrentManager {
         }
     }
 
-    async fn handle_receive_have_message(
-        &mut self,
-        peer_addr: String,
-        piece_idx: u32,
-        ok_to_accept_connection_tx: Sender<bool>,
-    ) {
+    async fn handle_receive_have_message(&mut self, peer_addr: String, piece_idx: u32) {
         let peer = match self.peers.get_mut(&peer_addr) {
             Some(peer) => peer,
             None => return,
@@ -564,17 +558,11 @@ impl TorrentManager {
                 "got message \"have\" {piece_idx} from peer {peer_addr} but the torrent have only {pieces} pieces"
             );
             self.bad_peers.insert(peer_addr.clone());
-            self.remove_peer(peer_addr, ok_to_accept_connection_tx)
-                .await;
+            self.remove_peer(peer_addr).await;
         }
     }
 
-    async fn handle_receive_bitfield_message(
-        &mut self,
-        peer_addr: String,
-        bitfield: Vec<bool>,
-        ok_to_accept_connection_tx: Sender<bool>,
-    ) {
+    async fn handle_receive_bitfield_message(&mut self, peer_addr: String, bitfield: Vec<bool>) {
         let file_manager = match &mut self.file_manager {
             Some(file_manager) => file_manager,
             None => return,
@@ -587,8 +575,7 @@ impl TorrentManager {
                 file_manager.num_pieces()
             );
             self.bad_peers.insert(peer_addr.clone());
-            self.remove_peer(peer_addr, ok_to_accept_connection_tx)
-                .await;
+            self.remove_peer(peer_addr).await;
         } else if let Some(peer) = self.peers.get_mut(&peer_addr) {
             // ignore bitfield if we don't have the torrent file yet, we cannot trust the bitfield from the peer
             if peer.haves.is_none() {
@@ -1075,7 +1062,6 @@ impl TorrentManager {
         begin: u32,
         data: Vec<u8>,
         piece_completion_status_tx: Sender<Vec<bool>>,
-        ok_to_accept_connection_tx: Sender<bool>,
     ) {
         if self.file_manager.is_none() {
             return;
@@ -1167,30 +1153,23 @@ impl TorrentManager {
                             "removing peer {peer_addr} due to too many corrupted block received"
                         );
                         peer.send(ToPeerMsg::Disconnect()).await;
-                        self.remove_peer(peer_addr, ok_to_accept_connection_tx)
-                            .await;
+                        self.remove_peer(peer_addr).await;
                     }
                 }
             }
         }
     }
 
-    async fn handle_peer_error(
-        &mut self,
-        peer_addr: String,
-        error_type: PeerError,
-        ok_to_accept_connection_tx: Sender<bool>,
-    ) {
+    async fn handle_peer_error(&mut self, peer_addr: String, error_type: PeerError) {
         log::debug!("removing errored peer {peer_addr}");
         if error_type == PeerError::HandshakeError {
             // todo: understand other error cases that are not recoverable and should stop trying again on this peer
             self.bad_peers.insert(peer_addr.clone());
         }
-        self.remove_peer(peer_addr, ok_to_accept_connection_tx)
-            .await;
+        self.remove_peer(peer_addr).await;
     }
 
-    async fn remove_peer(&mut self, peer_addr: String, ok_to_accept_connection_tx: Sender<bool>) {
+    async fn remove_peer(&mut self, peer_addr: String) {
         self.added_dropped_peer_events.push((
             SystemTime::now(),
             peer_addr.clone(),
@@ -1202,7 +1181,7 @@ impl TorrentManager {
             }
         }
         if self.peers.len() < CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS {
-            ok_to_accept_connection_tx.send(true).await.unwrap();
+            self.ok_to_accept_connection_tx.send(true).await.unwrap();
         }
     }
 
@@ -1576,7 +1555,6 @@ impl TorrentManager {
         &mut self,
         tcp_stream: TcpStream,
         peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
-        ok_to_accept_connection_tx: Sender<bool>,
     ) {
         let peer_addr = match tcp_stream.peer_addr() {
             Ok(s) => {
@@ -1623,7 +1601,7 @@ impl TorrentManager {
             .push((SystemTime::now(), peer_addr, PexEvent::Added));
         if self.peers.len() > CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS {
             log::trace!("stop accepting new peers");
-            ok_to_accept_connection_tx.send(false).await.unwrap();
+            self.ok_to_accept_connection_tx.send(false).await.unwrap();
         }
     }
 
