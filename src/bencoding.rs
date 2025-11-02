@@ -103,12 +103,12 @@ impl Value {
 
 // keys must be byte strings and must appear in lexicographical order - libtorrent is very strict on this
 fn encode_dict(d: &HashMap<Vec<u8>, Value>) -> Vec<u8> {
-    let mut keys: Vec<_> = d.keys().collect();
-    keys.sort();
+    let mut kv_list: Vec<_> = d.into_iter().collect();
+    kv_list.sort_by_key(|(k, _)| *k);
     let mut v = b"d".to_vec();
-    for k in keys {
+    for (k, val) in kv_list {
         v.append(&mut encode_str(k));
-        v.append(&mut d.get(k).unwrap().encode());
+        v.append(&mut val.encode());
     }
     v.push(b'e');
     v
