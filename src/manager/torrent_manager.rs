@@ -462,8 +462,12 @@ impl TorrentManager {
                     .await
             }
             Message::Bitfield(bitfield) => {
-                self.handle_receive_bitfield_message(peer_addr, bitfield)
-                    .await
+                self.handle_receive_bitfield_message(
+                    peer_addr,
+                    bitfield,
+                    ok_to_accept_connection_tx,
+                )
+                .await
             }
             Message::Request(piece_idx, begin, length) => {
                 self.handle_receive_request_message(
@@ -559,7 +563,12 @@ impl TorrentManager {
         }
     }
 
-    async fn handle_receive_bitfield_message(&mut self, peer_addr: String, bitfield: Vec<bool>) {
+    async fn handle_receive_bitfield_message(
+        &mut self,
+        peer_addr: String,
+        bitfield: Vec<bool>,
+        ok_to_accept_connection_tx: Sender<bool>,
+    ) {
         let file_manager = match &mut self.file_manager {
             Some(file_manager) => file_manager,
             None => return,
@@ -571,7 +580,9 @@ impl TorrentManager {
                 bitfield.len(),
                 file_manager.num_pieces()
             );
-            // todo: close connection with this bad peer
+            self.bad_peers.insert(peer_addr.clone());
+            self.remove_peer(peer_addr, ok_to_accept_connection_tx)
+                .await;
         } else if let Some(peer) = self.peers.get_mut(&peer_addr) {
             // ignore bitfield if we don't have the torrent file yet, we cannot trust the bitfield from the peer
             if peer.haves.is_none() {
