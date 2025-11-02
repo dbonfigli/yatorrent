@@ -443,6 +443,8 @@ impl TorrentManager {
                 if let Some(peer) = self.peers.get_mut(&peer_addr) {
                     peer.peer_choking = false;
                     // todo: maybe re-compute assignations immediately here instead of waiting tick
+                    // this is especially important in case of really fast peers, where outstanding
+                    // requests are handled within a single tick, so for the rest of the tick such peers are idle
                 }
             }
             Message::Interested => {
