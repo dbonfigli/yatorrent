@@ -858,17 +858,21 @@ impl TorrentManager {
                     .await;
             }
             METADATA_MESSAGE_DATA => {
-                if let Some(Int(metadata_size)) = d.get(&b"total_size".to_vec()) {
-                    if self.raw_metadata_size.is_none() {
-                        // we do not know the metadata size yet, take notes
-                        self.raw_metadata_size = Some(*metadata_size);
-                        self.downloaded_metadata_blocks =
-                            metadata_blocks_from_size(*metadata_size, false);
-                        self.raw_metadata = Some(vec![0; *metadata_size as usize]);
+                let metadata_size = match d.get(&b"total_size".to_vec()) {
+                    Some(Int(metadata_size)) => metadata_size,
+                    _ => {
+                        log::debug!(
+                            "got a metadata message data without the required total_size field or total_size is not an integer, ignoring it"
+                        );
+                        return;
                     }
                 };
-                self.handle_receive_extended_message_metadata_message_data(*piece, additional_data)
-                    .await;
+                self.handle_receive_extended_message_metadata_message_data(
+                    *metadata_size,
+                    *piece,
+                    additional_data,
+                )
+                .await;
             }
             METADATA_MESSAGE_REJECT => {
                 if let Some(peer) = self.peers.get_mut(&peer_addr) {
@@ -934,9 +938,17 @@ impl TorrentManager {
 
     async fn handle_receive_extended_message_metadata_message_data(
         &mut self,
+        metadata_size: i64,
         piece: i64,
         piece_block_data: Vec<u8>,
     ) {
+        if self.raw_metadata_size.is_none() {
+            // we do not know the metadata size yet, take notes
+            self.raw_metadata_size = Some(metadata_size);
+            self.downloaded_metadata_blocks = metadata_blocks_from_size(metadata_size, false);
+            self.raw_metadata = Some(vec![0; metadata_size as usize]);
+        }
+
         if self.file_manager.is_some()
             || piece < 0
             || (piece as usize) >= self.downloaded_metadata_blocks.len()
@@ -967,24 +979,14 @@ impl TorrentManager {
         // check hash
         let info_hash: [u8; 20] = Sha1::digest(&self.raw_metadata.as_ref().unwrap()).into();
         if info_hash != self.info_hash {
-            corrupted_metadata(
-                Error::msg("hash mismatch"),
-                &mut self.downloaded_metadata_blocks,
-                self.raw_metadata.as_mut().unwrap(),
-                self.raw_metadata_size.unwrap(),
-            );
+            self.corrupted_metadata(Error::msg("hash mismatch"));
             return;
         }
 
         let info_dict = match Value::new(self.raw_metadata.as_ref().unwrap()) {
             Dict(info_dict, _, _) => info_dict,
             _ => {
-                corrupted_metadata(
-                    Error::msg("not a bencoded dict"),
-                    &mut self.downloaded_metadata_blocks,
-                    self.raw_metadata.as_mut().unwrap(),
-                    self.raw_metadata_size.unwrap(),
-                );
+                self.corrupted_metadata(Error::msg("not a bencoded dict"));
                 return;
             }
         };
@@ -1026,12 +1028,7 @@ impl TorrentManager {
                     .expect("metadata_size_tx receiver half closed");
             }
             Err(e) => {
-                corrupted_metadata(
-                    e,
-                    &mut self.downloaded_metadata_blocks,
-                    self.raw_metadata.as_mut().unwrap(),
-                    self.raw_metadata_size.unwrap(),
-                );
+                self.corrupted_metadata(e);
             }
         }
     }
@@ -1708,6 +1705,16 @@ impl TorrentManager {
             tot_ch_cap = PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY,
         );
     }
+
+    fn corrupted_metadata(&mut self, error: Error) {
+        log::warn!(
+            "downloaded metadata is corrupted ({}), starting over its download...",
+            error
+        );
+        self.raw_metadata_size = None;
+        self.downloaded_metadata_blocks = Vec::<(bool, PeerAddr, SystemTime)>::new();
+        self.raw_metadata = None;
+    }
 }
 
 fn generate_peer_id() -> String {
@@ -1874,18 +1881,4 @@ fn metadata_blocks_from_size(size: i64, default_value: bool) -> Vec<(bool, PeerA
         );
         (size as f64 / METADATA_BLOCK_SIZE_B as f64).ceil() as usize
     ]
-}
-
-fn corrupted_metadata(
-    error: Error,
-    downloaded_metadata_blocks: &mut Vec<(bool, PeerAddr, SystemTime)>,
-    raw_metadata: &mut Vec<u8>,
-    raw_metadata_size: i64,
-) {
-    log::warn!(
-        "downloaded metadata is corrupted ({}), starting over its download...",
-        error
-    );
-    *downloaded_metadata_blocks = metadata_blocks_from_size(raw_metadata_size, false);
-    *raw_metadata = vec![0; raw_metadata_size as usize];
 }
