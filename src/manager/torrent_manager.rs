@@ -64,9 +64,9 @@ pub struct Peer {
     am_interested: bool,
     peer_choking: bool,
     peer_interested: bool,
-    haves: Option<Vec<bool>>,
+    haves: Option<Vec<bool>>, // this will be initialized after we have the metadata
     to_peer_tx: Sender<ToPeerMsg>,
-    last_sent: SystemTime,
+    last_sent: SystemTime, // to understand when to send keepalived messages
     to_peer_cancel_tx: Sender<ToPeerCancelMsg>,
     outstanding_block_requests: HashMap<(u32, u32, u32), SystemTime>, // (piece idx, block begin, data len) -> request time
     requested_pieces: HashMap<usize, Piece>, // piece idx -> piece status with all the requested fragments
@@ -94,7 +94,6 @@ impl Peer {
         to_peer_tx: Sender<ToPeerMsg>,
         to_peer_cancel_tx: Sender<ToPeerCancelMsg>,
     ) -> Self {
-        let now = SystemTime::now();
         Peer {
             peer_addr,
             am_choking: true,
@@ -104,7 +103,7 @@ impl Peer {
             peer_interested: false,
             haves: num_pieces.map(|n| vec![false; n]),
             to_peer_tx,
-            last_sent: now,
+            last_sent: SystemTime::now(), // initally set it to now as there is no need to send them after the handshake
             to_peer_cancel_tx,
             outstanding_block_requests: HashMap::new(),
             requested_pieces: HashMap::new(),
@@ -112,7 +111,7 @@ impl Peer {
             last_pex_message_sent: SystemTime::UNIX_EPOCH,
             ut_metadata_id: 0, // i.e. no support for metadata on this peer, initially
             last_metadata_request_rejection: SystemTime::UNIX_EPOCH,
-            corruption_errors: 0,
+            corruption_errors: 0, // number of corrupted block received by this peer
         }
     }
 
@@ -293,11 +292,17 @@ impl TorrentManager {
         };
         let mut initial_advertised_peers = HashMap::new();
         for peer_addr in initial_peers {
-            let ip_and_port = peer_addr.rsplit_once(':').unwrap();
+            let ip_and_port = peer_addr
+                .rsplit_once(':')
+                .expect("all initial peers should be of the host:port format");
             let p = tracker::Peer {
                 peer_id: None,
                 ip: ip_and_port.0.to_string(),
-                port: ip_and_port.1.to_string().parse::<u16>().unwrap(),
+                port: ip_and_port
+                    .1
+                    .to_string()
+                    .parse::<u16>()
+                    .expect("all initial peers should be of the host:port format"),
             };
             initial_advertised_peers.insert(peer_addr, (p, SystemTime::UNIX_EPOCH));
         }
@@ -434,7 +439,7 @@ impl TorrentManager {
                 }
                 Some(DhtToTorrentManagerMsg::NewPeer(ip, port)) = dht_to_torrent_manager_rx.recv() => {
                     let p = tracker::Peer{peer_id: None, ip: ip.to_string(), port};
-                    let mut advertised_peers_mg = self.advertised_peers.lock().unwrap();
+                    let mut advertised_peers_mg = self.advertised_peers.lock().expect("another user panicked while holding the lock");
                     advertised_peers_mg.insert(format!("{ip}:{port}"), (p, SystemTime::UNIX_EPOCH));
                     drop(advertised_peers_mg);
                 }
@@ -495,7 +500,9 @@ impl TorrentManager {
             }
             Message::Port(port) => {
                 // we know the peer supports DHT, send this to dht as new node
-                let peer_ip_addr = peer_addr.split(":").next().unwrap();
+                let peer_ip_addr = peer_addr.split(":").next().expect(
+                    "peer_addr, taken from tcp_stream.peer_addr(), is always of format ip:port",
+                );
                 let _ = self
                     .to_dht_manager_tx
                     .send(ToDhtManagerMsg::NewNode(format!(
@@ -572,29 +579,25 @@ impl TorrentManager {
 
             // bitfield is byte aligned, it could contain more bits than pieces in the torrent
             peer.haves = Some(bitfield[0..file_manager.num_pieces()].to_vec());
+            let haves = peer.haves.as_ref().expect("just added above");
+            log::trace!(
+                "received bitfield from peer {peer_addr}: it has {}/{} pieces",
+                haves
+                    .iter()
+                    .fold(0, |acc, v| if *v { acc + 1 } else { acc }),
+                haves.len()
+            );
 
             // check if we need to send interest
             if !peer.am_interested {
-                for piece_idx in 0..peer.haves.as_ref().unwrap().len() {
-                    if !file_manager.piece_completion_status[piece_idx]
-                        && peer.haves.as_ref().unwrap()[piece_idx]
-                    {
+                for piece_idx in 0..haves.len() {
+                    if !file_manager.piece_completion_status[piece_idx] && haves[piece_idx] {
                         peer.am_interested = true;
                         peer.send(ToPeerMsg::Send(Message::Interested)).await;
                         break;
                     }
                 }
             }
-
-            log::trace!(
-                "received bitfield from peer {peer_addr}: it has {}/{} pieces",
-                peer.haves.as_ref().unwrap().iter().fold(0, |acc, v| if *v {
-                    acc + 1
-                } else {
-                    acc
-                }),
-                peer.haves.as_ref().unwrap().len()
-            );
         }
         // todo: maybe re-compute assignations immediately here instead of waiting tick
     }
@@ -806,7 +809,10 @@ impl TorrentManager {
                     ip: ip.clone(),
                     port,
                 };
-                let mut advertised_peers_mg = self.advertised_peers.lock().unwrap();
+                let mut advertised_peers_mg = self
+                    .advertised_peers
+                    .lock()
+                    .expect("another user panicked while holding the lock");
                 advertised_peers_mg.insert(format!("{}:{}", ip, port), (p, SystemTime::UNIX_EPOCH));
                 drop(advertised_peers_mg);
             }
@@ -959,9 +965,7 @@ impl TorrentManager {
         }
 
         // check hash
-        let info_hash: [u8; 20] = Sha1::digest(&self.raw_metadata.as_ref().unwrap())
-            .try_into()
-            .unwrap();
+        let info_hash: [u8; 20] = Sha1::digest(&self.raw_metadata.as_ref().unwrap()).into();
         if info_hash != self.info_hash {
             corrupted_metadata(
                 Error::msg("hash mismatch"),
@@ -1004,7 +1008,10 @@ impl TorrentManager {
                 log::warn!(
                     "resetting current connected peers to retrieve which block each peer has..."
                 );
-                let mut advertised_peers_mg = self.advertised_peers.lock().unwrap();
+                let mut advertised_peers_mg = self
+                    .advertised_peers
+                    .lock()
+                    .expect("another user panicked while holding the lock");
                 for (peer_addr, _) in self.peers.iter() {
                     if let Some((advertised_peer, _)) = advertised_peers_mg.remove(peer_addr) {
                         advertised_peers_mg
@@ -1016,7 +1023,7 @@ impl TorrentManager {
                 self.metadata_size_tx
                     .send(self.raw_metadata_size.unwrap())
                     .await
-                    .unwrap();
+                    .expect("metadata_size_tx receiver half closed");
             }
             Err(e) => {
                 corrupted_metadata(
@@ -1041,11 +1048,12 @@ impl TorrentManager {
         }
 
         let data_len = data.len() as u64;
-        match self.file_manager.as_mut().unwrap().write_piece_block(
-            piece_idx as usize,
-            data,
-            begin as u64,
-        ) {
+        match self
+            .file_manager
+            .as_mut()
+            .expect("invariant checked above")
+            .write_piece_block(piece_idx as usize, data, begin as u64)
+        {
             Ok(piece_completed) => {
                 self.downloaded_bytes += data_len;
 
@@ -1063,7 +1071,11 @@ impl TorrentManager {
                         .remove(&(piece_idx as usize));
 
                     if !self.completed_sent_to_tracker
-                        && self.file_manager.as_mut().unwrap().completed()
+                        && self
+                            .file_manager
+                            .as_mut()
+                            .expect("invariant checked above")
+                            .completed()
                     {
                         log::warn!("torrent download completed");
                         self.completed_sent_to_tracker = true;
@@ -1077,7 +1089,7 @@ impl TorrentManager {
                         .send(
                             self.file_manager
                                 .as_mut()
-                                .unwrap()
+                                .expect("invariant checked above")
                                 .piece_completion_status
                                 .clone(),
                         )
@@ -1088,17 +1100,34 @@ impl TorrentManager {
                             continue;
                         }
                         // send have to interested peers
-                        if peer.peer_interested && !peer.haves.as_ref().unwrap()[piece_idx as usize]
+                        if peer.peer_interested
+                            && !peer
+                                .haves
+                                .as_ref()
+                                .expect("haves is initialized if file_manager is")
+                                [piece_idx as usize]
                         {
                             peer.send(ToPeerMsg::Send(Message::Have(piece_idx))).await;
                         }
                         // send not interested if needed
                         if peer.am_interested {
                             let mut am_still_interested = false;
-                            for i in 0..peer.haves.as_ref().unwrap().len() {
-                                if !self.file_manager.as_mut().unwrap().piece_completion_status
+                            for i in 0..peer
+                                .haves
+                                .as_ref()
+                                .expect("haves is initialized if file_manager is")
+                                .len()
+                            {
+                                if !self
+                                    .file_manager
+                                    .as_mut()
+                                    .expect("invariant checked above")
+                                    .piece_completion_status
                                     [piece_idx as usize]
-                                    && peer.haves.as_ref().unwrap()[i]
+                                    && peer
+                                        .haves
+                                        .as_ref()
+                                        .expect("haves is initialized if file_manager is")[i]
                                 {
                                     am_still_interested = true;
                                     break;
@@ -1155,7 +1184,10 @@ impl TorrentManager {
             }
         }
         if self.peers.len() < CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS {
-            self.ok_to_accept_connection_tx.send(true).await.unwrap();
+            self.ok_to_accept_connection_tx
+                .send(true)
+                .await
+                .expect("ok_to_accept_connection_tx receiver half closed");
         }
     }
 
@@ -1165,7 +1197,10 @@ impl TorrentManager {
         // connect to new peers
         let current_peers_n = self.peers.len();
         if current_peers_n < CONNECTED_PEERS_TO_START_NEW_PEER_CONNECTIONS {
-            let possible_peers_mg = self.advertised_peers.lock().unwrap();
+            let possible_peers_mg = self
+                .advertised_peers
+                .lock()
+                .expect("another user panicked while holding the lock");
             let possible_peers = possible_peers_mg.clone();
             let now = SystemTime::now();
             drop(possible_peers_mg);
@@ -1179,7 +1214,7 @@ impl TorrentManager {
                     // use peers we didn't try to connect to recently
                     // this cool-off time is also important to avoid new connections to peers we attempted few secs ago
                     // and for which a connection attempt is still inflight
-                    && now.duration_since(*last_connection_attempt).unwrap() > NEW_CONNECTION_COOL_OFF_PERIOD
+                    && now.duration_since(*last_connection_attempt).unwrap_or_default() > NEW_CONNECTION_COOL_OFF_PERIOD
                 })
                 .collect::<Vec<_>>();
 
@@ -1205,9 +1240,14 @@ impl TorrentManager {
                 ));
             }
             // update last connection attempt
-            let mut possible_peers_mg = self.advertised_peers.lock().unwrap();
+            let mut possible_peers_mg = self
+                .advertised_peers
+                .lock()
+                .expect("another user panicked while holding the lock");
             for (peer_addr, _) in candidates_for_new_connections.iter() {
-                let possible_peer_entry = possible_peers_mg.get_mut(*peer_addr).unwrap();
+                let possible_peer_entry = possible_peers_mg
+                    .get_mut(*peer_addr)
+                    .expect("we filtered on this above");
                 possible_peer_entry.1 = now;
             }
             drop(possible_peers_mg);
@@ -1224,7 +1264,10 @@ impl TorrentManager {
         }
 
         // send status to tracker
-        let tracker_client_mg = self.tracker_client.lock().unwrap();
+        let tracker_client_mg = self
+            .tracker_client
+            .lock()
+            .expect("another user panicked while holding the lock");
         let tracker_request_interval = tracker_client_mg.tracker_request_interval;
         drop(tracker_client_mg);
         if let Ok(elapsed) = now.duration_since(self.last_tracker_request_time) {
@@ -1247,7 +1290,10 @@ impl TorrentManager {
             let now = SystemTime::now();
             for (_, peer) in self.peers.iter_mut() {
                 if peer.am_choking
-                    && now.duration_since(peer.am_choking_since).unwrap() > MIN_CHOKE_TIME
+                    && now
+                        .duration_since(peer.am_choking_since)
+                        .unwrap_or_default()
+                        > MIN_CHOKE_TIME
                 {
                     peer.am_choking = false;
                     peer.send(ToPeerMsg::Send(Message::Unchoke)).await;
@@ -1277,7 +1323,7 @@ impl TorrentManager {
         if self.peers.len() < MAX_CONNECTED_PEERS_TO_ASK_DHT_FOR_MORE
             && now
                 .duration_since(self.last_get_peers_requested_time)
-                .unwrap()
+                .unwrap_or_default()
                 > DHT_NEW_PEER_COOL_OFF_PERIOD
         {
             self.last_get_peers_requested_time = now;
@@ -1290,13 +1336,16 @@ impl TorrentManager {
         // remove old added / dropped events
         self.added_dropped_peer_events
             .retain(|(event_timestamp, _, _)| {
-                now.duration_since(*event_timestamp).unwrap() < ADDED_DROPPED_PEER_EVENTS_RETENTION
+                now.duration_since(*event_timestamp).unwrap_or_default()
+                    < ADDED_DROPPED_PEER_EVENTS_RETENTION
             });
 
         // send PEX messages
         for peer in self.peers.values_mut().filter(|p| {
             p.support_pex_extension()
-                && now.duration_since(p.last_pex_message_sent).unwrap()
+                && now
+                    .duration_since(p.last_pex_message_sent)
+                    .unwrap_or_default()
                     > PEX_MESSAGE_COOL_OFF_PERIOD
         }) {
             let elided_events = self
@@ -1358,7 +1407,7 @@ impl TorrentManager {
                 peer.support_metadata_extension()
                     && now
                         .duration_since(peer.last_metadata_request_rejection)
-                        .unwrap()
+                        .unwrap_or_default()
                         > PEER_METADATA_REQUEST_REJECTION_COOL_OFF_PERIOD
             })
             .map(|(peer_addr, _)| {
@@ -1381,7 +1430,7 @@ impl TorrentManager {
             if !self.downloaded_metadata_blocks[n].0
                 && now
                     .duration_since(self.downloaded_metadata_blocks[n].2)
-                    .unwrap()
+                    .unwrap_or_default()
                     > METADATA_BLOCK_REQUEST_TIMEOUT
             {
                 metadata_blocks_to_request.push(n);
@@ -1401,7 +1450,7 @@ impl TorrentManager {
                     );
                     self.peers
                         .get_mut(peer_addr)
-                        .unwrap()
+                        .expect("we filtered on this above")
                         .send_metadata_extension_message(MetadataMessage::Request(
                             block_to_request as u64,
                         ))
@@ -1417,7 +1466,7 @@ impl TorrentManager {
         for peer in self.peers.values_mut() {
             peer.outstanding_block_requests
                 .retain(|(piece_idx, block_begin, data_len), req_time| {
-                    return if now.duration_since(*req_time).unwrap() < self.request_timeout {
+                    return if now.duration_since(*req_time).unwrap_or_default() < self.request_timeout {
                         true
                     } else {
                         log::debug!("removed stale request to peer: {}: (piece idx: {piece_idx}, block begin: {block_begin}, length: {data_len})", peer.peer_addr);
@@ -1498,7 +1547,10 @@ impl TorrentManager {
         let uploaded_bytes = self.uploaded_bytes;
         let downloaded_bytes = self.downloaded_bytes;
         let advertised_peers = self.advertised_peers.clone();
-        let tracker_client_mg = self.tracker_client.lock().unwrap();
+        let tracker_client_mg = self
+            .tracker_client
+            .lock()
+            .expect("another user panicked while holding the lock");
         let tracker_client = tracker_client_mg.clone();
         drop(tracker_client_mg);
         let tracker_client_arc = self.tracker_client.clone();
@@ -1536,7 +1588,7 @@ impl TorrentManager {
                             peer_port,
                         ))
                         .await
-                        .unwrap();
+                        .expect("to_dht_manager_tx receiver half closed");
                 }
                 s.to_string()
             }
@@ -1570,18 +1622,24 @@ impl TorrentManager {
             .push((SystemTime::now(), peer_addr, PexEvent::Added));
         if self.peers.len() > CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS {
             log::trace!("stop accepting new peers");
-            self.ok_to_accept_connection_tx.send(false).await.unwrap();
+            self.ok_to_accept_connection_tx
+                .send(false)
+                .await
+                .expect("ok_to_accept_connection_tx receiver half closed");
         }
     }
 
     fn log_stats(&mut self, peers_to_torrent_manager_channel_capacity: usize) {
-        let advertised_peers_lock = self.advertised_peers.lock().unwrap();
+        let advertised_peers_lock = self
+            .advertised_peers
+            .lock()
+            .expect("another user panicked while holding the lock");
         let advertised_peers_len = advertised_peers_lock.len();
         drop(advertised_peers_lock);
         let now = SystemTime::now();
         let elapsed_s = now
             .duration_since(self.last_bandwidth_poll)
-            .unwrap()
+            .unwrap_or_default()
             .as_millis() as f64
             / 1000f64;
         let bandwidth_up =
@@ -1712,10 +1770,14 @@ fn update_tracker_client_and_advertised_peers(
     updated_tracker_client: TrackerClient,
     latest_advertised_peers: Vec<tracker::Peer>,
 ) {
-    let mut tracker_client_mg = tracker_client.lock().unwrap();
+    let mut tracker_client_mg = tracker_client
+        .lock()
+        .expect("another user panicked while holding the lock");
     *tracker_client_mg = updated_tracker_client;
     drop(tracker_client_mg);
-    let mut advertised_peers = advertised_peers.lock().unwrap();
+    let mut advertised_peers = advertised_peers
+        .lock()
+        .expect("another user panicked while holding the lock");
     latest_advertised_peers.iter().for_each(|p| {
         advertised_peers.insert(
             format!("{}:{}", p.ip, p.port),
