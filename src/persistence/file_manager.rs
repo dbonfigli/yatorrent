@@ -182,7 +182,7 @@ impl FileManager {
                     self.piece_completion_status[idx] = false;
                 }
                 Ok(buf) => {
-                    let piece_sha: [u8; 20] = Sha1::digest(&*buf).try_into().unwrap();
+                    let piece_sha: [u8; 20] = Sha1::digest(&*buf).into();
                     self.piece_completion_status[idx] = self.piece_hashes[idx] == piece_sha;
                 }
             }
@@ -348,11 +348,11 @@ impl FileManager {
             bail!("cannot write block: data would overflow the piece");
         }
 
-        if !self.incomplete_pieces.contains_key(&piece_idx) {
-            self.incomplete_pieces
-                .insert(piece_idx, Piece::new(piece_len));
-        }
-        let piece = self.incomplete_pieces.get_mut(&piece_idx).unwrap();
+        let piece = self
+            .incomplete_pieces
+            .entry(piece_idx)
+            .or_insert(Piece::new(piece_len));
+
         if piece.contains(block_begin, block_begin + data_len) {
             log::trace!(
                 "we already have written all the data in this block (begin: {block_begin} length: {data_len}) for piece {piece_idx}, will avoid writing it again"
@@ -396,7 +396,7 @@ impl FileManager {
             // final sha check
             let read_piece_data =
                 self.read_piece_block_with_have_piece_check(piece_idx, 0, piece_len, false)?;
-            let piece_sha: [u8; 20] = Sha1::digest(&*read_piece_data).try_into().unwrap();
+            let piece_sha: [u8; 20] = Sha1::digest(&*read_piece_data).into();
             if piece_sha != self.piece_hashes[piece_idx] {
                 bail!(ShaCorruptedError { piece_idx });
             } else {

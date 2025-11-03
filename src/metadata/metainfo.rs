@@ -175,7 +175,7 @@ impl Metainfo {
 
         // info dict
         let (info_dict, info_hash) = match torrent_map.get(&b"info".to_vec()) {
-            Some(Value::Dict(a, s, e)) => (a, Sha1::digest(&source[*s..*e]).try_into().unwrap()),
+            Some(Value::Dict(a, s, e)) => (a, Sha1::digest(&source[*s..*e]).into()),
             _ => bail!("The .torrent file does not contain a valid \"info\""),
         };
 

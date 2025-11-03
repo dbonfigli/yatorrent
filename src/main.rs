@@ -36,7 +36,7 @@ struct Args {
     magnet_uri: Option<String>,
 
     /// Optional base path where files are downloaded (directory will be created if it does not exist)
-    #[arg(short, long, env, default_value_t = current_dir().unwrap().to_str().expect("current path must be an utf8 string").to_string())]
+    #[arg(short, long, env, default_value_t = current_dir().expect("current directory cannot be used").to_str().expect("current path must be an utf8 string").to_string())]
     base_path: String,
 
     /// Optional listening port
@@ -168,6 +168,8 @@ async fn main() -> Result<()> {
     }
 
     log::error!("A magnet link (-m) or .torrent file (-t) must be provided.");
-    Args::command().print_help().unwrap();
+    Args::command()
+        .print_help()
+        .expect("contradictory arguments");
     exit(1);
 }

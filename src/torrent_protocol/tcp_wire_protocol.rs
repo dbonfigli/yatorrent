@@ -52,13 +52,13 @@ impl Protocol for TcpStream {
                     return Err(e);
                 }
 
-                let mut pstr_buf: Vec<u8> = vec![0; pstr_len_buf[0].try_into().unwrap()];
+                let mut pstr_buf: Vec<u8> = vec![0; pstr_len_buf[0].into()];
                 if let Err(e) = read.read_exact(&mut pstr_buf).await {
                     return Err(e);
                 }
 
                 let pstr = str::from_utf8(&pstr_buf)
-                    .unwrap_or("could not decode protocol to utf8")
+                    .unwrap_or("unknown non utf8 protocol string")
                     .to_string();
 
                 let mut reserved_buf: [u8; 8] = [0; 8];
@@ -386,7 +386,9 @@ fn decode_bitfield(buf: Vec<u8>) -> Vec<bool> {
 fn encode_bitfield(bitfield: Vec<bool>) -> Vec<u8> {
     let bitfield_bytes = (bitfield.len() / 8) + if bitfield.len() % 8 != 0 { 1 } else { 0 };
     let mut buf = vec![0; 5 + bitfield_bytes];
-    let bitfield_bytes_u32: u32 = bitfield_bytes.try_into().unwrap();
+    let bitfield_bytes_u32: u32 = bitfield_bytes
+        .try_into()
+        .expect("unmber of bytes holding bitfield should always fit an u32");
     buf[0..4].copy_from_slice(&(1 + bitfield_bytes_u32).to_be_bytes());
     buf[4] = 5;
     for i in 0..bitfield_bytes {
