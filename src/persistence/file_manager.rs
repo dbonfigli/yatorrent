@@ -61,7 +61,10 @@ impl FileHandles {
                 .open(file_path)?;
             self.file_handles.insert(file_path.clone(), f);
         }
-        Ok(self.file_handles.get(&file_path.clone()).unwrap())
+        Ok(self
+            .file_handles
+            .get(&file_path.clone())
+            .expect("file is present since we fetched it or inserted if missing"))
     }
 }
 

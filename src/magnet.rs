@@ -92,7 +92,7 @@ mod tests {
     fn test_valid_magnet_uri() {
         let uri = "magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&tr=http%3A%2F%2Ftracker.example.com%3A6969%2Fannounce&x.pe=example.com:6881&x.pe=192.168.1.1:6882&x.pe=[2001:db8::1]:6883";
 
-        let magnet = Magnet::new(uri.to_string()).unwrap();
+        let magnet = Magnet::new(uri.to_string()).expect("should be a valid magnet");
 
         // Check info hash
         assert_eq!(
