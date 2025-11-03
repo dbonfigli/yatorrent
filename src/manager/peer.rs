@@ -180,12 +180,19 @@ pub async fn run_new_incoming_peers_handler(
     let incoming_connection_listener =
         TcpListener::bind(format!("0.0.0.0:{tcp_wire_protocol_listening_port}"))
             .await
-            .unwrap();
+            .expect("failed binding to torrent protocol tcp port");
 
     tokio::spawn(async move {
         loop {
             log::debug!("waiting for incoming peer connections...");
-            let (mut stream, _) = incoming_connection_listener.accept().await.unwrap(); // never timeout here, wait forever if needed
+            // never timeout on accept, wait forever if needed
+            let mut stream = match incoming_connection_listener.accept().await {
+                Ok((stream, _)) => stream,
+                Err(e) => {
+                    log::warn!("accept failed: {}", e);
+                    continue;
+                }
+            };
             let ok_to_accept_connection_lock = ok_to_accept_connection.lock().await;
             let ok_to_accept_connection = ok_to_accept_connection_lock.clone();
             drop(ok_to_accept_connection_lock);
