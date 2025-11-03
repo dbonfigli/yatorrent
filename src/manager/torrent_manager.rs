@@ -938,16 +938,21 @@ impl TorrentManager {
 
     async fn handle_receive_extended_message_metadata_message_data(
         &mut self,
-        metadata_size: i64,
+        raw_metadata_size: i64,
         piece: i64,
         piece_block_data: Vec<u8>,
     ) {
-        if self.raw_metadata_size.is_none() {
-            // we do not know the metadata size yet, take notes
-            self.raw_metadata_size = Some(metadata_size);
-            self.downloaded_metadata_blocks = metadata_blocks_from_size(metadata_size, false);
-            self.raw_metadata = Some(vec![0; metadata_size as usize]);
-        }
+        let raw_metadata_size = match self.raw_metadata_size {
+            Some(raw_metadata_size) => raw_metadata_size,
+            None => {
+                // we do not know the metadata size yet, take notes
+                self.raw_metadata_size = Some(raw_metadata_size);
+                self.downloaded_metadata_blocks =
+                    metadata_blocks_from_size(raw_metadata_size, false);
+                self.raw_metadata = Some(vec![0; raw_metadata_size as usize]);
+                raw_metadata_size
+            }
+        };
 
         if self.file_manager.is_some()
             || piece < 0
@@ -960,10 +965,12 @@ impl TorrentManager {
 
         let raw_metadata_start = piece as usize * METADATA_BLOCK_SIZE_B;
         let raw_metadata_end = min(
-            self.raw_metadata_size.unwrap() as usize,
+            raw_metadata_size as usize,
             raw_metadata_start + METADATA_BLOCK_SIZE_B,
         );
-        self.raw_metadata.as_deref_mut().unwrap()[raw_metadata_start..raw_metadata_end]
+        self.raw_metadata
+            .as_deref_mut()
+            .expect("just inserted above")[raw_metadata_start..raw_metadata_end]
             .copy_from_slice(&piece_block_data[..raw_metadata_end - raw_metadata_start]);
         self.downloaded_metadata_blocks[piece as usize].0 = true;
 
@@ -976,14 +983,16 @@ impl TorrentManager {
             return;
         }
 
+        let raw_metadata = self.raw_metadata.as_ref().expect("just inserted above");
+
         // check hash
-        let info_hash: [u8; 20] = Sha1::digest(&self.raw_metadata.as_ref().unwrap()).into();
+        let info_hash: [u8; 20] = Sha1::digest(raw_metadata).into();
         if info_hash != self.info_hash {
             self.corrupted_metadata(Error::msg("hash mismatch"));
             return;
         }
 
-        let info_dict = match Value::new(self.raw_metadata.as_ref().unwrap()) {
+        let info_dict = match Value::new(raw_metadata) {
             Dict(info_dict, _, _) => info_dict,
             _ => {
                 self.corrupted_metadata(Error::msg("not a bencoded dict"));
@@ -1023,7 +1032,7 @@ impl TorrentManager {
                 drop(advertised_peers_mg);
                 self.peers = HashMap::new();
                 self.metadata_size_tx
-                    .send(self.raw_metadata_size.unwrap())
+                    .send(raw_metadata_size)
                     .await
                     .expect("metadata_size_tx receiver half closed");
             }
