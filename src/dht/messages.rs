@@ -268,7 +268,9 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
             "got krpc message that is a query (y=q) with \"a\" key that is a dict with id key that is not a bencoded string of 20 chars"
         );
     }
-    let id_arr = id_str[0..20].try_into().unwrap();
+    let id_arr = id_str[0..20]
+        .try_into()
+        .expect("id string already validated, should fit 20b array");
 
     // check q existence
     let q = match h.get(&b"q".to_vec()) {
@@ -307,7 +309,9 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
                 "got krpc message that is a find_node query (y=q) with \"a\" key that is a dict with target key that is not a bencoded string of 20 chars"
             );
         }
-        let target_arr = target_str[0..20].try_into().unwrap();
+        let target_arr = target_str[0..20]
+            .try_into()
+            .expect("target string already validated, should fit 20b array");
 
         return Ok(KRPCMessage::FindNodeReq(id_arr, target_arr));
     } else if q_str == b"get_peers" {
@@ -331,7 +335,9 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
                 "got krpc message that is a get_peers query (y=q) with \"a\" key that is a dict with info_hash key that is not a bencoded string of 20 chars"
             );
         }
-        let info_hash_arr = info_hash_str[0..20].try_into().unwrap();
+        let info_hash_arr = info_hash_str[0..20]
+            .try_into()
+            .expect("info hash string already validated, should fit 20b array");
 
         return Ok(KRPCMessage::GetPeersReq(id_arr, info_hash_arr));
     } else if q_str == b"announce_peer" {
@@ -356,7 +362,9 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
                 "got krpc message that is a announce_peer query (y=q) with \"a\" key that is a dict with info_hash key that is not a bencoded string of 20 chars"
             );
         }
-        let info_hash_arr = info_hash_str[0..20].try_into().unwrap();
+        let info_hash_arr = info_hash_str[0..20]
+            .try_into()
+            .expect("info hash string already validated, should fit 20b array");
 
         // check a contains token
         let token = match a_h.get(&b"token".to_vec()) {
@@ -450,7 +458,9 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
             "got krpc message that is a response (y=r) but but id key in r map is not a bencoded string of 20 chars"
         );
     }
-    let id_arr = id_str[0..20].try_into().unwrap();
+    let id_arr = id_str[0..20]
+        .try_into()
+        .expect("id string already validated, should fit 20b array");
 
     let token_opt;
     if let Some(token) = r_h.get(&b"token".to_vec()) {
