@@ -519,7 +519,7 @@ impl TrackerClient {
                 let address_len = 4; // todo check if we are using ipv6
                 if (bytes_recv - 20) % 6 != 0 {
                     bail!(
-                        "gor announce response but size is not valid: addresses field is not divisible by 6: {}",
+                        "got announce response but size is not valid: addresses field is not divisible by 6: {}",
                         bytes_recv - 20
                     );
                 }
