@@ -1,7 +1,8 @@
-use std::{error::Error, fmt};
+use std::fmt;
 
 use crate::bencoding::Value;
 use anyhow::Result;
+use thiserror::Error;
 
 #[derive(Debug)]
 pub enum Message {
@@ -102,7 +103,8 @@ pub trait ProtocolWriteHalf {
     async fn send(&mut self, message: Message) -> Result<()>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
+#[error("{}", message)]
 pub struct ProtocolError {
     message: String,
 }
@@ -112,11 +114,3 @@ impl ProtocolError {
         ProtocolError { message }
     }
 }
-
-impl fmt::Display for ProtocolError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-
-impl Error for ProtocolError {}

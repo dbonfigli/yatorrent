@@ -9,19 +9,15 @@ use anyhow::{Result, bail};
 use rand::seq::IndexedRandom;
 use std::fmt::Display;
 use std::{fmt, io::Read, str, time::Duration};
+use thiserror::Error;
 
 const UDP_TIMEOUT: Duration = Duration::from_secs(15);
 const UDP_RETRY_COOL_OFF_SEC: u64 = 15;
 const UDP_MAX_RETRIES: u32 = 3; // according to https://www.bittorrent.org/beps/bep_0015.html it should be 8, but it is way too much
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
+#[error("no trackers in list")]
 pub(crate) struct NoTrackerError;
-
-impl Display for NoTrackerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "no trackers in list")
-    }
-}
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct Peer {

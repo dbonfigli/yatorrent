@@ -1,7 +1,7 @@
 use core::fmt;
 use std::collections::HashMap;
-use std::error::Error;
 use std::str;
+use thiserror::Error;
 
 use crate::util::force_string;
 
@@ -16,23 +16,12 @@ pub enum ErrorElem {
     Dict,
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Error)]
+#[error("parse error parsing {elem:?} at char {index}")]
 pub struct ParseError {
     pub elem: ErrorElem,
     pub index: IndexOfError,
 }
-
-impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "parse error parsing {:?} at char {}",
-            self.elem, self.index
-        )
-    }
-}
-
-impl Error for ParseError {}
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum Value {
