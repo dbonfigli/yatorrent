@@ -327,7 +327,7 @@ impl DhtManager {
         for n in nodes_to_be_removed {
             self.routing_table.remove(&n);
             // this is out of official bep05 specs but we do that to replace removed nodes: if we remove a node, we send a find_node with the removed id to the closest nodes
-            // we do this instead of refreshing buckets if withing 15m the bucket was not changed. Todo: maybe change this
+            // we do this instead of refreshing buckets if within 15m the bucket was not changed. Todo: maybe change this
             let n_id = biguint_to_u8_20(&n.id);
             let closest = self.routing_table.closest_nodes(&n_id);
             for c in closest {
