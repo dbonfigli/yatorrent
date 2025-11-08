@@ -565,17 +565,13 @@ impl DhtManager {
                     self.msg_sender.inflight_requests.remove(&transaction_id)
                 {
                     log::trace!(
-                        "got dht error response for transaction id {} from {}; our message sent was: {:?}, error type: {:?}, error message: {}",
+                        "got dht error response for transaction id {} from {remote_addr}; our message sent was: {:?}, error type: {error_type:?}, error message: {msg}",
                         force_string(&transaction_id),
-                        remote_addr,
                         inflight_req.2,
-                        error_type,
-                        msg
                     )
                 } else {
                     log::trace!(
-                        "got a error resp from {} for an unknown or expired transaction id ({}) we didn't perform, ignoring it",
-                        remote_addr,
+                        "got a error resp from {remote_addr} for an unknown or expired transaction id ({}) we didn't perform, ignoring it",
                         force_string(&transaction_id.to_vec())
                     );
                     return;
@@ -1043,5 +1039,5 @@ impl DhtManager {
 }
 
 fn to_addr_string(addr: &Ipv4Addr, port: u16) -> String {
-    format!("{}:{}", addr.to_string(), port)
+    format!("{}:{port}", addr.to_string())
 }

@@ -505,10 +505,7 @@ impl TorrentManager {
                 );
                 let _ = self
                     .to_dht_manager_tx
-                    .send(ToDhtManagerMsg::NewNode(format!(
-                        "{}:{}",
-                        peer_ip_addr, port
-                    )))
+                    .send(ToDhtManagerMsg::NewNode(format!("{peer_ip_addr}:{port}")))
                     .await;
             }
             Message::Extended(extension_id, extended_message, additional_data) => {
@@ -813,7 +810,7 @@ impl TorrentManager {
                     .advertised_peers
                     .lock()
                     .expect("another user panicked while holding the lock");
-                advertised_peers_mg.insert(format!("{}:{}", ip, port), (p, SystemTime::UNIX_EPOCH));
+                advertised_peers_mg.insert(format!("{ip}:{port}"), (p, SystemTime::UNIX_EPOCH));
                 drop(advertised_peers_mg);
             }
         }
@@ -1773,7 +1770,7 @@ async fn request_to_tracker(
                 ok_response.incomplete,
                 ok_response.peers.len()
             );
-            log::trace!("full tracker response:\n{:?}", ok_response);
+            log::trace!("full tracker response:\n{ok_response:?}");
 
             Ok((tracker_client, ok_response.peers))
         }

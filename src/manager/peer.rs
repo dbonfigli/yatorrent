@@ -189,7 +189,7 @@ pub async fn run_new_incoming_peers_handler(
             let mut stream = match incoming_connection_listener.accept().await {
                 Ok((stream, _)) => stream,
                 Err(e) => {
-                    log::warn!("accept failed: {}", e);
+                    log::warn!("accept failed: {e}");
                     continue;
                 }
             };
@@ -297,12 +297,10 @@ async fn handshake(
         .handshake(info_hash, own_peer_id.as_bytes().try_into()?)
         .await?;
     log::trace!(
-        "received handshake info from {}: peer protocol: {}, info_hash: {}, peer_id: {}, reserved: {:?}",
+        "received handshake info from {}: peer protocol: {peer_protocol}, info_hash: {}, peer_id: {}, reserved: {reserved:?}",
         addr_or_unknown(&stream),
-        peer_protocol,
         pretty_info_hash(peer_info_hash),
         force_string(&peer_id.to_vec()),
-        reserved,
     );
     if peer_info_hash != info_hash {
         log::debug!(

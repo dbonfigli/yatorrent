@@ -104,7 +104,7 @@ pub trait ProtocolWriteHalf {
 }
 
 #[derive(Debug, Error)]
-#[error("{}", message)]
+#[error("{message}")]
 pub struct ProtocolError {
     message: String,
 }

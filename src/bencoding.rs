@@ -36,7 +36,7 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Value::Error(e) => {
-                write!(f, "{:?}", e)
+                write!(f, "{e:?}")
             }
             Value::Str(s) => {
                 write!(f, "{}", force_string(s))
@@ -57,7 +57,7 @@ impl fmt::Display for Value {
                     f,
                     "{{ {} }}",
                     h.iter()
-                        .map(|(k, v)| format!("{}: {}", force_string(k), v))
+                        .map(|(k, v)| format!("{}: {v}", force_string(k)))
                         .collect::<Vec<String>>()
                         .join("; ")
                 )

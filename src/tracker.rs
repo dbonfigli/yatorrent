@@ -58,13 +58,12 @@ impl Display for Response {
                     .join("\n");
                 write!(
                     f,
-                    "interval: {}\nmin_interval: {:#?}\ntracker_id: {:#?}\nn. peers completed: {}\nn. peers incomplete: {}\npeers:\n{}",
+                    "interval: {}\nmin_interval: {:#?}\ntracker_id: {:#?}\nn. peers completed: {}\nn. peers incomplete: {}\npeers:\n{peers}",
                     ok_response.interval,
                     ok_response.min_interval,
                     ok_response.tracker_id,
                     ok_response.complete,
-                    ok_response.incomplete,
-                    peers
+                    ok_response.incomplete
                 )
             }
             Response::Failure(failure_message) => {
@@ -92,7 +91,7 @@ impl Display for Event {
             Event::Completed => "completed",
         }
         .to_string();
-        write!(f, "{}", str)
+        write!(f, "{str}")
     }
 }
 

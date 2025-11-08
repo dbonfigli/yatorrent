@@ -63,7 +63,7 @@ enum LogLevels {
 
 impl fmt::Display for LogLevels {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", format!("{:?}", self).to_lowercase())
+        write!(f, "{}", format!("{self:?}").to_lowercase())
     }
 }
 
@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
         let contents = match fs::read(&torrent_file) {
             Ok(c) => c,
             Err(e) => {
-                log::error!("could not read .torrent file {}: {e}", torrent_file);
+                log::error!("could not read .torrent file {torrent_file}: {e}");
                 exit(1);
             }
         };
