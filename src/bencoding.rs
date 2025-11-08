@@ -173,17 +173,15 @@ fn parse_str(source: &Vec<u8>, index: usize) -> (Value, usize) {
             );
         }
     };
-    let string_len_opt = string_len_str.parse::<usize>();
-    let string_len;
-    match string_len_opt {
-        Ok(len) => string_len = len,
+    let string_len = match string_len_str.parse::<usize>() {
+        Ok(len) => len,
         Err(_) => {
             return (
                 Value::new_error(ErrorElem::Str, start_string_len_index),
                 index,
             );
         }
-    }
+    };
     if string_len == 0 {
         return (Value::Str(Vec::new()), index);
     }
@@ -221,6 +219,7 @@ fn parse_int(source: &Vec<u8>, index: usize) -> (Value, usize) {
     };
 
     // check invalid
+    // most probably also string starting with -0 are invalid, but i could not find a spec that says so, so here we are lenient
     if int_str == "-0" || (int_str.starts_with("0") && int_str.len() > 1) {
         return (
             Value::new_error(ErrorElem::Int, start_int_index),
@@ -229,8 +228,7 @@ fn parse_int(source: &Vec<u8>, index: usize) -> (Value, usize) {
     }
 
     // parse int and return
-    let int_opt = int_str.parse::<i64>();
-    match int_opt {
+    match int_str.parse::<i64>() {
         Ok(int_val) => (Value::Int(int_val), end_int_index + 1),
         Err(_) => (Value::new_error(ErrorElem::Int, start_int_index), index),
     }
