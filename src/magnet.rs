@@ -9,78 +9,76 @@ pub struct Magnet {
 
 impl Magnet {
     pub fn new(uri: String) -> Result<Self> {
-        match url::Url::parse(&uri) {
-            Ok(magnet_url) => {
-                let info_hash = match magnet_url.query_pairs().find(|(key, _)| key == "xt") {
-                    None => bail!("No info hash found in magnet URI"),
-                    Some((_, info_hash)) => {
-                        if let Some(info_hash) = info_hash.strip_prefix("urn:btih:") {
-                            if info_hash.len() != 40 {
-                                bail!("Info hash must be 40 hex characters long");
-                            }
-                            let info_hash = hex::decode(info_hash)?;
-                            info_hash.try_into().expect("a properly decoded 40 hex chart string must always be 20b long")
-                        } else if info_hash.starts_with("urn:btmh:") {
-                            bail!("Multi hash formatted info hash (urn:btmh) not yet supported");
-                        } else {
-                            bail!(
-                                "Unknown info hash format, not starting with either urn:btih: or urn:btmh:"
-                            );
-                        }
-                    }
-                };
+        let magnet_url = match url::Url::parse(&uri) {
+            Err(e) => bail!("Invalid magnet URI: {e}"),
+            Ok(magnet_url) => magnet_url,
+        };
 
-                let tracker_urls: Vec<String> = magnet_url
-                    .query_pairs()
-                    .filter(|(key, _)| key == "tr")
-                    .map(|(_, value)| {
-                        percent_encoding::percent_decode_str(&value)
-                            .decode_utf8_lossy()
-                            .into_owned()
-                    })
-                    .collect();
-                // Validate all tracker URLs
-                for url in &tracker_urls {
-                    if url::Url::parse(url).is_err() {
-                        bail!("Invalid tracker URL: {}", url);
+        let info_hash = match magnet_url.query_pairs().find(|(key, _)| key == "xt") {
+            None => bail!("No info hash found in magnet URI"),
+            Some((_, info_hash)) => {
+                if let Some(info_hash) = info_hash.strip_prefix("urn:btih:") {
+                    if info_hash.len() != 40 {
+                        bail!("Info hash must be 40 hex characters long");
                     }
+                    let info_hash = hex::decode(info_hash)?;
+                    info_hash
+                        .try_into()
+                        .expect("a properly decoded 40 hex chart string must always be 20b long")
+                } else if info_hash.starts_with("urn:btmh:") {
+                    bail!("Multi hash formatted info hash (urn:btmh) not yet supported");
+                } else {
+                    bail!(
+                        "Unknown info hash format, not starting with either urn:btih: or urn:btmh:"
+                    );
                 }
-
-                let peer_addresses: Vec<String> = magnet_url
-                    .query_pairs()
-                    .filter(|(key, _)| key == "x.pe")
-                    .map(|(_, value)| {
-                        percent_encoding::percent_decode_str(&value)
-                            .decode_utf8_lossy()
-                            .into_owned()
-                    })
-                    .collect();
-
-                // Validate peer addresses format (host:port)
-                for addr in &peer_addresses {
-                    match addr.rsplit_once(':') {
-                        None => bail!("Invalid peer address format (missing port): {}", addr),
-                        Some((_, port_str)) => {
-                            // Validate that port is a valid u16
-                            match port_str.parse::<u16>() {
-                                Ok(_) => (), // Port is valid
-                                Err(_) => bail!("Invalid port number in peer address: {}", addr),
-                            }
-                        }
-                    }
-                }
-
-                Ok(Magnet {
-                    info_hash,
-                    tracker_urls,
-                    peer_addresses,
-                })
             }
+        };
 
-            Err(e) => {
-                bail!("Invalid magnet URI: {e}");
+        let tracker_urls: Vec<String> = magnet_url
+            .query_pairs()
+            .filter(|(key, _)| key == "tr")
+            .map(|(_, value)| {
+                percent_encoding::percent_decode_str(&value)
+                    .decode_utf8_lossy()
+                    .into_owned()
+            })
+            .collect();
+        // Validate all tracker URLs
+        for url in &tracker_urls {
+            if url::Url::parse(url).is_err() {
+                bail!("Invalid tracker URL: {}", url);
             }
         }
+
+        let peer_addresses: Vec<String> = magnet_url
+            .query_pairs()
+            .filter(|(key, _)| key == "x.pe")
+            .map(|(_, value)| {
+                percent_encoding::percent_decode_str(&value)
+                    .decode_utf8_lossy()
+                    .into_owned()
+            })
+            .collect();
+
+        // Validate peer addresses format (host:port)
+        for addr in &peer_addresses {
+            match addr.rsplit_once(':') {
+                None => bail!("Invalid peer address format (missing port): {}", addr),
+                Some((_, port_str)) => {
+                    // Validate that port is a valid u16
+                    if let Err(_) = port_str.parse::<u16>() {
+                        bail!("Invalid port number in peer address: {}", addr);
+                    }
+                }
+            }
+        }
+
+        Ok(Magnet {
+            info_hash,
+            tracker_urls,
+            peer_addresses,
+        })
     }
 }
 
