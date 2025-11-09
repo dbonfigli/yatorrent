@@ -391,7 +391,7 @@ impl TorrentManager {
             self.listening_torrent_wire_protocol_port.clone(),
             self.file_manager
                 .as_ref()
-                .map(|f| f.piece_completion_status.clone()),
+                .map(|f| f.current_piece_completion_status()),
             self.ok_to_accept_connection_rx
                 .take()
                 .expect("no ok_to_accept_connection_rx, has start been called twice?"),
@@ -541,7 +541,7 @@ impl TorrentManager {
             peer_haves[piece_idx as usize] = true;
 
             // send interest if needed
-            if !peer.am_interested && !file_manager.piece_completion_status[piece_idx as usize] {
+            if !peer.am_interested && !file_manager.piece_completion_status(piece_idx as usize) {
                 peer.am_interested = true;
                 peer.send(ToPeerMsg::Send(Message::Interested)).await;
             }
@@ -588,7 +588,7 @@ impl TorrentManager {
             // check if we need to send interest
             if !peer.am_interested {
                 for piece_idx in 0..haves.len() {
-                    if !file_manager.piece_completion_status[piece_idx] && haves[piece_idx] {
+                    if !file_manager.piece_completion_status(piece_idx) && haves[piece_idx] {
                         peer.am_interested = true;
                         peer.send(ToPeerMsg::Send(Message::Interested)).await;
                         break;
@@ -1093,8 +1093,7 @@ impl TorrentManager {
                             self.file_manager
                                 .as_mut()
                                 .expect("invariant checked above")
-                                .piece_completion_status
-                                .clone(),
+                                .current_piece_completion_status(),
                         )
                         .await;
 
@@ -1125,8 +1124,7 @@ impl TorrentManager {
                                     .file_manager
                                     .as_mut()
                                     .expect("invariant checked above")
-                                    .piece_completion_status
-                                    [piece_idx as usize]
+                                    .piece_completion_status(piece_idx as usize)
                                     && peer
                                         .haves
                                         .as_ref()
@@ -1237,7 +1235,7 @@ impl TorrentManager {
                     self.listening_torrent_wire_protocol_port,
                     self.file_manager
                         .as_ref()
-                        .map(|f| f.piece_completion_status.clone()),
+                        .map(|f| f.current_piece_completion_status()),
                     self.raw_metadata_size,
                     self.peers_to_torrent_manager_tx.clone(),
                 ));
@@ -1512,7 +1510,7 @@ impl TorrentManager {
         }
 
         // assign incomplete pieces if not assigned yet
-        for (piece_idx, piece) in file_manager.incomplete_pieces.iter() {
+        for (piece_idx, piece) in file_manager.incomplete_pieces().iter() {
             if !self.outstanding_piece_assignments.contains_key(piece_idx) {
                 assign_and_send_piece_reqs(
                     *piece_idx,
@@ -1529,7 +1527,7 @@ impl TorrentManager {
             if self.outstanding_piece_assignments.len() > MAX_OUTSTANDING_PIECES {
                 break;
             }
-            if !file_manager.piece_completion_status[piece_idx]
+            if !file_manager.piece_completion_status(piece_idx)
                 && !self.outstanding_piece_assignments.contains_key(&piece_idx)
             {
                 assign_and_send_piece_reqs(
@@ -1684,7 +1682,7 @@ impl TorrentManager {
             wasted = Size::from_bytes(
                 self.file_manager
                     .as_ref()
-                    .map(|f| f.wasted_bytes)
+                    .map(|f| f.wasted_bytes())
                     .unwrap_or(0)
             )
             .format()

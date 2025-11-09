@@ -26,11 +26,11 @@ pub struct FileManager {
     piece_to_files: Vec<Vec<(PathBuf, u64, u64)>>, // piece identified by position in array -> list of files the piece belong to, with start byte and end byte within that file. A piece can span many files
 
     // mutable fields
-    pub piece_completion_status: Vec<bool>, // piece identified by position in array -> download completed / incomplete
+    piece_completion_status: Vec<bool>, // piece identified by position in array -> download completed / incomplete
     completed_pieces: usize,
     file_handles: FileHandles,
-    pub incomplete_pieces: HashMap<usize, Piece>, // piece id -> piece with downloaded fragments
-    pub wasted_bytes: usize,
+    incomplete_pieces: HashMap<usize, Piece>, // piece id -> piece with downloaded fragments
+    wasted_bytes: usize,
 }
 
 struct FileHandles {
@@ -421,6 +421,10 @@ impl FileManager {
         self.piece_hashes.len()
     }
 
+    pub fn wasted_bytes(&self) -> usize {
+        self.wasted_bytes
+    }
+
     pub fn bytes_left(&self) -> u64 {
         let mut total = 0;
         let mut total_completed = 0;
@@ -441,6 +445,18 @@ impl FileManager {
             }
         }
         true
+    }
+
+    pub fn piece_completion_status(&self, idx: usize) -> bool {
+        self.piece_completion_status[idx]
+    }
+
+    pub fn current_piece_completion_status(&self) -> Vec<bool> {
+        self.piece_completion_status.clone()
+    }
+
+    pub fn incomplete_pieces(&self) -> &HashMap<usize, Piece> {
+        &self.incomplete_pieces
     }
 }
 
