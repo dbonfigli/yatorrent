@@ -63,7 +63,7 @@ impl FileHandles {
         }
         Ok(self
             .file_handles
-            .get(&file_path.clone())
+            .get(file_path)
             .expect("file is present since we fetched it or inserted if missing"))
     }
 }
