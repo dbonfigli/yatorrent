@@ -185,7 +185,7 @@ impl FileManager {
                     self.piece_completion_status[idx] = false;
                 }
                 Ok(buf) => {
-                    let piece_sha: [u8; 20] = Sha1::digest(&*buf).into();
+                    let piece_sha: [u8; 20] = Sha1::digest(buf).into();
                     self.piece_completion_status[idx] = self.piece_hashes[idx] == piece_sha;
                 }
             }
@@ -399,7 +399,7 @@ impl FileManager {
             // final sha check
             let read_piece_data =
                 self.read_piece_block_with_have_piece_check(piece_idx, 0, piece_len, false)?;
-            let piece_sha: [u8; 20] = Sha1::digest(&*read_piece_data).into();
+            let piece_sha: [u8; 20] = Sha1::digest(read_piece_data).into();
             if piece_sha != self.piece_hashes[piece_idx] {
                 bail!(ShaCorruptedError { piece_idx });
             } else {
