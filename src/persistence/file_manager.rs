@@ -27,6 +27,7 @@ pub struct FileManager {
 
     // mutable fields
     pub piece_completion_status: Vec<bool>, // piece identified by position in array -> download completed / incomplete
+    completed_pieces: usize,
     file_handles: FileHandles,
     pub incomplete_pieces: HashMap<usize, Piece>, // piece id -> piece with downloaded fragments
     pub wasted_bytes: usize,
@@ -157,6 +158,7 @@ impl FileManager {
             piece_hashes,
             piece_to_files,
             piece_completion_status,
+            completed_pieces: 0,
             file_handles: FileHandles::new(),
             incomplete_pieces: HashMap::new(),
             wasted_bytes: 0,
@@ -171,6 +173,7 @@ impl FileManager {
 
     pub fn refresh_completed_pieces(&mut self) {
         log::info!("checking pieces already downloaded...");
+        self.completed_pieces = 0;
         for idx in 0..self.piece_hashes.len() {
             // print progress
             if idx % (cmp::max(10, self.piece_to_files.len()) / 10) == 0 {
@@ -186,7 +189,11 @@ impl FileManager {
                 }
                 Ok(buf) => {
                     let piece_sha: [u8; 20] = Sha1::digest(buf).into();
-                    self.piece_completion_status[idx] = self.piece_hashes[idx] == piece_sha;
+                    let sha_ok = self.piece_hashes[idx] == piece_sha;
+                    self.piece_completion_status[idx] = sha_ok;
+                    if sha_ok {
+                        self.completed_pieces += 1;
+                    }
                 }
             }
         }
@@ -200,10 +207,7 @@ impl FileManager {
     }
 
     pub fn completed_pieces(&self) -> usize {
-        // todo optimize this, keep a counter
-        self.piece_completion_status
-            .iter()
-            .fold(0, |acc, v| if *v { acc + 1 } else { acc })
+        self.completed_pieces
     }
 
     // this depends on an up-to-date piece_completion_status
@@ -404,6 +408,7 @@ impl FileManager {
                 bail!(ShaCorruptedError { piece_idx });
             } else {
                 self.piece_completion_status[piece_idx] = true;
+                self.completed_pieces += 1;
                 self.refresh_completed_files(); //todo: optimize this
             }
             Ok(true)
