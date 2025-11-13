@@ -53,7 +53,7 @@ impl Node {
 #[derive(PartialEq, Debug, Clone)]
 pub enum BucketContent {
     Buckets(Box<Bucket>, Box<Bucket>), // _always_ 2
-    Nodes(Vec<Node>),     // max K_FACTOR
+    Nodes(Vec<Node>),                  // max K_FACTOR
 }
 
 pub fn biguint_to_u8_20(n: &BigUint) -> [u8; 20] {
@@ -226,7 +226,8 @@ impl Bucket {
                     };
 
                     // update content of this bucket
-                    self.content = BucketContent::Buckets(Box::new(left_bucket), Box::new(right_bucket));
+                    self.content =
+                        BucketContent::Buckets(Box::new(left_bucket), Box::new(right_bucket));
                     added
                 } else {
                     false

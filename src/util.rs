@@ -33,10 +33,7 @@ pub async fn start_tick(tick_tx: Sender<()>, duration: Duration) {
         let mut interval = time::interval(duration);
         loop {
             interval.tick().await;
-            tick_tx
-                .send(())
-                .await
-                .expect("tick receiver half closed");
+            tick_tx.send(()).await.expect("tick receiver half closed");
         }
     });
 }

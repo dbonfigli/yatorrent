@@ -19,6 +19,7 @@ impl Protocol for TcpStream {
         &mut self,
         info_hash: [u8; 20],
         peer_id: [u8; 20],
+        // peer_protocol, reserved, peer_info_hash, peer_id
     ) -> Result<(String, [u8; 8], [u8; 20], [u8; 20])> {
         let peer_addr = self.peer_addr()?;
         log::trace!("peer {}: performing handshake", &peer_addr);
