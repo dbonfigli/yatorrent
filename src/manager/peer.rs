@@ -418,17 +418,13 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                     {
                         cancellations.insert((piece_idx, begin, length), cancel_time);
                     }
-                    // remove expired cancellations
-                    let cancellations_keys: Vec<(u32, u32, u32)> =
-                        cancellations.keys().map(|k| k.clone()).collect();
-                    for k in cancellations_keys {
-                        let expired_at = *cancellations.get(&k).expect("not possible");
-                        if let Ok(elapsed) = SystemTime::now().duration_since(expired_at) {
-                            if elapsed > CANCELLATION_DURATION {
-                                cancellations.remove(&k);
-                            }
-                        }
-                    }
+                    // remove cancellations requested more than CANCELLATION_DURATION in the past
+                    cancellations.retain(|_, cancel_time| {
+                        SystemTime::now()
+                            .duration_since(*cancel_time)
+                            .unwrap_or_default()
+                            < CANCELLATION_DURATION
+                    });
                     // avoid sending if there is a cancellation
                     let piece_request = (*piece_idx, *begin, data.len() as u32);
                     if cancellations.contains_key(&piece_request) {
@@ -453,7 +449,7 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                         break;
                     }
                     Ok(Err(e)) => {
-                        log::trace!("sending failed with peer {peer_addr}: {e}");
+                        log::trace!("sending failed to peer {peer_addr}: {e}");
                         send_to_torrent_manager(
                             &peers_to_torrent_manager_tx,
                             PeersToManagerMsg::Error(peer_addr, PeerError::Others),
