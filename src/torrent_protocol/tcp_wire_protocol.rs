@@ -388,7 +388,7 @@ fn encode_bitfield(bitfield: Vec<bool>) -> Vec<u8> {
     let mut buf = vec![0; 5 + bitfield_bytes];
     let bitfield_bytes_u32: u32 = bitfield_bytes
         .try_into()
-        .expect("unmber of bytes holding bitfield should always fit an u32");
+        .expect("number of bytes holding bitfield should always fit an u32");
     buf[0..4].copy_from_slice(&(1 + bitfield_bytes_u32).to_be_bytes());
     buf[4] = 5;
     for i in 0..bitfield_bytes {
