@@ -52,7 +52,7 @@ impl Node {
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum BucketContent {
-    Buckets(Vec<Bucket>), // _always_ 2
+    Buckets(Box<Bucket>, Box<Bucket>), // _always_ 2
     Nodes(Vec<Node>),     // max K_FACTOR
 }
 
@@ -80,11 +80,11 @@ impl Bucket {
     pub fn get_mut(&mut self, node_id: &[u8; 20]) -> Option<&mut Node> {
         let fake_requesting_node = Node::new_fake(node_id.clone());
         match &mut self.content {
-            BucketContent::Buckets(b) => {
-                if fake_requesting_node.id <= b[0].to {
-                    b[0].get_mut(node_id)
+            BucketContent::Buckets(lb, rb) => {
+                if fake_requesting_node.id <= lb.to {
+                    lb.get_mut(node_id)
                 } else {
-                    b[1].get_mut(node_id)
+                    rb.get_mut(node_id)
                 }
             }
             BucketContent::Nodes(n) => {
@@ -99,11 +99,10 @@ impl Bucket {
 
     pub fn as_mut_vec(&mut self) -> Vec<&mut Node> {
         match &mut self.content {
-            BucketContent::Buckets(b) => {
+            BucketContent::Buckets(lb, rb) => {
                 // use split to circumvent double mutable borrowing
-                let (b1, b2) = b.split_at_mut(1);
-                let mut joined = b1[0].as_mut_vec();
-                let mut right = b2[0].as_mut_vec();
+                let mut joined = lb.as_mut_vec();
+                let mut right = rb.as_mut_vec();
                 joined.append(&mut right);
                 joined
             }
@@ -125,9 +124,9 @@ impl Bucket {
     // todo: optimize this
     fn closest_nodes_by_node(&self, node: &Node) -> Vec<Node> {
         match &self.content {
-            BucketContent::Buckets(b) => {
-                let mut joined = b[0].closest_nodes_by_node(node);
-                let mut right = b[1].closest_nodes_by_node(node);
+            BucketContent::Buckets(lb, rb) => {
+                let mut joined = lb.closest_nodes_by_node(node);
+                let mut right = rb.closest_nodes_by_node(node);
                 joined.append(&mut right);
                 // select N of the closest to node_id
                 let mut nodes_id_and_distances = Vec::new(); // (node_id, distance)
@@ -147,11 +146,11 @@ impl Bucket {
 
     pub fn remove(&mut self, node: &Node) {
         match &mut self.content {
-            BucketContent::Buckets(b) => {
-                if node.id <= b[0].to {
-                    b[0].remove(node);
+            BucketContent::Buckets(lb, rb) => {
+                if node.id <= lb.to {
+                    lb.remove(node);
                 } else {
-                    b[1].remove(node);
+                    rb.remove(node);
                 }
             }
             BucketContent::Nodes(n) => {
@@ -168,11 +167,11 @@ impl Bucket {
             return false;
         }
         match &mut self.content {
-            BucketContent::Buckets(b) => {
-                if node.id <= b[0].to {
-                    b[0].add(node)
+            BucketContent::Buckets(lb, rb) => {
+                if node.id <= lb.to {
+                    lb.add(node)
                 } else {
-                    b[1].add(node)
+                    rb.add(node)
                 }
             }
             BucketContent::Nodes(bucket_nodes) => {
@@ -227,7 +226,7 @@ impl Bucket {
                     };
 
                     // update content of this bucket
-                    self.content = BucketContent::Buckets(vec![left_bucket, right_bucket]);
+                    self.content = BucketContent::Buckets(Box::new(left_bucket), Box::new(right_bucket));
                     added
                 } else {
                     false
@@ -402,31 +401,31 @@ mod tests {
         let mut new_n_4 = [0; 20];
         new_n_4[0] = 255; // so that it falls in the other first bucket
         b.add(Node::new_fake(new_n_4));
-        assert_matches!(b.content, BucketContent::Buckets(ref b_vec) => {
-            assert_matches!(b_vec[0].content, BucketContent::Nodes(ref c_vec) => {
+        assert_matches!(b.content, BucketContent::Buckets(ref lb, ref rb) => {
+            assert_matches!(lb.content, BucketContent::Nodes(ref c_vec) => {
                 assert_eq!(c_vec.len(), 8)
             });
-            assert_matches!(b_vec[1].content, BucketContent::Nodes(ref c_vec) => {
+            assert_matches!(rb.content, BucketContent::Nodes(ref c_vec) => {
                 assert_eq!(c_vec.len(), 1)
             });
         });
 
         b.remove(&Node::new_fake(new_n_4));
-        assert_matches!(b.content, BucketContent::Buckets(ref b_vec) => {
-            assert_matches!(b_vec[0].content, BucketContent::Nodes(ref c_vec) => {
+        assert_matches!(b.content, BucketContent::Buckets(ref lb, ref rb) => {
+            assert_matches!(lb.content, BucketContent::Nodes(ref c_vec) => {
                 assert_eq!(c_vec.len(), 8)
             });
-            assert_matches!(b_vec[1].content, BucketContent::Nodes(ref c_vec) => {
+            assert_matches!(rb.content, BucketContent::Nodes(ref c_vec) => {
                 assert_eq!(c_vec.len(), 0)
             });
         });
 
         b.remove(&Node::new_fake(new_n_3));
-        assert_matches!(b.content, BucketContent::Buckets(ref b_vec) => {
-            assert_matches!(b_vec[0].content, BucketContent::Nodes(ref c_vec) => {
+        assert_matches!(b.content, BucketContent::Buckets(ref lb, rb) => {
+            assert_matches!(lb.content, BucketContent::Nodes(ref c_vec) => {
                 assert_eq!(c_vec.len(), 7)
             });
-            assert_matches!(b_vec[1].content, BucketContent::Nodes(ref c_vec) => {
+            assert_matches!(rb.content, BucketContent::Nodes(ref c_vec) => {
                 assert_eq!(c_vec.len(), 0)
             });
         });
