@@ -16,13 +16,15 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use crate::dht::dht_manager::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMsg};
 use crate::manager::peer::{self, PeerAddr, PeersToManagerMsg, ToPeerCancelMsg, ToPeerMsg};
-use crate::manager::piece_requestor::{BlockRequest, PieceRequestor};
+use crate::manager::piece_requestor::{
+    BlockRequest, DEFAULT_MAX_OUTSTANDING_REQUESTS_PER_PEER, PieceRequestor,
+};
 use crate::metadata::infodict::{self};
 use crate::metadata::metainfo::get_files;
 use crate::persistence::file_manager::ShaCorruptedError;
 use crate::torrent_protocol::wire_protocol::Message;
 use crate::tracker;
-use crate::util::start_tick;
+use crate::util::{force_string, start_tick};
 use crate::{
     persistence::file_manager::FileManager,
     tracker::{Event, NoTrackerError, Response, TrackerClient},
@@ -70,6 +72,7 @@ pub struct Peer {
     ut_metadata_id: u8,
     last_metadata_request_rejection: SystemTime,
     corruption_errors: u32,
+    reqq: usize,
 }
 
 enum MetadataMessage {
@@ -105,7 +108,12 @@ impl Peer {
             ut_metadata_id: 0, // i.e. no support for metadata on this peer, initially
             last_metadata_request_rejection: SystemTime::UNIX_EPOCH,
             corruption_errors: 0, // number of corrupted block received by this peer
+            reqq: DEFAULT_MAX_OUTSTANDING_REQUESTS_PER_PEER, // the number of outstanding request messages this client supports without dropping any
         }
+    }
+
+    pub fn get_reqq(&self) -> usize {
+        self.reqq
     }
 
     pub fn is_peer_choking(&self) -> bool {
@@ -438,6 +446,7 @@ impl TorrentManager {
             Message::Unchoke => {
                 if let Some(peer) = self.peers.get_mut(&peer_addr) {
                     peer.peer_choking = false;
+                    log::debug!("received unchoke from {peer_addr}");
                     // todo: maybe re-compute assignations immediately here instead of waiting tick
                     // this is especially important in case of really fast peers, where outstanding
                     // requests are handled within a single tick, so for the rest of the tick such peers are idle
@@ -586,7 +595,7 @@ impl TorrentManager {
         };
 
         log::debug!(
-            "received choked from peer {peer_addr} with {} outstanding requests",
+            "received choke from peer {peer_addr} with {} outstanding requests",
             self.piece_requestor
                 .outstanding_block_request_count_for_peer(&peer_addr)
         );
@@ -648,10 +657,24 @@ impl TorrentManager {
         extended_message: Value,
         additional_data: Vec<u8>,
     ) {
-        let peer = match self.peers.get(&peer_addr) {
+        let peer = match self.peers.get_mut(&peer_addr) {
             Some(peer) => peer,
             None => return,
         };
+
+        // retrieve reqq, if provided
+        if let Dict(d, _, _) = extended_message.clone() {
+            let client_version = if let Some(Value::Str(v)) = d.get(&(b"v".to_vec())) {
+                force_string(v)
+            } else {
+                "unknown".to_string()
+            };
+            if let Some(Value::Int(reqq)) = d.get(&(b"reqq".to_vec())) {
+                peer.reqq = *reqq as usize;
+                log::debug!("{peer_addr} (version: {client_version}) has reqq: {reqq}");
+            }
+        }
+
         match extension_id {
             0 => {
                 // this is an extension handshake
@@ -673,7 +696,7 @@ impl TorrentManager {
             }
             _ => {
                 log::debug!(
-                    "got an extension message from {peer_addr} but id was not recognized as an extension we registered: {extension_id}"
+                    "got an extension message from {peer_addr} but id was not recognized as an extension we registered: {extension_id}. Message was: {extended_message}"
                 );
             }
         }
