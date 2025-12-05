@@ -49,5 +49,4 @@ Things yet to be implemented / todos:
 - check for stalled downloads / try new peers if no current one has a piece we want
 - better algorithm to exclude bad peers for new connections
 - remove not interested peers if we are also not interested
-- avoid re-requesting blocks after receiving choke message for a while - requested blocks could still come
 - text-based UI / ncourses

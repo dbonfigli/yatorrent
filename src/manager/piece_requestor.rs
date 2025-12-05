@@ -19,6 +19,9 @@ pub const DEFAULT_MAX_OUTSTANDING_REQUESTS_PER_PEER: usize = 250;
 const MAX_OUTSTANDING_PIECES: usize = 2000;
 const BLOCK_SIZE_B: u64 = 16384;
 
+// most peers chock and few moments after unchocke, this constant define after how much time reassign pieces assigned to a chocked peer
+const CHOCKED_PEER_ASSIGMENTS_GRACE_PERIOD: Duration = Duration::from_secs(10);
+
 #[derive(Eq, PartialEq, Hash, Clone, Debug)]
 pub struct BlockRequest {
     pub piece_idx: u32,
@@ -70,7 +73,32 @@ impl PieceRequestor {
         }
     }
 
-    pub fn remove_stale_requests(&mut self, request_timeout: Duration) {
+    fn remove_assigments_to_chocked(&mut self, peers: &HashMap<String, Peer>) {
+        let mut peers_to_remove = Vec::new();
+        for (peer_addr, _) in self.requested_pieces.iter() {
+            if let Some(peer) = peers.get(peer_addr) {
+                if peer.is_peer_choking()
+                    && SystemTime::now()
+                        .duration_since(peer.peer_choking_since())
+                        .unwrap_or_default()
+                        > CHOCKED_PEER_ASSIGMENTS_GRACE_PERIOD
+                {
+                    peers_to_remove.push(peer_addr.clone());
+                }
+            }
+        }
+        for peer_addr in peers_to_remove {
+            self.remove_assigments_to_peer(&peer_addr);
+        }
+    }
+
+    pub fn remove_stale_requests(
+        &mut self,
+        request_timeout: Duration,
+        peers: &HashMap<String, Peer>,
+    ) {
+        self.remove_assigments_to_chocked(peers);
+
         let now = SystemTime::now();
         self.outstanding_block_requests.iter_mut().for_each(
             |(peer_addr, outstanding_block_requests_for_peer)| {
@@ -279,8 +307,6 @@ impl PieceRequestor {
                 .insert(piece_idx, incomplete_piece.clone());
             self.outstanding_piece_assignments
                 .insert(piece_idx, peer_addr.clone());
-        } else {
-            // log::error!("empty assigment {peer_addr} {piece_idx}");
         }
 
         requests_to_send

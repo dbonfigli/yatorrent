@@ -62,6 +62,7 @@ pub struct Peer {
     am_choking_since: SystemTime,
     am_interested: bool,
     peer_choking: bool,
+    peer_choking_since: SystemTime,
     peer_interested: bool,
     haves: Option<Vec<bool>>, // this will be initialized after we have the metadata
     to_peer_tx: Sender<ToPeerMsg>,
@@ -98,6 +99,7 @@ impl Peer {
             am_choking_since: SystemTime::UNIX_EPOCH,
             am_interested: false,
             peer_choking: true,
+            peer_choking_since: SystemTime::UNIX_EPOCH,
             peer_interested: false,
             haves: num_pieces.map(|n| vec![false; n]),
             to_peer_tx,
@@ -118,6 +120,10 @@ impl Peer {
 
     pub fn is_peer_choking(&self) -> bool {
         self.peer_choking
+    }
+
+    pub fn peer_choking_since(&self) -> SystemTime {
+        self.peer_choking_since
     }
 
     pub fn have_piece(&self, piece_idx: usize) -> bool {
@@ -600,9 +606,7 @@ impl TorrentManager {
                 .outstanding_block_request_count_for_peer(&peer_addr)
         );
         peer.peer_choking = true;
-
-        // remove outstanding requests that will be discarded because the peer is choking
-        self.piece_requestor.remove_assigments_to_peer(&peer_addr);
+        peer.peer_choking_since = SystemTime::now();
 
         // todo: maybe re-compute assignations immediately here instead of waiting tick
     }
@@ -1461,10 +1465,11 @@ impl TorrentManager {
             None => return,
         };
 
-        // remove requests that have not been fulfilled for some time,
-        // most probably they have been silently dropped by the peer even if it is still alive and not choked
+        // remove requests to chocked peers that have been lingering for some time
+        // or requests that have not been fulfilled for some time, even if unchocked,
+        // most probably they have been silently dropped by the peer even if it is still alive
         self.piece_requestor
-            .remove_stale_requests(self.request_timeout);
+            .remove_stale_requests(self.request_timeout, &self.peers);
 
         // compute requests from piece requestor
         let reqs_to_send = self
