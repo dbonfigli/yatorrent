@@ -12,7 +12,7 @@ use tokio::time::timeout;
 
 use crate::bencoding::Value;
 use crate::torrent_protocol::wire_protocol::{
-    Message, Protocol, ProtocolReadHalf, ProtocolWriteHalf,
+    BlockRequest, Message, Protocol, ProtocolReadHalf, ProtocolWriteHalf,
 };
 use crate::util::{force_string, pretty_info_hash};
 
@@ -40,7 +40,7 @@ pub enum PeerError {
     Others,
 }
 
-pub type ToPeerCancelMsg = (u32, u32, u32, SystemTime); // piece_idx, begin, length, cancel time
+pub type ToPeerCancelMsg = (BlockRequest, SystemTime); // block request, cancel time
 
 pub async fn connect_to_new_peer(
     host: String,
@@ -406,17 +406,15 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
     mut wire_proto: T,
     mut to_peer_cancel_rx: Receiver<ToPeerCancelMsg>,
 ) {
-    let mut cancellations = HashMap::<(u32, u32, u32), SystemTime>::new();
+    let mut cancellations = HashMap::<BlockRequest, SystemTime>::new();
     while let Some(manager_msg) = to_peer_rx.recv().await {
         match manager_msg {
             ToPeerMsg::Send(proto_msg) => {
                 // avoid sending data if the request has already been canceled by the peer
                 if let Message::Piece(piece_idx, begin, data) = &proto_msg {
                     // receive pending cancellations
-                    while let Ok((piece_idx, begin, length, cancel_time)) =
-                        to_peer_cancel_rx.try_recv()
-                    {
-                        cancellations.insert((piece_idx, begin, length), cancel_time);
+                    while let Ok((block_request, cancel_time)) = to_peer_cancel_rx.try_recv() {
+                        cancellations.insert(block_request, cancel_time);
                     }
                     // remove cancellations requested more than CANCELLATION_DURATION in the past
                     cancellations.retain(|_, cancel_time| {
@@ -426,9 +424,13 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                             < CANCELLATION_DURATION
                     });
                     // avoid sending if there is a cancellation
-                    let piece_request = (*piece_idx, *begin, data.len() as u32);
-                    if cancellations.contains_key(&piece_request) {
-                        cancellations.remove(&piece_request);
+                    let block_request = BlockRequest {
+                        piece_idx: *piece_idx,
+                        block_begin: *begin,
+                        data_len: data.len() as u32,
+                    };
+                    if cancellations.contains_key(&block_request) {
+                        cancellations.remove(&block_request);
                         log::trace!(
                             "avoided sending canceled request to peer {peer_addr} (block_idx: {piece_idx} begin: {begin}, end: {})",
                             data.len()

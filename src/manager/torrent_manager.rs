@@ -16,13 +16,11 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use crate::dht::dht_manager::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMsg};
 use crate::manager::metadata_handler::MetadataHandler;
 use crate::manager::peer::{self, PeerAddr, PeersToManagerMsg, ToPeerCancelMsg, ToPeerMsg};
-use crate::manager::piece_requestor::{
-    BlockRequest, DEFAULT_MAX_OUTSTANDING_REQUESTS_PER_PEER, PieceRequestor,
-};
+use crate::manager::piece_requestor::{DEFAULT_MAX_OUTSTANDING_REQUESTS_PER_PEER, PieceRequestor};
 use crate::metadata::infodict::{self};
 use crate::metadata::metainfo::get_files;
 use crate::persistence::file_manager::ShaCorruptedError;
-use crate::torrent_protocol::wire_protocol::Message;
+use crate::torrent_protocol::wire_protocol::{BlockRequest, Message};
 use crate::tracker;
 use crate::util::{force_string, start_tick};
 use crate::{
@@ -469,22 +467,20 @@ impl TorrentManager {
                 self.handle_receive_bitfield_message(peer_addr, bitfield)
                     .await
             }
-            Message::Request(piece_idx, begin, length) => {
-                self.handle_receive_request_message(peer_addr, piece_idx, begin, length)
+            Message::Request(block_request) => {
+                self.handle_receive_request_message(peer_addr, block_request)
                     .await
             }
             Message::Piece(piece_idx, begin, data) => {
                 self.handle_receive_piece_message(peer_addr, piece_idx, begin, data)
                     .await
             }
-            Message::Cancel(piece_idx, begin, length) => {
+            Message::Cancel(block_request) => {
                 if let Some(peer) = self.peers.get_mut(&peer_addr) {
                     // we try to let the peer message handler know about the cancellation,
                     // but if the buffer is full, we don't care, it means there were no outstanding messages to be sent
                     // and so the cancellation would have no effect
-                    let _ = peer
-                        .to_peer_cancel_tx
-                        .try_send((piece_idx, begin, length, now));
+                    let _ = peer.to_peer_cancel_tx.try_send((block_request, now));
                 }
             }
             Message::Port(port) => {
@@ -608,9 +604,7 @@ impl TorrentManager {
     async fn handle_receive_request_message(
         &mut self,
         peer_addr: String,
-        piece_idx: u32,
-        begin: u32,
-        length: u32,
+        block_request: BlockRequest,
     ) {
         let file_manager = match &mut self.file_manager {
             Some(file_manager) => file_manager,
@@ -628,16 +622,23 @@ impl TorrentManager {
                 peer.am_choking = true;
                 peer.am_choking_since = SystemTime::now();
             } else {
-                match file_manager.read_piece_block(piece_idx as usize, begin as u64, length as u64)
-                {
+                match file_manager.read_piece_block(
+                    block_request.piece_idx as usize,
+                    block_request.block_begin as u64,
+                    block_request.data_len as u64,
+                ) {
                     Err(e) => {
                         log::error!("error reading block: {e}");
                     }
 
                     Ok(data) => {
                         let data_len = data.len() as u64;
-                        peer.send(ToPeerMsg::Send(Message::Piece(piece_idx, begin, data)))
-                            .await;
+                        peer.send(ToPeerMsg::Send(Message::Piece(
+                            block_request.piece_idx,
+                            block_request.block_begin,
+                            data,
+                        )))
+                        .await;
 
                         // todo: this is really naive, must avoid saturating upload
 
@@ -1369,12 +1370,8 @@ impl TorrentManager {
         for (peer_addr, block_requests) in reqs_to_send {
             if let Some(peer) = self.peers.get_mut(&peer_addr) {
                 for block_request in block_requests {
-                    peer.send(ToPeerMsg::Send(Message::Request(
-                        block_request.piece_idx,
-                        block_request.block_begin,
-                        block_request.data_len,
-                    )))
-                    .await;
+                    peer.send(ToPeerMsg::Send(Message::Request(block_request)))
+                        .await;
                 }
             } else {
                 log::warn!(

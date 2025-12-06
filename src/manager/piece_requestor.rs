@@ -1,6 +1,7 @@
 use crate::{
     manager::{peer::PeerAddr, torrent_manager::Peer},
     persistence::{file_manager::FileManager, piece::Piece},
+    torrent_protocol::wire_protocol::BlockRequest,
 };
 use rand::seq::SliceRandom;
 use std::{
@@ -21,13 +22,6 @@ const BLOCK_SIZE_B: u64 = 16384;
 
 // most peers choke and few moments after unchoke, this constant define after how much time reassign pieces assigned to a choked peer
 const CHOKED_PEER_ASSIGMENTS_GRACE_PERIOD: Duration = Duration::from_secs(10);
-
-#[derive(Eq, PartialEq, Hash, Clone, Debug)]
-pub struct BlockRequest {
-    pub piece_idx: u32,
-    pub block_begin: u32,
-    pub data_len: u32,
-}
 
 pub struct PieceRequestor {
     outstanding_piece_assignments: HashMap<usize, PeerAddr>, // piece idx -> peer_addr

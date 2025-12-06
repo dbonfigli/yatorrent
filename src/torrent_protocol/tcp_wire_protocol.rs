@@ -10,7 +10,7 @@ use tokio::{
 use crate::{
     bencoding::Value,
     torrent_protocol::wire_protocol::{
-        Message, Protocol, ProtocolError, ProtocolReadHalf, ProtocolWriteHalf,
+        BlockRequest, Message, Protocol, ProtocolError, ProtocolReadHalf, ProtocolWriteHalf,
     },
 };
 
@@ -162,13 +162,13 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                     Ok(())
                 }
             }
-            Message::Request(index, begin, lenght) => {
+            Message::Request(block_request) => {
                 let mut buf: [u8; 17] = [0; 17];
                 buf[3] = 13;
                 buf[4] = 6;
-                buf[5..9].copy_from_slice(&index.to_be_bytes());
-                buf[9..13].copy_from_slice(&begin.to_be_bytes());
-                buf[13..17].copy_from_slice(&lenght.to_be_bytes());
+                buf[5..9].copy_from_slice(&block_request.piece_idx.to_be_bytes());
+                buf[9..13].copy_from_slice(&block_request.block_begin.to_be_bytes());
+                buf[13..17].copy_from_slice(&block_request.data_len.to_be_bytes());
                 if let Err(e) = self.write_all(&buf).await {
                     Err(e.into())
                 } else {
@@ -188,13 +188,13 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                     Ok(())
                 }
             }
-            Message::Cancel(index, begin, end) => {
+            Message::Cancel(block_request) => {
                 let mut buf: [u8; 17] = [0; 17];
                 buf[3] = 13;
                 buf[4] = 8;
-                buf[5..9].copy_from_slice(&index.to_be_bytes());
-                buf[9..13].copy_from_slice(&begin.to_be_bytes());
-                buf[13..17].copy_from_slice(&end.to_be_bytes());
+                buf[5..9].copy_from_slice(&block_request.piece_idx.to_be_bytes());
+                buf[9..13].copy_from_slice(&block_request.block_begin.to_be_bytes());
+                buf[13..17].copy_from_slice(&block_request.data_len.to_be_bytes());
                 if let Err(e) = self.write_all(&buf).await {
                     Err(e.into())
                 } else {
@@ -290,11 +290,11 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                 if let Err(e) = self.read_exact(&mut lenght_buf).await {
                     return Err(e.into());
                 }
-                Ok(Message::Request(
-                    u32::from_be_bytes(index_buf),
-                    u32::from_be_bytes(begin_buf),
-                    u32::from_be_bytes(lenght_buf),
-                ))
+                Ok(Message::Request(BlockRequest {
+                    piece_idx: u32::from_be_bytes(index_buf),
+                    block_begin: u32::from_be_bytes(begin_buf),
+                    data_len: u32::from_be_bytes(lenght_buf),
+                }))
             }
             // piece
             7 => {
@@ -327,15 +327,15 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                 if let Err(e) = self.read_exact(&mut begin_buf).await {
                     return Err(e.into());
                 }
-                let mut end_buf: [u8; 4] = [0; 4];
-                if let Err(e) = self.read_exact(&mut end_buf).await {
+                let mut lenght_buf: [u8; 4] = [0; 4];
+                if let Err(e) = self.read_exact(&mut lenght_buf).await {
                     return Err(e.into());
                 }
-                Ok(Message::Cancel(
-                    u32::from_be_bytes(index_buf),
-                    u32::from_be_bytes(begin_buf),
-                    u32::from_be_bytes(end_buf),
-                ))
+                Ok(Message::Cancel(BlockRequest {
+                    piece_idx: u32::from_be_bytes(index_buf),
+                    block_begin: u32::from_be_bytes(begin_buf),
+                    data_len: u32::from_be_bytes(lenght_buf),
+                }))
             }
             // port
             9 => {
