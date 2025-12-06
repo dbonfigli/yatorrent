@@ -1151,8 +1151,18 @@ impl TorrentManager {
 
     async fn handle_ticker(&mut self) {
         self.log_stats(self.peers_to_torrent_manager_tx.capacity());
+        self.connect_to_new_peers().await;
+        self.send_keep_alives().await;
+        self.send_status_to_tracker().await;
+        self.unchoke_peers().await;
+        self.check_endgame_status().await;
+        self.request_new_peers_to_dht_manager().await;
+        self.send_pex_messages().await;
+        self.send_metadata_reqs().await;
+        self.send_pieces_reqs().await;
+    }
 
-        // connect to new peers
+    async fn connect_to_new_peers(&mut self) {
         let current_peers_n = self.peers.len();
         if current_peers_n < CONNECTED_PEERS_TO_START_NEW_PEER_CONNECTIONS {
             let possible_peers_mg = self
@@ -1210,8 +1220,9 @@ impl TorrentManager {
             }
             drop(possible_peers_mg);
         }
+    }
 
-        // send keep-alives
+    async fn send_keep_alives(&mut self) {
         let now = SystemTime::now();
         for (_, peer) in self.peers.iter_mut() {
             if let Ok(elapsed) = now.duration_since(peer.last_sent) {
@@ -1220,8 +1231,10 @@ impl TorrentManager {
                 }
             }
         }
+    }
 
-        // send status to tracker
+    async fn send_status_to_tracker(&mut self) {
+        let now = SystemTime::now();
         let tracker_client_mg = self
             .tracker_client
             .lock()
@@ -1238,8 +1251,9 @@ impl TorrentManager {
                 self.async_request_to_tracker(event).await;
             }
         }
+    }
 
-        // unchoke peers
+    async fn unchoke_peers(&mut self) {
         let choking = should_choke(
             self.peers_to_torrent_manager_tx.capacity(),
             self.file_manager.is_some(),
@@ -1258,7 +1272,9 @@ impl TorrentManager {
                 }
             }
         }
+    }
 
+    async fn check_endgame_status(&mut self) {
         // check endgame status a decrease request timeout if needed
         if let Some(file_manager) = &self.file_manager {
             if self.request_timeout != ENDGAME_REQUEST_TIMEOUT {
@@ -1272,8 +1288,10 @@ impl TorrentManager {
                 }
             }
         }
+    }
 
-        // ask DHT manager for new peers if we need this
+    async fn request_new_peers_to_dht_manager(&mut self) {
+        let now = SystemTime::now();
         if self.peers.len() < MAX_CONNECTED_PEERS_TO_ASK_DHT_FOR_MORE
             && now
                 .duration_since(self.last_get_peers_requested_time)
@@ -1286,15 +1304,17 @@ impl TorrentManager {
                 .send(ToDhtManagerMsg::GetNewPeers(self.info_hash))
                 .await;
         }
+    }
 
+    async fn send_pex_messages(&mut self) {
         // remove old added / dropped events
+        let now = SystemTime::now();
         self.added_dropped_peer_events
             .retain(|(event_timestamp, _, _)| {
                 now.duration_since(*event_timestamp).unwrap_or_default()
                     < ADDED_DROPPED_PEER_EVENTS_RETENTION
             });
 
-        // send PEX messages
         for peer in self.peers.values_mut().filter(|p| {
             p.support_pex_extension()
                 && now
@@ -1322,12 +1342,6 @@ impl TorrentManager {
                 .collect();
             peer.send_pex_extension_message(added, dropped).await;
         }
-
-        // send torrent file requests
-        self.send_metadata_reqs().await;
-
-        // send piece requests
-        self.send_pieces_reqs().await;
     }
 
     async fn send_metadata_reqs(&mut self) {
