@@ -19,8 +19,8 @@ pub const DEFAULT_MAX_OUTSTANDING_REQUESTS_PER_PEER: usize = 250;
 const MAX_OUTSTANDING_PIECES: usize = 2000;
 const BLOCK_SIZE_B: u64 = 16384;
 
-// most peers chock and few moments after unchocke, this constant define after how much time reassign pieces assigned to a chocked peer
-const CHOCKED_PEER_ASSIGMENTS_GRACE_PERIOD: Duration = Duration::from_secs(10);
+// most peers choke and few moments after unchoke, this constant define after how much time reassign pieces assigned to a choked peer
+const CHOKED_PEER_ASSIGMENTS_GRACE_PERIOD: Duration = Duration::from_secs(10);
 
 #[derive(Eq, PartialEq, Hash, Clone, Debug)]
 pub struct BlockRequest {
@@ -73,7 +73,7 @@ impl PieceRequestor {
         }
     }
 
-    fn remove_assigments_to_chocked(&mut self, peers: &HashMap<String, Peer>) {
+    fn remove_assigments_to_choked(&mut self, peers: &HashMap<String, Peer>) {
         let mut peers_to_remove = Vec::new();
         for (peer_addr, _) in self.requested_pieces.iter() {
             if let Some(peer) = peers.get(peer_addr) {
@@ -81,7 +81,7 @@ impl PieceRequestor {
                     && SystemTime::now()
                         .duration_since(peer.peer_choking_since())
                         .unwrap_or_default()
-                        > CHOCKED_PEER_ASSIGMENTS_GRACE_PERIOD
+                        > CHOKED_PEER_ASSIGMENTS_GRACE_PERIOD
                 {
                     peers_to_remove.push(peer_addr.clone());
                 }
@@ -97,7 +97,7 @@ impl PieceRequestor {
         request_timeout: Duration,
         peers: &HashMap<String, Peer>,
     ) {
-        self.remove_assigments_to_chocked(peers);
+        self.remove_assigments_to_choked(peers);
 
         let now = SystemTime::now();
         self.outstanding_block_requests.iter_mut().for_each(

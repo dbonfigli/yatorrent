@@ -1462,8 +1462,8 @@ impl TorrentManager {
             None => return,
         };
 
-        // remove requests to chocked peers that have been lingering for some time
-        // or requests that have not been fulfilled for some time, even if unchocked,
+        // remove requests to choked peers that have been lingering for some time
+        // or requests that have not been fulfilled for some time, even if unchoked,
         // most probably they have been silently dropped by the peer even if it is still alive
         self.piece_requestor
             .remove_stale_requests(self.request_timeout, &self.peers);
