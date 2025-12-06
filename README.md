@@ -43,7 +43,6 @@ Options:
 Things yet to be implemented / todos:
 
 - optionally limit upload/download speed
-- do not over-request blocks
 - better choking algorithm
 - better block requests pipelining algorithm: use also peer bandwidth stats, tune request queue size
 - check for stalled downloads / try new peers if no current one has a piece we want
