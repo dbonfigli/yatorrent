@@ -219,7 +219,7 @@ pub struct TorrentManager {
     file_manager: Option<FileManager>,
     raw_metadata: Option<Vec<u8>>,
     raw_metadata_size: Option<i64>,
-    downloaded_metadata_blocks: Vec<(bool, PeerAddr, SystemTime)>, // downloaded, peer addr we requested block to, request time
+    metadata_blocks_download_status: Vec<(bool, PeerAddr, SystemTime)>, // downloaded, peer addr we requested block to, request time
     base_path: PathBuf,
     tracker_client: Arc<Mutex<TrackerClient>>,
     last_tracker_request_time: SystemTime,
@@ -319,7 +319,7 @@ impl TorrentManager {
             },
             raw_metadata,
             raw_metadata_size,
-            downloaded_metadata_blocks,
+            metadata_blocks_download_status: downloaded_metadata_blocks,
             base_path: PathBuf::from(base_path),
             tracker_client: Arc::new(Mutex::new(TrackerClient::new(
                 own_peer_id.clone(),
@@ -760,7 +760,7 @@ impl TorrentManager {
                 } else if self.raw_metadata_size.is_none() {
                     // we do not know the metadata size yet, take notes
                     self.raw_metadata_size = Some(*metadata_size);
-                    self.downloaded_metadata_blocks =
+                    self.metadata_blocks_download_status =
                         metadata_blocks_from_size(*metadata_size, false);
                     self.raw_metadata = Some(vec![0; *metadata_size as usize]);
                 }
@@ -948,7 +948,7 @@ impl TorrentManager {
             None => {
                 // we do not know the metadata size yet, take notes
                 self.raw_metadata_size = Some(raw_metadata_size);
-                self.downloaded_metadata_blocks =
+                self.metadata_blocks_download_status =
                     metadata_blocks_from_size(raw_metadata_size, false);
                 self.raw_metadata = Some(vec![0; raw_metadata_size as usize]);
                 raw_metadata_size
@@ -957,8 +957,8 @@ impl TorrentManager {
 
         if self.file_manager.is_some()
             || piece < 0
-            || (piece as usize) >= self.downloaded_metadata_blocks.len()
-            || self.downloaded_metadata_blocks[piece as usize].0
+            || (piece as usize) >= self.metadata_blocks_download_status.len()
+            || self.metadata_blocks_download_status[piece as usize].0
         {
             // we are not interested in this message
             return;
@@ -973,11 +973,11 @@ impl TorrentManager {
             .as_deref_mut()
             .expect("just inserted above")[raw_metadata_start..raw_metadata_end]
             .copy_from_slice(&piece_block_data[..raw_metadata_end - raw_metadata_start]);
-        self.downloaded_metadata_blocks[piece as usize].0 = true;
+        self.metadata_blocks_download_status[piece as usize].0 = true;
 
         // check if metadata is complete
         let metadata_download_complete = self
-            .downloaded_metadata_blocks
+            .metadata_blocks_download_status
             .iter()
             .all(|(completed, _, _)| *completed);
         if !metadata_download_complete {
@@ -1382,18 +1382,15 @@ impl TorrentManager {
 
         // get inflight requests
         let mut inflight_metadata_block_requests_per_peer: HashMap<PeerAddr, i64> = HashMap::new();
-        for (downloaded, peer_addr, _) in self.downloaded_metadata_blocks.iter() {
+        for (downloaded, peer_addr, _) in self.metadata_blocks_download_status.iter() {
             if *downloaded {
                 continue;
             }
-            if let Some(outstanding_requests) =
-                inflight_metadata_block_requests_per_peer.get(peer_addr)
-            {
-                inflight_metadata_block_requests_per_peer
-                    .insert(peer_addr.clone(), *outstanding_requests + 1);
-            } else {
-                inflight_metadata_block_requests_per_peer.insert(peer_addr.clone(), 1);
-            }
+
+            inflight_metadata_block_requests_per_peer
+                .entry(peer_addr.clone())
+                .and_modify(|outstanding_requests| *outstanding_requests += 1)
+                .or_insert(1);
         }
 
         // get possible peers we can ask for metadata blocks, sorted by outstanding reqs
@@ -1424,10 +1421,10 @@ impl TorrentManager {
         }
 
         let mut metadata_blocks_to_request: Vec<usize> = Vec::new();
-        for n in 0..self.downloaded_metadata_blocks.len() {
-            if !self.downloaded_metadata_blocks[n].0
+        for n in 0..self.metadata_blocks_download_status.len() {
+            if !self.metadata_blocks_download_status[n].0
                 && now
-                    .duration_since(self.downloaded_metadata_blocks[n].2)
+                    .duration_since(self.metadata_blocks_download_status[n].2)
                     .unwrap_or_default()
                     > METADATA_BLOCK_REQUEST_TIMEOUT
             {
@@ -1441,7 +1438,7 @@ impl TorrentManager {
                     break;
                 } else {
                     let block_to_request = metadata_blocks_to_request[0];
-                    self.downloaded_metadata_blocks[block_to_request] =
+                    self.metadata_blocks_download_status[block_to_request] =
                         (false, peer_addr.clone(), now);
                     log::debug!(
                         "sending metadata block request to {peer_addr}: {block_to_request}"
@@ -1653,13 +1650,13 @@ impl TorrentManager {
             cur_ch_cap = PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY
                 - peers_to_torrent_manager_channel_capacity,
             known_metadata_blocks = self
-                .downloaded_metadata_blocks
+                .metadata_blocks_download_status
                 .iter()
                 .fold(0, |acc, v| if v.0 { acc + 1 } else { acc }),
-            total_metadata_blocks = if self.downloaded_metadata_blocks.len() == 0 {
+            total_metadata_blocks = if self.metadata_blocks_download_status.len() == 0 {
                 "?".to_string()
             } else {
-                self.downloaded_metadata_blocks.len().to_string()
+                self.metadata_blocks_download_status.len().to_string()
             },
             tot_ch_cap = PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY,
         );
@@ -1671,7 +1668,7 @@ impl TorrentManager {
             error
         );
         self.raw_metadata_size = None;
-        self.downloaded_metadata_blocks = Vec::<(bool, PeerAddr, SystemTime)>::new();
+        self.metadata_blocks_download_status = Vec::<(bool, PeerAddr, SystemTime)>::new();
         self.raw_metadata = None;
     }
 }
