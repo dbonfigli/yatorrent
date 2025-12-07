@@ -16,7 +16,10 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use crate::dht::dht_manager::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMsg};
 use crate::manager::metadata_handler::MetadataHandler;
 use crate::manager::peer::{self, PeerAddr, PeersToManagerMsg, ToPeerCancelMsg, ToPeerMsg};
-use crate::manager::piece_requestor::{DEFAULT_MAX_OUTSTANDING_REQUESTS_PER_PEER, PieceRequestor};
+use crate::manager::piece_requestor::{
+    DEFAULT_MAX_OUTSTANDING_REQUESTS_PER_PEER, MAX_OUTSTANDING_REQUESTS_PER_PEER_HARD_LIMIT,
+    PieceRequestor,
+};
 use crate::metadata::infodict::{self};
 use crate::metadata::metainfo::get_files;
 use crate::persistence::file_manager::ShaCorruptedError;
@@ -38,8 +41,13 @@ const MAX_CONNECTED_PEERS_TO_ASK_DHT_FOR_MORE: usize = 10;
 const DHT_NEW_PEER_COOL_OFF_PERIOD: Duration = Duration::from_secs(15);
 const DHT_BOOTSTRAP_TIME: Duration = Duration::from_secs(5);
 const KEEP_ALIVE_FREQ: Duration = Duration::from_secs(90);
-const TO_PEER_CHANNEL_CAPACITY: usize = 2000;
-const TO_PEER_CANCEL_CHANNEL_CAPACITY: usize = 1000;
+const TO_PEER_CHANNEL_CAPACITY: usize = MAX_OUTSTANDING_REQUESTS_PER_PEER_HARD_LIMIT + 700;
+const TO_PEER_CANCEL_CHANNEL_CAPACITY: usize = MAX_OUTSTANDING_REQUESTS_PER_PEER_HARD_LIMIT + 200;
+
+// this is mostly the number of inflight (i.e. not fulfilled) requests from peers
+// and downloaded blocks from peers, the latter in particular are holding the block buffers
+// if we are slow on writes, these will pile up and consume memory
+// for example, assuming 16kb blocks, 50000 blocks is 781MB
 const PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY: usize = 50000;
 const BASE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120); // decreasing this will waste more bandwidth (needlessly requesting the same block again even if a peer sends it eventually) but will make retries for pieces requested to slow peers faster
 const ENDGAME_REQUEST_TIMEOUT: Duration = Duration::from_secs(15); // request timeout during the endgame phase: this will re-request a lot of pieces, wasting bandwidth, but will make endgame faster churning slow peers
