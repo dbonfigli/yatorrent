@@ -5,7 +5,7 @@ use crate::{
 };
 use rand::seq::SliceRandom;
 use std::{
-    cmp::Ordering,
+    cmp::{Ordering, min},
     collections::HashMap,
     time::{Duration, SystemTime},
 };
@@ -16,6 +16,7 @@ use std::{
 // a too high value will make the peer choke the connection and also saturate the channel capacity (see TO_PEER_CHANNEL_CAPACITY)
 // 250 is the default in libtorrent as per https://bittorrent.org/beps/bep_0010.html
 pub const DEFAULT_MAX_OUTSTANDING_REQUESTS_PER_PEER: usize = 250;
+pub const MAX_OUTSTANDING_REQUESTS_PER_PEER_HARD_LIMIT: usize = 3000;
 
 const MAX_OUTSTANDING_PIECES: usize = 2000;
 const BLOCK_SIZE_B: u64 = 16384;
@@ -202,7 +203,10 @@ impl PieceRequestor {
                         .get(*peer_addr)
                         .map(|o| o.len())
                         .unwrap_or(0)
-                        < peer.get_reqq()
+                        < min(
+                            peer.get_reqq(),
+                            MAX_OUTSTANDING_REQUESTS_PER_PEER_HARD_LIMIT,
+                        )
             })
             .map(|(peer_addr, peer)| {
                 let outstanding_block_requests_count = self
@@ -246,12 +250,15 @@ impl PieceRequestor {
 
         if peers_ready_for_new_requests.len() > 0 {
             let peer_addr = peers_ready_for_new_requests[0].0;
-            let reqq = peers_ready_for_new_requests[0].1.get_reqq();
+            let request_count = min(
+                peers_ready_for_new_requests[0].1.get_reqq(),
+                MAX_OUTSTANDING_REQUESTS_PER_PEER_HARD_LIMIT,
+            );
             let reqs = self.generate_requests_to_send_for_piece(
                 &peer_addr,
                 piece_idx,
                 incomplete_piece.clone(),
-                reqq,
+                request_count,
             );
             return Option::Some((peer_addr.clone(), reqs));
         }
@@ -265,7 +272,7 @@ impl PieceRequestor {
         peer_addr: &String,
         piece_idx: usize,
         mut incomplete_piece: Piece,
-        reqq: usize,
+        request_count: usize,
     ) -> Vec<BlockRequest> {
         let mut requests_to_send: Vec<BlockRequest> = Vec::new();
         // until we reach the max inflight requests for this peer...
@@ -274,7 +281,7 @@ impl PieceRequestor {
             .get(peer_addr)
             .map(|o| o.len())
             .unwrap_or(0)
-            < reqq
+            < request_count
         {
             match incomplete_piece.get_next_fragment(BLOCK_SIZE_B) {
                 None => break, // no more blocks to request for this piece
