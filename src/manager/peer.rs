@@ -16,6 +16,7 @@ use crate::torrent_protocol::wire_protocol::{
 };
 use crate::util::{force_string, pretty_info_hash};
 
+const MAX_CONCURRENT_INCOMING_REQUESTS_PER_PEER: i64 = 500; // todo: use this later in the chocking algorith
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 const CANCELLATION_DURATION: Duration = Duration::from_secs(120);
 const UT_PEX_EXTENSION_ID: i64 = 1;
@@ -330,20 +331,26 @@ async fn handshake(
 
     // if peer supports extensions, send PEX and metadata extension support
     if reserved[5] & 0x10 != 0 {
-        let mut handshake_dict = HashMap::from([(
-            b"m".to_vec(),
-            Value::Dict(
-                HashMap::from([
-                    (b"ut_pex".to_vec(), Value::Int(UT_PEX_EXTENSION_ID)),
-                    (
-                        b"ut_metadata".to_vec(),
-                        Value::Int(UT_METADATA_EXTENSION_ID),
-                    ),
-                ]),
-                0,
-                0,
+        let mut handshake_dict = HashMap::from([
+            (
+                b"m".to_vec(),
+                Value::Dict(
+                    HashMap::from([
+                        (b"ut_pex".to_vec(), Value::Int(UT_PEX_EXTENSION_ID)),
+                        (
+                            b"ut_metadata".to_vec(),
+                            Value::Int(UT_METADATA_EXTENSION_ID),
+                        ),
+                    ]),
+                    0,
+                    0,
+                ),
             ),
-        )]);
+            (
+                b"reqq".to_vec(),
+                Value::Int(MAX_CONCURRENT_INCOMING_REQUESTS_PER_PEER),
+            ),
+        ]);
         if let Some(metadata_size) = metadata_size {
             handshake_dict.insert(b"metadata_size".to_vec(), Value::Int(metadata_size));
         }
