@@ -21,8 +21,11 @@ pub const MAX_OUTSTANDING_REQUESTS_PER_PEER_HARD_LIMIT: usize = 3000;
 const MAX_OUTSTANDING_PIECES: usize = 2000;
 const BLOCK_SIZE_B: u64 = 16384;
 
-// most peers choke and few moments after unchoke, this constant define after how much time reassign pieces assigned to a choked peer
-const CHOKED_PEER_ASSIGMENTS_GRACE_PERIOD: Duration = Duration::from_secs(10);
+// some peers choke and few moments after unchoke (a thing specs call "fibrillation").
+// even if specs says:
+// "The client should not attempt to send requests for blocks, and it should consider all pending (unanswered) requests to be discarded by the remote peer."
+// here we wait a bit before considering the request lost and reassign pieces assigned to a choked peer to another peer
+const CHOKED_PEER_ASSIGMENTS_GRACE_PERIOD: Duration = Duration::from_secs(5);
 
 pub struct PieceRequestor {
     outstanding_piece_assignments: HashMap<usize, PeerAddr>, // piece idx -> peer_addr
