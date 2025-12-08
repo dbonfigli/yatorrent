@@ -15,8 +15,8 @@ use std::{
 // This parameter is extremelly important: a too low value will waste bandwidth in case a peer is really fast,
 // a too high value will make the peer choke the connection and also saturate the channel capacity (see TO_PEER_CHANNEL_CAPACITY)
 // 250 is the default in libtorrent as per https://bittorrent.org/beps/bep_0010.html
-pub const DEFAULT_MAX_OUTSTANDING_REQUESTS_PER_PEER: usize = 250;
-pub const MAX_OUTSTANDING_REQUESTS_PER_PEER_HARD_LIMIT: usize = 3000;
+pub const DEFAULT_MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER: usize = 250;
+pub const MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT: usize = 3000;
 
 const MAX_OUTSTANDING_PIECES: usize = 2000;
 const BLOCK_SIZE_B: u64 = 16384;
@@ -29,7 +29,7 @@ const CHOKED_PEER_ASSIGMENTS_GRACE_PERIOD: Duration = Duration::from_secs(5);
 
 pub struct PieceRequestor {
     outstanding_piece_assignments: HashMap<usize, PeerAddr>, // piece idx -> peer_addr
-    outstanding_block_requests: HashMap<PeerAddr, HashMap<BlockRequest, SystemTime>>, // peer_addr -> BlockRequest -> request time
+    outstanding_piece_block_requests: HashMap<PeerAddr, HashMap<BlockRequest, SystemTime>>, // peer_addr -> BlockRequest -> request time
     requested_pieces: HashMap<PeerAddr, HashMap<usize, Piece>>, // peer_addr -> piece idx -> piece status with all the requested fragments
 }
 
@@ -37,20 +37,20 @@ impl PieceRequestor {
     pub fn new() -> Self {
         PieceRequestor {
             outstanding_piece_assignments: HashMap::new(),
-            outstanding_block_requests: HashMap::new(),
+            outstanding_piece_block_requests: HashMap::new(),
             requested_pieces: HashMap::new(),
         }
     }
 
-    pub fn outstanding_block_request_count_for_peer(&self, peer_addr: &PeerAddr) -> usize {
+    pub fn outstanding_piece_block_request_count_for_peer(&self, peer_addr: &PeerAddr) -> usize {
         return self
-            .outstanding_block_requests
+            .outstanding_piece_block_requests
             .get(peer_addr)
             .map_or(0, |reqs| reqs.len());
     }
 
     pub fn remove_assigments_to_peer(&mut self, peer_addr: &PeerAddr) {
-        self.outstanding_block_requests.remove(peer_addr);
+        self.outstanding_piece_block_requests.remove(peer_addr);
         if let Some(requests) = self.requested_pieces.remove(peer_addr) {
             for (piece_idx, _) in requests {
                 self.outstanding_piece_assignments.remove(&piece_idx);
@@ -59,7 +59,7 @@ impl PieceRequestor {
     }
 
     pub fn block_request_completed(&mut self, peer_addr: &PeerAddr, block_request: &BlockRequest) {
-        if let Some(reqs) = self.outstanding_block_requests.get_mut(peer_addr) {
+        if let Some(reqs) = self.outstanding_piece_block_requests.get_mut(peer_addr) {
             reqs.remove(block_request);
         }
     }
@@ -98,7 +98,7 @@ impl PieceRequestor {
         self.remove_assigments_to_choked(peers);
 
         let now = SystemTime::now();
-        self.outstanding_block_requests.iter_mut().for_each(
+        self.outstanding_piece_block_requests.iter_mut().for_each(
             |(peer_addr, outstanding_block_requests_for_peer)| {
                 outstanding_block_requests_for_peer.retain(
                     |block_request, req_time| {
@@ -143,7 +143,7 @@ impl PieceRequestor {
                     peers
                         .get(peer_addr)
                         .map(|p| p.get_reqq())
-                        .unwrap_or(DEFAULT_MAX_OUTSTANDING_REQUESTS_PER_PEER),
+                        .unwrap_or(DEFAULT_MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER),
                 );
                 requests_to_send.push((peer_addr.clone(), reqs_for_piece));
             } else {
@@ -202,23 +202,23 @@ impl PieceRequestor {
                 !peer.is_peer_choking()
                     && peer.have_piece(piece_idx)
                     && self
-                        .outstanding_block_requests
+                        .outstanding_piece_block_requests
                         .get(*peer_addr)
                         .map(|o| o.len())
                         .unwrap_or(0)
                         < min(
                             peer.get_reqq(),
-                            MAX_OUTSTANDING_REQUESTS_PER_PEER_HARD_LIMIT,
+                            MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT,
                         )
             })
             .map(|(peer_addr, peer)| {
-                let outstanding_block_requests_count = self
-                    .outstanding_block_requests
+                let outstanding_piece_block_requests_count = self
+                    .outstanding_piece_block_requests
                     .get(peer_addr)
                     .map(|o| o.len())
                     .unwrap_or(0);
                 let concurrent_requested_pieces_count = self
-                    .outstanding_block_requests
+                    .outstanding_piece_block_requests
                     .get(peer_addr)
                     .map(|o| o.len())
                     .unwrap_or(0);
@@ -226,7 +226,7 @@ impl PieceRequestor {
                     peer_addr,
                     peer,
                     concurrent_requested_pieces_count,
-                    outstanding_block_requests_count,
+                    outstanding_piece_block_requests_count,
                 )
             })
             .collect::<Vec<(&String, &Peer, usize, usize)>>();
@@ -241,10 +241,10 @@ impl PieceRequestor {
                 // prefer lower concurrent_requested_pieces_count
                 Ordering::Greater
             } else if a.3 < b.3 {
-                // if above equal, prefer lower outstanding_block_requests_count
+                // if above equal, prefer lower outstanding_piece_block_requests_count
                 Ordering::Less
             } else if a.3 > b.3 {
-                // if above equal, prefer lower outstanding_block_requests_count
+                // if above equal, prefer lower outstanding_piece_block_requests_count
                 Ordering::Greater
             } else {
                 Ordering::Equal
@@ -255,7 +255,7 @@ impl PieceRequestor {
             let peer_addr = peers_ready_for_new_requests[0].0;
             let request_count = min(
                 peers_ready_for_new_requests[0].1.get_reqq(),
-                MAX_OUTSTANDING_REQUESTS_PER_PEER_HARD_LIMIT,
+                MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT,
             );
             let reqs = self.generate_requests_to_send_for_piece(
                 &peer_addr,
@@ -280,7 +280,7 @@ impl PieceRequestor {
         let mut requests_to_send: Vec<BlockRequest> = Vec::new();
         // until we reach the max inflight requests for this peer...
         while self
-            .outstanding_block_requests
+            .outstanding_piece_block_requests
             .get(peer_addr)
             .map(|o| o.len())
             .unwrap_or(0)
@@ -295,7 +295,7 @@ impl PieceRequestor {
                         data_len: ((end - begin + 1) as u32),
                     };
                     requests_to_send.push(request.clone());
-                    self.outstanding_block_requests
+                    self.outstanding_piece_block_requests
                         .entry(peer_addr.clone())
                         .or_insert(HashMap::new())
                         .insert(request, SystemTime::now());

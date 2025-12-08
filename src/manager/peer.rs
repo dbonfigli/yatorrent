@@ -16,7 +16,7 @@ use crate::torrent_protocol::wire_protocol::{
 };
 use crate::util::{force_string, pretty_info_hash};
 
-const MAX_CONCURRENT_INCOMING_REQUESTS_PER_PEER: i64 = 500; // todo: use this later in the chocking algorith
+pub const MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER: i64 = 500;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 const CANCELLATION_DURATION: Duration = Duration::from_secs(120);
 const UT_PEX_EXTENSION_ID: i64 = 1;
@@ -32,6 +32,7 @@ pub enum PeersToManagerMsg {
     Error(PeerAddr, PeerError),
     Receive(PeerAddr, Message),
     NewPeer(TcpStream),
+    PieceBlockRequestFulfilled(PeerAddr),
 }
 
 #[derive(PartialEq)]
@@ -348,7 +349,7 @@ async fn handshake(
             ),
             (
                 b"reqq".to_vec(),
-                Value::Int(MAX_CONCURRENT_INCOMING_REQUESTS_PER_PEER),
+                Value::Int(MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER),
             ),
         ]);
         if let Some(metadata_size) = metadata_size {
@@ -417,8 +418,12 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
     while let Some(manager_msg) = to_peer_rx.recv().await {
         match manager_msg {
             ToPeerMsg::Send(proto_msg) => {
+                let mut is_sending_piece = false;
+
                 // avoid sending data if the request has already been canceled by the peer
                 if let Message::Piece(piece_idx, begin, data) = &proto_msg {
+                    is_sending_piece = true;
+
                     // receive pending cancellations
                     while let Ok((block_request, cancel_time)) = to_peer_cancel_rx.try_recv() {
                         cancellations.insert(block_request, cancel_time);
@@ -442,6 +447,12 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                             "avoided sending canceled request to peer {peer_addr} (block_idx: {piece_idx} begin: {begin}, end: {})",
                             data.len()
                         );
+                        send_to_torrent_manager(
+                            &peers_to_torrent_manager_tx,
+                            PeersToManagerMsg::PieceBlockRequestFulfilled(peer_addr.clone()),
+                        )
+                        .await;
+
                         continue;
                     }
                 }
@@ -452,7 +463,7 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                         log::trace!("timeout sending message to peer {peer_addr}");
                         send_to_torrent_manager(
                             &peers_to_torrent_manager_tx,
-                            PeersToManagerMsg::Error(peer_addr, PeerError::Others),
+                            PeersToManagerMsg::Error(peer_addr.clone(), PeerError::Others),
                         )
                         .await;
                         break;
@@ -461,12 +472,20 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                         log::trace!("sending failed to peer {peer_addr}: {e}");
                         send_to_torrent_manager(
                             &peers_to_torrent_manager_tx,
-                            PeersToManagerMsg::Error(peer_addr, PeerError::Others),
+                            PeersToManagerMsg::Error(peer_addr.clone(), PeerError::Others),
                         )
                         .await;
                         break;
                     }
-                    Ok(Ok(_)) => {}
+                    Ok(Ok(_)) => {
+                        if is_sending_piece {
+                            send_to_torrent_manager(
+                                &peers_to_torrent_manager_tx,
+                                PeersToManagerMsg::PieceBlockRequestFulfilled(peer_addr.clone()),
+                            )
+                            .await;
+                        }
+                    }
                 }
             }
             ToPeerMsg::Disconnect() => {

@@ -15,10 +15,13 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use crate::dht::dht_manager::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMsg};
 use crate::manager::metadata_handler::MetadataHandler;
-use crate::manager::peer::{self, PeerAddr, PeersToManagerMsg, ToPeerCancelMsg, ToPeerMsg};
+use crate::manager::peer::{
+    self, MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER, PeerAddr, PeersToManagerMsg,
+    ToPeerCancelMsg, ToPeerMsg,
+};
 use crate::manager::piece_requestor::{
-    DEFAULT_MAX_OUTSTANDING_REQUESTS_PER_PEER, MAX_OUTSTANDING_REQUESTS_PER_PEER_HARD_LIMIT,
-    PieceRequestor,
+    DEFAULT_MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER,
+    MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT, PieceRequestor,
 };
 use crate::metadata::infodict::{self};
 use crate::metadata::metainfo::get_files;
@@ -41,18 +44,23 @@ const MAX_CONNECTED_PEERS_TO_ASK_DHT_FOR_MORE: usize = 10;
 const DHT_NEW_PEER_COOL_OFF_PERIOD: Duration = Duration::from_secs(15);
 const DHT_BOOTSTRAP_TIME: Duration = Duration::from_secs(5);
 const KEEP_ALIVE_FREQ: Duration = Duration::from_secs(90);
-const TO_PEER_CHANNEL_CAPACITY: usize = MAX_OUTSTANDING_REQUESTS_PER_PEER_HARD_LIMIT + 700;
-const TO_PEER_CANCEL_CHANNEL_CAPACITY: usize = MAX_OUTSTANDING_REQUESTS_PER_PEER_HARD_LIMIT + 200;
+const TO_PEER_CHANNEL_CAPACITY: usize =
+    MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT + 700;
+const TO_PEER_CANCEL_CHANNEL_CAPACITY: usize =
+    MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT + 200;
 
 // this is mostly the number of inflight (i.e. not fulfilled) requests from peers
 // and downloaded blocks from peers, the latter in particular are holding the block buffers
 // if we are slow on writes, these will pile up and consume memory
 // for example, assuming 16kb blocks, 50000 blocks is 781MB
 const PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY: usize = 50000;
-const BASE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120); // decreasing this will waste more bandwidth (needlessly requesting the same block again even if a peer sends it eventually) but will make retries for pieces requested to slow peers faster
+
+// decreasing this will waste more bandwidth (needlessly requesting the same block again even if a peer sends it eventually) but will make retries for pieces requested to slow peers faster
+// eventually we should tune this respect to download spped from a peer and how many outstanding requests we made
+const BASE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const ENDGAME_REQUEST_TIMEOUT: Duration = Duration::from_secs(15); // request timeout during the endgame phase: this will re-request a lot of pieces, wasting bandwidth, but will make endgame faster churning slow peers
 const ENDGAME_START_AT_COMPLETION_PERCENTAGE: f64 = 98.; // start endgame when we have this percentage of the torrent
-const MIN_CHOKE_TIME: Duration = Duration::from_secs(60);
+const MIN_CHOKE_TIME: Duration = Duration::from_secs(10);
 const NEW_CONNECTION_COOL_OFF_PERIOD: Duration = Duration::from_secs(180); // time to wait before attempting a new connection to a non bad (i.e. with no permanent errors) peer
 const ADDED_DROPPED_PEER_EVENTS_RETENTION: Duration = Duration::from_secs(90);
 const PEX_MESSAGE_COOL_OFF_PERIOD: Duration = Duration::from_secs(60);
@@ -70,12 +78,13 @@ pub struct Peer {
     to_peer_tx: Sender<ToPeerMsg>,
     last_sent: SystemTime, // to understand when to send keepalived messages
     to_peer_cancel_tx: Sender<ToPeerCancelMsg>,
+    outstanding_incoming_piece_block_requests: usize,
     ut_pex_id: u8,
     last_pex_message_sent: SystemTime,
     ut_metadata_id: u8,
     last_metadata_request_rejection: SystemTime,
     corruption_errors: u32,
-    reqq: usize,
+    reqq: usize, // reqq received from peer
 }
 
 enum MetadataMessage {
@@ -107,12 +116,13 @@ impl Peer {
             to_peer_tx,
             last_sent: SystemTime::now(), // initally set it to now as there is no need to send them after the handshake
             to_peer_cancel_tx,
+            outstanding_incoming_piece_block_requests: 0,
             ut_pex_id: 0, // i.e. no support for pex on this peer, initially
             last_pex_message_sent: SystemTime::UNIX_EPOCH,
             ut_metadata_id: 0, // i.e. no support for metadata on this peer, initially
             last_metadata_request_rejection: SystemTime::UNIX_EPOCH,
             corruption_errors: 0, // number of corrupted block received by this peer
-            reqq: DEFAULT_MAX_OUTSTANDING_REQUESTS_PER_PEER, // the number of outstanding request messages this client supports without dropping any
+            reqq: DEFAULT_MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER, // the number of outstanding request messages this client supports without dropping any
         }
     }
 
@@ -426,6 +436,10 @@ impl TorrentManager {
                         PeersToManagerMsg::NewPeer(tcp_stream) => {
                             self.handle_new_peer(tcp_stream).await;
                         }
+                        PeersToManagerMsg::PieceBlockRequestFulfilled(peer_addr) => {
+                            // should we maybe use a separate channel for this?
+                            self.handle_piece_block_request_fulfilled(peer_addr);
+                        },
                     }
                 }
                 Some(()) = tick_rx.recv() => {
@@ -454,7 +468,7 @@ impl TorrentManager {
                     peer.peer_choking = false;
                     log::debug!("received unchoke from {peer_addr}");
                     // todo: maybe re-compute assignations immediately here instead of waiting tick
-                    // this is especially important in case of really fast peers, where outstanding
+                    // this is especially important in case of really fast peers, where outstanding piece block
                     // requests are handled within a single tick, so for the rest of the tick such peers are idle
                 }
             }
@@ -599,9 +613,9 @@ impl TorrentManager {
         };
 
         log::debug!(
-            "received choke from peer {peer_addr} with {} outstanding requests",
+            "received choke from peer {peer_addr} with {} outstanding piece block requests",
             self.piece_requestor
-                .outstanding_block_request_count_for_peer(&peer_addr)
+                .outstanding_piece_block_request_count_for_peer(&peer_addr)
         );
         peer.peer_choking = true;
         peer.peer_choking_since = SystemTime::now();
@@ -625,11 +639,16 @@ impl TorrentManager {
         };
 
         if !peer.am_choking {
-            if should_choke(self.peers_to_torrent_manager_tx.capacity(), true) {
+            if should_choke(
+                self.peers_to_torrent_manager_tx.capacity(),
+                peer.outstanding_incoming_piece_block_requests,
+                true,
+            ) {
                 peer.send(ToPeerMsg::Send(Message::Choke)).await;
                 peer.am_choking = true;
                 peer.am_choking_since = SystemTime::now();
             } else {
+                peer.outstanding_incoming_piece_block_requests += 1;
                 match file_manager.read_piece_block(
                     block_request.piece_idx as usize,
                     block_request.block_begin as u64,
@@ -637,6 +656,7 @@ impl TorrentManager {
                 ) {
                     Err(e) => {
                         log::error!("error reading block: {e}");
+                        peer.outstanding_incoming_piece_block_requests -= 1;
                     }
 
                     Ok(data) => {
@@ -1157,6 +1177,14 @@ impl TorrentManager {
         }
     }
 
+    fn handle_piece_block_request_fulfilled(&mut self, peer_addr: String) {
+        if let Some(peer) = self.peers.get_mut(&peer_addr)
+            && peer.outstanding_incoming_piece_block_requests > 0
+        {
+            peer.outstanding_incoming_piece_block_requests -= 1;
+        }
+    }
+
     async fn handle_ticker(&mut self) {
         self.log_stats(self.peers_to_torrent_manager_tx.capacity());
         self.connect_to_new_peers().await;
@@ -1262,22 +1290,21 @@ impl TorrentManager {
     }
 
     async fn unchoke_peers(&mut self) {
-        let choking = should_choke(
-            self.peers_to_torrent_manager_tx.capacity(),
-            self.file_manager.is_some(),
-        );
-        if !choking {
-            let now = SystemTime::now();
-            for (_, peer) in self.peers.iter_mut() {
-                if peer.am_choking
-                    && now
-                        .duration_since(peer.am_choking_since)
-                        .unwrap_or_default()
-                        > MIN_CHOKE_TIME
-                {
-                    peer.am_choking = false;
-                    peer.send(ToPeerMsg::Send(Message::Unchoke)).await;
-                }
+        let now = SystemTime::now();
+        for (_, peer) in self.peers.iter_mut() {
+            if peer.am_choking
+                && now
+                    .duration_since(peer.am_choking_since)
+                    .unwrap_or_default()
+                    > MIN_CHOKE_TIME
+                && !should_choke(
+                    self.peers_to_torrent_manager_tx.capacity(),
+                    peer.outstanding_incoming_piece_block_requests,
+                    self.file_manager.is_some(),
+                )
+            {
+                peer.am_choking = false;
+                peer.send(ToPeerMsg::Send(Message::Unchoke)).await;
             }
         }
     }
@@ -1657,10 +1684,13 @@ fn update_tracker_client_and_advertised_peers(
 
 fn should_choke(
     peers_to_torrent_manager_channel_capacity: usize,
+    outstanding_incoming_piece_block_requests_for_this_peer: usize,
     file_manager_initialized: bool,
 ) -> bool {
     peers_to_torrent_manager_channel_capacity < PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY / 2
         || !file_manager_initialized
+        || outstanding_incoming_piece_block_requests_for_this_peer
+            > MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER as usize
 }
 
 fn ip_port_list_to_compact_format(addrs: Vec<String>) -> Vec<u8> {
