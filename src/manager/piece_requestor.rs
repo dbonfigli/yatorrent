@@ -165,20 +165,18 @@ impl PieceRequestor {
         }
 
         // 3. assign other pieces, in order
-        for piece_idx in 0..file_manager.num_pieces() {
+        for piece_idx in file_manager.missing_pieces() {
             if self.outstanding_piece_assignments.len() > MAX_OUTSTANDING_PIECES {
                 break; // too many outstanding piece requests, stop assigment
             }
-            if file_manager.piece_completion_status(piece_idx)
-                || self.outstanding_piece_assignments.contains_key(&piece_idx)
-            {
-                continue; // piece is already assigned or completed, skip this
+            if self.outstanding_piece_assignments.contains_key(piece_idx) {
+                continue; // piece is already assigned, skip this
             }
 
             match self.assign_piece_reqs(
-                piece_idx,
+                *piece_idx,
                 peers,
-                &Piece::new(file_manager.piece_length(piece_idx)),
+                &Piece::new(file_manager.piece_length(*piece_idx)),
             ) {
                 Some((peer_addr, reqs)) => requests_to_send.push((peer_addr, reqs)),
                 None => break, // we could not find a possible peer to assign this piece, it means there is no capacity left, stop assigment
@@ -366,22 +364,20 @@ impl PieceRequestor {
         }
 
         // 3. assign other pieces, in order
-        for piece_idx in 0..file_manager.num_pieces() {
+        for piece_idx in file_manager.missing_pieces() {
             if self.outstanding_piece_assignments.len() > MAX_OUTSTANDING_PIECES {
                 break;
             }
             if self.peer_can_allocate_requests(peer_addr, peer.get_reqq()) {
                 break;
             }
-            if file_manager.piece_completion_status(piece_idx)
-                || self.outstanding_piece_assignments.contains_key(&piece_idx)
-            {
-                continue; // piece is already assigned or completed, skip this
+            if self.outstanding_piece_assignments.contains_key(&piece_idx) {
+                continue; // piece is already assigned, skip this
             }
             let reqs = &mut self.generate_requests_to_send_for_piece(
                 peer_addr,
-                piece_idx,
-                Piece::new(file_manager.piece_length(piece_idx)),
+                *piece_idx,
+                Piece::new(file_manager.piece_length(*piece_idx)),
                 peer.get_reqq(),
             );
             requests_to_send.append(reqs);

@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::{cmp, fs};
@@ -27,7 +27,7 @@ pub struct FileManager {
 
     // mutable fields
     piece_completion_status: Vec<bool>, // piece identified by position in array -> download completed / incomplete
-    completed_pieces: usize,
+    missing_pieces: BTreeSet<usize>,    // ordered set of piece indexes yet to be completed
     file_handles: FileHandles,
     incomplete_pieces: HashMap<usize, Piece>, // piece id -> piece with downloaded fragments
     wasted_bytes: usize,
@@ -153,12 +153,16 @@ impl FileManager {
         // initialize piece_completion_status
         let piece_completion_status = vec![false; piece_hashes.len()];
 
+        let mut missing_pieces = BTreeSet::new();
+        for idx in 0..piece_hashes.len() {
+            missing_pieces.insert(idx);
+        }
         let mut file_manager = FileManager {
             file_list: fm_file_list,
             piece_hashes,
             piece_to_files,
             piece_completion_status,
-            completed_pieces: 0,
+            missing_pieces,
             file_handles: FileHandles::new(),
             incomplete_pieces: HashMap::new(),
             wasted_bytes: 0,
@@ -173,7 +177,6 @@ impl FileManager {
 
     pub fn refresh_completed_pieces(&mut self) {
         log::info!("checking pieces already downloaded...");
-        self.completed_pieces = 0;
         for idx in 0..self.piece_hashes.len() {
             // print progress
             if idx % (cmp::max(10, self.piece_to_files.len()) / 10) == 0 {
@@ -192,7 +195,7 @@ impl FileManager {
                     let sha_ok = self.piece_hashes[idx] == piece_sha;
                     self.piece_completion_status[idx] = sha_ok;
                     if sha_ok {
-                        self.completed_pieces += 1;
+                        self.missing_pieces.remove(&idx);
                     }
                 }
             }
@@ -207,7 +210,7 @@ impl FileManager {
     }
 
     pub fn completed_pieces(&self) -> usize {
-        self.completed_pieces
+        self.piece_hashes.len() - self.missing_pieces.len()
     }
 
     // this depends on an up-to-date piece_completion_status
@@ -408,7 +411,7 @@ impl FileManager {
                 bail!(ShaCorruptedError { piece_idx });
             } else {
                 self.piece_completion_status[piece_idx] = true;
-                self.completed_pieces += 1;
+                self.missing_pieces.remove(&piece_idx);
                 self.refresh_completed_files(); //todo: optimize this
             }
             Ok(true)
@@ -449,6 +452,10 @@ impl FileManager {
 
     pub fn piece_completion_status(&self, idx: usize) -> bool {
         self.piece_completion_status[idx]
+    }
+
+    pub fn missing_pieces(&self) -> &BTreeSet<usize> {
+        &self.missing_pieces
     }
 
     pub fn current_piece_completion_status(&self) -> Vec<bool> {
