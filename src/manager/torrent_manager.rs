@@ -20,7 +20,6 @@ use crate::manager::peer::{
     ToPeerCancelMsg, ToPeerMsg,
 };
 use crate::manager::piece_requestor::{
-    DEFAULT_MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER,
     MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT, PieceRequestor,
 };
 use crate::metadata::infodict::{self};
@@ -48,6 +47,13 @@ const TO_PEER_CHANNEL_CAPACITY: usize =
     MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT + 700;
 const TO_PEER_CANCEL_CHANNEL_CAPACITY: usize =
     MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT + 200;
+
+// can be retrieved per peer if it supports extensions, dict key "reqq",
+// seen: deluge: 2000, qbittorrent: 500, transmission: 500, utorrent: 255, freebox bittorrent 2: 768, maybe variable.
+// This parameter is extremelly important: a too low value will waste bandwidth in case a peer is really fast,
+// a too high value will make the peer choke the connection and also saturate the channel capacity (see TO_PEER_CHANNEL_CAPACITY)
+// 250 is the default in libtorrent as per https://bittorrent.org/beps/bep_0010.html
+const DEFAULT_MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER: usize = 250;
 
 // this is mostly the number of inflight (i.e. not fulfilled) requests from peers
 // and downloaded blocks from peers, the latter in particular are holding the block buffers
