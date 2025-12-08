@@ -268,6 +268,18 @@ impl PieceRequestor {
         return Option::None;
     }
 
+    fn peer_can_allocate_requests(
+        &self,
+        peer_addr: &String,
+        max_request_count_for_peer: usize,
+    ) -> bool {
+        self.outstanding_piece_block_requests
+            .get(peer_addr)
+            .map(|o| o.len())
+            .unwrap_or(0)
+            < max_request_count_for_peer
+    }
+
     fn generate_requests_to_send_for_piece(
         &mut self,
         peer_addr: &String,
@@ -277,13 +289,7 @@ impl PieceRequestor {
     ) -> Vec<BlockRequest> {
         let mut requests_to_send: Vec<BlockRequest> = Vec::new();
         // until we reach the max inflight requests for this peer...
-        while self
-            .outstanding_piece_block_requests
-            .get(peer_addr)
-            .map(|o| o.len())
-            .unwrap_or(0)
-            < max_request_count_for_peer
-        {
+        while self.peer_can_allocate_requests(peer_addr, max_request_count_for_peer) {
             match incomplete_piece.get_next_fragment(BLOCK_SIZE_B) {
                 None => break, // no more blocks to request for this piece
                 Some((begin, end)) => {
@@ -309,6 +315,76 @@ impl PieceRequestor {
                 .insert(piece_idx, incomplete_piece.clone());
             self.outstanding_piece_assignments
                 .insert(piece_idx, peer_addr.clone());
+        }
+
+        requests_to_send
+    }
+
+    pub fn generate_requests_to_send_for_peer(
+        &mut self,
+        peer_addr: &String,
+        peer: &Peer,
+        file_manager: &FileManager,
+    ) -> Vec<BlockRequest> {
+        if peer.is_peer_choking() {
+            return Vec::new();
+        }
+        let mut requests_to_send: Vec<BlockRequest> = Vec::new();
+
+        // 1. send requests for new blocks for pieces currently downloading
+        match self.requested_pieces.get(peer_addr) {
+            None => {} // the peer has no current piece assigned
+            Some(requested_pieces_for_peer) => {
+                for (piece_idx, incomplete_piece) in requested_pieces_for_peer.clone() {
+                    if !file_manager.piece_completion_status(piece_idx) {
+                        let reqs = &mut self.generate_requests_to_send_for_piece(
+                            peer_addr,
+                            piece_idx,
+                            incomplete_piece,
+                            peer.get_reqq(),
+                        );
+                        requests_to_send.append(reqs);
+                    }
+                }
+            }
+        }
+
+        // 2. assign incomplete pieces if not assigned yet
+        for (piece_idx, piece) in file_manager.incomplete_pieces().iter() {
+            if self.peer_can_allocate_requests(peer_addr, peer.get_reqq()) {
+                break;
+            }
+            if !self.outstanding_piece_assignments.contains_key(piece_idx) {
+                let reqs = &mut self.generate_requests_to_send_for_piece(
+                    peer_addr,
+                    *piece_idx,
+                    piece.clone(),
+                    peer.get_reqq(),
+                );
+                requests_to_send.append(reqs);
+            }
+        }
+
+        // 3. assign other pieces, in order
+        for piece_idx in 0..file_manager.num_pieces() {
+            if self.outstanding_piece_assignments.len() > MAX_OUTSTANDING_PIECES {
+                break;
+            }
+            if self.peer_can_allocate_requests(peer_addr, peer.get_reqq()) {
+                break;
+            }
+            if file_manager.piece_completion_status(piece_idx)
+                || self.outstanding_piece_assignments.contains_key(&piece_idx)
+            {
+                continue; // piece is already assigned or completed, skip this
+            }
+            let reqs = &mut self.generate_requests_to_send_for_piece(
+                peer_addr,
+                piece_idx,
+                Piece::new(file_manager.piece_length(piece_idx)),
+                peer.get_reqq(),
+            );
+            requests_to_send.append(reqs);
         }
 
         requests_to_send

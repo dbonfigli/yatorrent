@@ -53,7 +53,7 @@ const TO_PEER_CANCEL_CHANNEL_CAPACITY: usize =
 // This parameter is extremelly important: a too low value will waste bandwidth in case a peer is really fast,
 // a too high value will make the peer choke the connection and also saturate the channel capacity (see TO_PEER_CHANNEL_CAPACITY)
 // 250 is the default in libtorrent as per https://bittorrent.org/beps/bep_0010.html
-const DEFAULT_MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER: usize = 250;
+const DEFAULT_MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER: usize = 2000;
 
 // this is mostly the number of inflight (i.e. not fulfilled) requests from peers
 // and downloaded blocks from peers, the latter in particular are holding the block buffers
@@ -473,9 +473,8 @@ impl TorrentManager {
                 if let Some(peer) = self.peers.get_mut(&peer_addr) {
                     peer.peer_choking = false;
                     log::debug!("received unchoke from {peer_addr}");
-                    // todo: maybe re-compute assignations immediately here instead of waiting tick
-                    // this is especially important in case of really fast peers, where outstanding piece block
-                    // requests are handled within a single tick, so for the rest of the tick such peers are idle
+                    // since we received an unchoke, we can try to send more requests immediately to this peer, without waiting for a tick
+                    self.send_pieces_reqs_for_peer(peer_addr).await;
                 }
             }
             Message::Interested => {
@@ -625,8 +624,6 @@ impl TorrentManager {
         );
         peer.peer_choking = true;
         peer.peer_choking_since = SystemTime::now();
-
-        // todo: maybe re-compute assignations immediately here instead of waiting tick
     }
 
     async fn handle_receive_request_message(
@@ -1133,7 +1130,8 @@ impl TorrentManager {
                         }
                     }
                 }
-                // todo: maybe re-compute assignations immediately here instead of waiting tick
+                // since we received a piece block, we can try to send more requests immediately to this peer, without waiting for a tick
+                self.send_pieces_reqs_for_peer(peer_addr).await;
             }
             Err(e) => {
                 log::error!("cannot write block received from {peer_addr}: {e}");
@@ -1154,6 +1152,31 @@ impl TorrentManager {
                     }
                 }
             }
+        }
+    }
+
+    async fn send_pieces_reqs_for_peer(&mut self, peer_addr: String) {
+        let file_manager = match &self.file_manager {
+            Some(file_manager) => file_manager,
+            None => return,
+        };
+
+        let peer = match self.peers.get_mut(&peer_addr) {
+            Some(peer) => peer,
+            None => return,
+        };
+
+        // compute requests from piece requestor
+        let reqs_to_send = self.piece_requestor.generate_requests_to_send_for_peer(
+            &peer_addr,
+            &peer,
+            file_manager,
+        );
+
+        // finally send requests
+        for block_request in reqs_to_send {
+            peer.send(ToPeerMsg::Send(Message::Request(block_request)))
+                .await;
         }
     }
 
