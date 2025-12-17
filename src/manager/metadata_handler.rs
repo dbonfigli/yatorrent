@@ -39,9 +39,7 @@ impl MetadataHandler {
 
         let raw_metadata = match raw_metadata {
             Some(r) => Some(r),
-            None => raw_metadata_size
-                .map(|metadata_size| Some(vec![0; metadata_size as usize]))
-                .unwrap_or(None),
+            None => raw_metadata_size.map(|metadata_size| vec![0; metadata_size as usize]),
         };
 
         MetadataHandler {
@@ -58,7 +56,7 @@ impl MetadataHandler {
     }
 
     pub fn raw_metadata_size(&self) -> Option<i64> {
-        self.raw_metadata_size.clone()
+        self.raw_metadata_size
     }
 
     pub fn total_metadata_pieces_downloaded(&self) -> usize {
@@ -88,6 +86,14 @@ impl MetadataHandler {
             raw_metadata_size,
             raw_metadata_start + METADATA_PIECE_SIZE_B,
         );
+
+        if piece_data.len() < (raw_metadata_end - raw_metadata_start) {
+            // peer sent us less data than expected for this piece, avoid panic on copy_from_slice
+            // in this case will ask for again for this piece immediatelly
+            self.metadata_piece_download_status[piece_idx].2 = SystemTime::UNIX_EPOCH;
+            return;
+        }
+
         self.raw_metadata
             .as_deref_mut()
             .expect("if raw_metadata_size is defined also raw_metadata is")
@@ -133,8 +139,12 @@ impl MetadataHandler {
     ) -> Vec<(PeerAddr, usize)> {
         // get inflight requests
         let mut inflight_metadata_piece_requests_per_peer: HashMap<PeerAddr, i64> = HashMap::new();
-        for (downloaded, peer_addr, _) in self.metadata_piece_download_status.iter() {
-            if *downloaded {
+        let now = SystemTime::now();
+        for (downloaded, peer_addr, request_time) in self.metadata_piece_download_status.iter() {
+            if *downloaded
+                || now.duration_since(*request_time).unwrap_or_default()
+                    > METADATA_PIECE_REQUEST_TIMEOUT
+            {
                 continue;
             }
 
@@ -145,7 +155,6 @@ impl MetadataHandler {
         }
 
         // get possible peers we can ask for metadata pieces, sorted by outstanding reqs
-        let now = SystemTime::now();
         let mut possible_peers = peers
             .iter()
             .filter(|(_, peer)| {
@@ -166,7 +175,7 @@ impl MetadataHandler {
         possible_peers.shuffle(&mut rand::rng());
         possible_peers.sort_by_key(|k| k.0);
 
-        if possible_peers.len() == 0 {
+        if possible_peers.is_empty() {
             return Vec::new();
         }
 
@@ -182,18 +191,26 @@ impl MetadataHandler {
             }
         }
 
+        if metadata_pieces_to_request.is_empty() {
+            return Vec::new();
+        }
+
         let mut new_metadata_piece_requests = Vec::new();
+        let mut metadata_pieces_to_request_idx = 0;
         for (outstanding_reqs, peer_addr) in possible_peers.iter_mut() {
-            while metadata_pieces_to_request.len() > 0 {
-                if *outstanding_reqs > MAX_OUTSTANDING_METADATA_PIECE_REQUESTS_PER_PEER {
+            if metadata_pieces_to_request_idx >= metadata_pieces_to_request.len() {
+                break;
+            }
+            while metadata_pieces_to_request_idx < metadata_pieces_to_request.len() {
+                if *outstanding_reqs >= MAX_OUTSTANDING_METADATA_PIECE_REQUESTS_PER_PEER {
                     break;
-                } else {
-                    let piece_to_request = metadata_pieces_to_request[0];
-                    self.metadata_piece_download_status[piece_to_request] =
-                        (false, peer_addr.clone(), now);
-                    new_metadata_piece_requests.push((peer_addr.clone(), piece_to_request));
                 }
-                metadata_pieces_to_request.remove(0);
+                let piece_to_request = metadata_pieces_to_request[metadata_pieces_to_request_idx];
+                self.metadata_piece_download_status[piece_to_request] =
+                    (false, peer_addr.clone(), now);
+                new_metadata_piece_requests.push((peer_addr.clone(), piece_to_request));
+                *outstanding_reqs += 1;
+                metadata_pieces_to_request_idx += 1;
             }
         }
 
