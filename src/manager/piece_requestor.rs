@@ -141,7 +141,7 @@ impl PieceRequestor {
                     peer_addr,
                     *piece_idx,
                     incomplete_piece.clone(),
-                    peer.get_reqq(),
+                    capped_reqq(peer.get_reqq()),
                 );
                 requests_to_send.push((peer_addr.clone(), reqs_for_piece));
             } else {
@@ -202,10 +202,7 @@ impl PieceRequestor {
                         .get(*peer_addr)
                         .map(|o| o.len())
                         .unwrap_or(0)
-                        < min(
-                            peer.get_reqq(),
-                            MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT,
-                        )
+                        < capped_reqq(peer.get_reqq())
             })
             .map(|(peer_addr, peer)| {
                 let outstanding_piece_block_requests_count = self
@@ -249,10 +246,7 @@ impl PieceRequestor {
 
         if peers_ready_for_new_requests.len() > 0 {
             let peer_addr = peers_ready_for_new_requests[0].0;
-            let request_count = min(
-                peers_ready_for_new_requests[0].1.get_reqq(),
-                MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT,
-            );
+            let request_count = capped_reqq(peers_ready_for_new_requests[0].1.get_reqq());
             let reqs = self.generate_requests_to_send_for_piece(
                 &peer_addr,
                 piece_idx,
@@ -328,6 +322,7 @@ impl PieceRequestor {
             return Vec::new();
         }
         let mut requests_to_send: Vec<BlockRequest> = Vec::new();
+        let request_count = capped_reqq(peer.get_reqq());
 
         // 1. send requests for new blocks for pieces currently downloading
         match self.requested_pieces.get(peer_addr) {
@@ -339,7 +334,7 @@ impl PieceRequestor {
                             peer_addr,
                             piece_idx,
                             incomplete_piece,
-                            peer.get_reqq(),
+                            request_count,
                         );
                         requests_to_send.append(reqs);
                     }
@@ -349,15 +344,17 @@ impl PieceRequestor {
 
         // 2. assign incomplete pieces if not assigned yet
         for (piece_idx, piece) in file_manager.incomplete_pieces().iter() {
-            if !self.peer_can_allocate_requests(peer_addr, peer.get_reqq()) {
+            if !self.peer_can_allocate_requests(peer_addr, request_count) {
                 break;
             }
-            if !self.outstanding_piece_assignments.contains_key(piece_idx) {
+            if peer.have_piece(*piece_idx)
+                && !self.outstanding_piece_assignments.contains_key(piece_idx)
+            {
                 let reqs = &mut self.generate_requests_to_send_for_piece(
                     peer_addr,
                     *piece_idx,
                     piece.clone(),
-                    peer.get_reqq(),
+                    request_count,
                 );
                 requests_to_send.append(reqs);
             }
@@ -368,8 +365,11 @@ impl PieceRequestor {
             if self.outstanding_piece_assignments.len() > MAX_OUTSTANDING_PIECES {
                 break;
             }
-            if !self.peer_can_allocate_requests(peer_addr, peer.get_reqq()) {
+            if !self.peer_can_allocate_requests(peer_addr, request_count) {
                 break;
+            }
+            if !peer.have_piece(*piece_idx) {
+                continue;
             }
             if self.outstanding_piece_assignments.contains_key(&piece_idx) {
                 continue; // piece is already assigned, skip this
@@ -378,11 +378,18 @@ impl PieceRequestor {
                 peer_addr,
                 *piece_idx,
                 Piece::new(file_manager.piece_length(*piece_idx)),
-                peer.get_reqq(),
+                request_count,
             );
             requests_to_send.append(reqs);
         }
 
         requests_to_send
     }
+}
+
+fn capped_reqq(reqs: usize) -> usize {
+    return min(
+        reqs,
+        MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT,
+    );
 }
