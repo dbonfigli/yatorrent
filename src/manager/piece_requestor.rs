@@ -123,14 +123,18 @@ impl PieceRequestor {
 
         // 1. send requests for new blocks for pieces currently downloading
         let mut piece_idx_to_remove = Vec::new();
-        let outstanding_piece_assignments = self.outstanding_piece_assignments.clone();
-        for (piece_idx, peer_addr) in outstanding_piece_assignments.iter() {
+        for (piece_idx, peer_addr) in self
+            .outstanding_piece_assignments
+            .iter()
+            .map(|(i, p)| (*i, p.clone()))
+            .collect::<Vec<(usize, PeerAddr)>>()
+        {
             if let Some(incomplete_piece) = self
                 .requested_pieces
-                .get(peer_addr)
+                .get(&peer_addr)
                 .and_then(|requested_pieces_for_peer| requested_pieces_for_peer.get(&piece_idx))
             {
-                let peer = match peers.get(peer_addr) {
+                let peer = match peers.get(&peer_addr) {
                     None => continue,
                     Some(p) => p,
                 };
@@ -138,17 +142,17 @@ impl PieceRequestor {
                     continue;
                 }
                 let reqs_for_piece = self.generate_requests_to_send_for_piece(
-                    peer_addr,
-                    *piece_idx,
+                    &peer_addr,
+                    piece_idx,
                     incomplete_piece.clone(),
                     capped_reqq(peer.get_reqq()),
                 );
-                requests_to_send.push((peer_addr.clone(), reqs_for_piece));
+                requests_to_send.push((peer_addr, reqs_for_piece));
             } else {
                 log::warn!(
                     "could not find requested piece {piece_idx} for peer {peer_addr}, this should never happen"
                 );
-                piece_idx_to_remove.push(*piece_idx);
+                piece_idx_to_remove.push(piece_idx);
             }
         }
         for idx in piece_idx_to_remove {
@@ -328,7 +332,11 @@ impl PieceRequestor {
         match self.requested_pieces.get(peer_addr) {
             None => {} // the peer has no current piece assigned
             Some(requested_pieces_for_peer) => {
-                for (piece_idx, incomplete_piece) in requested_pieces_for_peer.clone() {
+                for (piece_idx, incomplete_piece) in requested_pieces_for_peer
+                    .iter()
+                    .map(|(i, p)| (*i, p.clone()))
+                    .collect::<Vec<(usize, Piece)>>()
+                {
                     if !file_manager.piece_completion_status(piece_idx) {
                         let reqs = &mut self.generate_requests_to_send_for_piece(
                             peer_addr,
