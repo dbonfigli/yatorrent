@@ -3,7 +3,7 @@ use std::cmp;
 #[derive(PartialEq, Debug, Clone)]
 pub struct Piece {
     length: u64,
-    fragments: Vec<(u64, u64)>, // begin, end
+    fragments: Vec<(u64, u64)>, // begin, end (inclusive)
 }
 
 impl Piece {
@@ -15,7 +15,7 @@ impl Piece {
     }
 
     pub fn contains(&self, begin: u64, end: u64) -> bool {
-        assert!(begin < end || end < self.length);
+        assert!(begin <= end && end < self.length);
         match self.get_fragment_idx_containing_value(begin) {
             None => false,
             Some(idx) => {
@@ -28,7 +28,7 @@ impl Piece {
     }
 
     pub fn add_fragment(&mut self, begin: u64, end: u64) {
-        assert!(begin < end || end < self.length);
+        assert!(begin <= end && end < self.length);
         if self.fragments.len() == 0 {
             self.fragments.push((begin, end));
             return;

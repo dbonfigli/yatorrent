@@ -363,7 +363,7 @@ impl FileManager {
             .entry(piece_idx)
             .or_insert(Piece::new(piece_len));
 
-        if piece.contains(block_begin, block_begin + data_len) {
+        if piece.contains(block_begin, block_begin + data_len - 1) {
             log::trace!(
                 "we already have written all the data in this block (begin: {block_begin} length: {data_len}) for piece {piece_idx}, will avoid writing it again"
             );
