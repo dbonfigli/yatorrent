@@ -349,7 +349,7 @@ impl PieceRequestor {
 
         // 2. assign incomplete pieces if not assigned yet
         for (piece_idx, piece) in file_manager.incomplete_pieces().iter() {
-            if self.peer_can_allocate_requests(peer_addr, peer.get_reqq()) {
+            if !self.peer_can_allocate_requests(peer_addr, peer.get_reqq()) {
                 break;
             }
             if !self.outstanding_piece_assignments.contains_key(piece_idx) {
@@ -368,7 +368,7 @@ impl PieceRequestor {
             if self.outstanding_piece_assignments.len() > MAX_OUTSTANDING_PIECES {
                 break;
             }
-            if self.peer_can_allocate_requests(peer_addr, peer.get_reqq()) {
+            if !self.peer_can_allocate_requests(peer_addr, peer.get_reqq()) {
                 break;
             }
             if self.outstanding_piece_assignments.contains_key(&piece_idx) {
