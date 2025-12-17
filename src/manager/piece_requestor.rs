@@ -214,7 +214,7 @@ impl PieceRequestor {
                     .map(|o| o.len())
                     .unwrap_or(0);
                 let concurrent_requested_pieces_count = self
-                    .outstanding_piece_block_requests
+                    .requested_pieces
                     .get(peer_addr)
                     .map(|o| o.len())
                     .unwrap_or(0);
