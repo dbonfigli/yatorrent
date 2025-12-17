@@ -54,6 +54,7 @@ impl FileHandles {
                 if let Some(dir) = file_path.parent() {
                     fs::create_dir_all(dir)?;
                 }
+                self.opened_for_write.insert(file_path.clone());
             }
             let f = File::options()
                 .read(true)
