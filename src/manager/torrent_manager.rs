@@ -1442,6 +1442,8 @@ impl TorrentManager {
 
         if self.request_timeout != ENDGAME_REQUEST_TIMEOUT {
             // during endgame we shorten the timeout, we cannot really affort canceling requests since they could come later with such short timeout
+            // todo: this is really bad, in theory "cancel" exists basically to avoid being horribly inefficent during the endgame, we are really misbheaving here
+            // we should find a way to play nicer here
             for (peer_addr, req) in expired_piece_blocks_requests {
                 if let Some(peer) = self.peers.get_mut(&peer_addr) {
                     peer.send(ToPeerMsg::Send(Message::Cancel(req))).await;
