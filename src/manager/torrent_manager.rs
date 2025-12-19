@@ -1436,8 +1436,14 @@ impl TorrentManager {
         // remove requests to choked peers that have been lingering for some time
         // or requests that have not been fulfilled for some time, even if unchoked,
         // most probably they have been silently dropped by the peer even if it is still alive
-        self.piece_requestor
+        let expired_piece_blocks_requests = self
+            .piece_requestor
             .remove_stale_requests(self.request_timeout, &self.peers);
+        for (peer_addr, req) in expired_piece_blocks_requests {
+            if let Some(peer) = self.peers.get_mut(&peer_addr) {
+                peer.send(ToPeerMsg::Send(Message::Cancel(req))).await;
+            }
+        }
 
         // compute requests from piece requestor
         let reqs_to_send = self

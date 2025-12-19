@@ -88,9 +88,11 @@ impl PieceRequestor {
         &mut self,
         request_timeout: Duration,
         peers: &HashMap<String, Peer>,
-    ) {
+    ) -> Vec<(PeerAddr, BlockRequest)> // expired block requests that should be canceled
+    {
         self.remove_assigments_to_choked(peers);
 
+        let mut requests_to_cancel = Vec::<(PeerAddr, BlockRequest)>::new();
         let now = SystemTime::now();
         self.outstanding_piece_block_requests.iter_mut().for_each(
             |(peer_addr, outstanding_block_requests_for_peer)| {
@@ -101,6 +103,7 @@ impl PieceRequestor {
                         } else {
                             log::debug!("removed stale request to peer: {}: (piece idx: {}, block begin: {}, length: {})",
                                 *peer_addr, block_request.piece_idx, block_request.block_begin, block_request.data_len);
+                            requests_to_cancel.push((peer_addr.clone(), block_request.clone()));
                             // if a block stalled, we remove the assigment of the piece to this peer, with all associated block requests
                             if let Some(requested_pieces_for_peer) = self.requested_pieces.get_mut(peer_addr) {
                                 requested_pieces_for_peer.remove(&(block_request.piece_idx as usize));
@@ -112,6 +115,8 @@ impl PieceRequestor {
                 );
             },
         );
+
+        requests_to_cancel
     }
 
     pub fn generate_requests_to_send(
