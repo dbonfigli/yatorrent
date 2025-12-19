@@ -19,7 +19,7 @@ const BLOCK_SIZE_B: u64 = 16384;
 // even if specs says:
 // "The client should not attempt to send requests for blocks, and it should consider all pending (unanswered) requests to be discarded by the remote peer."
 // here we wait a bit before considering the request lost and reassign pieces assigned to a choked peer to another peer
-const CHOKED_PEER_ASSIGMENTS_GRACE_PERIOD: Duration = Duration::from_secs(5);
+const CHOKED_PEER_ASSIGMENTS_GRACE_PERIOD: Duration = Duration::from_secs(15);
 
 pub struct PieceRequestor {
     outstanding_piece_assignments: HashMap<usize, PeerAddr>, // piece idx -> peer_addr
@@ -54,7 +54,17 @@ impl PieceRequestor {
 
     pub fn block_request_completed(&mut self, peer_addr: &PeerAddr, block_request: &BlockRequest) {
         if let Some(reqs) = self.outstanding_piece_block_requests.get_mut(peer_addr) {
-            reqs.remove(block_request);
+            if let None = reqs.remove(block_request) {
+                log::debug!(
+                    "we received block {:?} from {peer_addr} but request was expired",
+                    block_request
+                );
+            }
+        } else {
+            log::debug!(
+                "we received block {:?} from {peer_addr} but request was expired (no outstanding piece requests from this peer at all)",
+                block_request
+            );
         }
     }
 
