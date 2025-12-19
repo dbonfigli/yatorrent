@@ -1439,9 +1439,13 @@ impl TorrentManager {
         let expired_piece_blocks_requests = self
             .piece_requestor
             .remove_stale_requests(self.request_timeout, &self.peers);
-        for (peer_addr, req) in expired_piece_blocks_requests {
-            if let Some(peer) = self.peers.get_mut(&peer_addr) {
-                peer.send(ToPeerMsg::Send(Message::Cancel(req))).await;
+
+        if self.request_timeout != ENDGAME_REQUEST_TIMEOUT {
+            // during endgame we shorten the timeout, we cannot really affort canceling requests since they could come later with such short timeout
+            for (peer_addr, req) in expired_piece_blocks_requests {
+                if let Some(peer) = self.peers.get_mut(&peer_addr) {
+                    peer.send(ToPeerMsg::Send(Message::Cancel(req))).await;
+                }
             }
         }
 
