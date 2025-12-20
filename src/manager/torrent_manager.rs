@@ -14,6 +14,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use crate::dht::dht_manager::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMsg};
+use crate::manager::bandwidth_tracker::BandwidthTracker;
 use crate::manager::metadata_handler::MetadataHandler;
 use crate::manager::peer::{
     self, MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER, PeerAddr, PeersToManagerMsg,
@@ -91,6 +92,8 @@ pub struct Peer {
     last_metadata_request_rejection: SystemTime,
     corruption_errors: u32,
     reqq: usize, // reqq received from peer
+    bandwidth_tracker: BandwidthTracker,
+    client_version: Option<String>,
 }
 
 enum MetadataMessage {
@@ -129,6 +132,8 @@ impl Peer {
             last_metadata_request_rejection: SystemTime::UNIX_EPOCH,
             corruption_errors: 0, // number of corrupted block received by this peer
             reqq: DEFAULT_MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER, // the number of outstanding request messages this client supports without dropping any
+            bandwidth_tracker: BandwidthTracker::new(),
+            client_version: Option::None,
         }
     }
 
@@ -249,11 +254,7 @@ pub struct TorrentManager {
     peers: HashMap<PeerAddr, Peer>,
     advertised_peers: Arc<Mutex<HashMap<PeerAddr, (tracker::Peer, SystemTime)>>>, // peer addr -> (peer, last connection attempt)
     bad_peers: HashSet<PeerAddr>, // todo: remove old bad peers after a while?
-    last_bandwidth_poll: SystemTime,
-    uploaded_bytes: u64,
-    downloaded_bytes: u64,
-    uploaded_bytes_previous_poll: u64,
-    downloaded_bytes_previous_poll: u64,
+    bandwidth_tracker: BandwidthTracker,
     piece_requestor: PieceRequestor,
     completed_sent_to_tracker: bool,
     listening_dht_port: u16,
@@ -349,11 +350,7 @@ impl TorrentManager {
             peers: HashMap::new(),
             advertised_peers,
             bad_peers: HashSet::new(),
-            last_bandwidth_poll: SystemTime::now(),
-            uploaded_bytes: 0,
-            downloaded_bytes: 0,
-            uploaded_bytes_previous_poll: 0,
-            downloaded_bytes_previous_poll: 0,
+            bandwidth_tracker: BandwidthTracker::new(),
             piece_requestor: PieceRequestor::new(),
             completed_sent_to_tracker: false,
             listening_dht_port,
@@ -642,6 +639,7 @@ impl TorrentManager {
         };
 
         if !peer.am_choking {
+            // todo: chocking algorithm is really naive, must improve it to avoid saturating upload
             if should_choke(
                 self.peers_to_torrent_manager_tx.capacity(),
                 peer.outstanding_incoming_piece_block_requests,
@@ -670,10 +668,8 @@ impl TorrentManager {
                             data,
                         )))
                         .await;
-
-                        // todo: this is really naive, must avoid saturating upload
-
-                        self.uploaded_bytes += data_len; // todo: we are not keeping track of cancelled pieces
+                        peer.bandwidth_tracker.add_uploaded_bytes(data_len);
+                        self.bandwidth_tracker.add_uploaded_bytes(data_len); // todo: we are not keeping track of cancelled pieces
                     }
                 }
             }
@@ -702,6 +698,9 @@ impl TorrentManager {
             if let Some(Value::Int(reqq)) = d.get(&(b"reqq".to_vec())) {
                 peer.reqq = *reqq as usize;
                 log::debug!("{peer_addr} (version: {client_version}) has reqq: {reqq}");
+            }
+            if peer.client_version.is_none() {
+                peer.client_version = Some(client_version);
             }
         }
 
@@ -1042,6 +1041,11 @@ impl TorrentManager {
         }
 
         let data_len = data.len() as u64;
+        self.bandwidth_tracker.add_downloaded_bytes(data_len);
+        if let Some(peer) = self.peers.get_mut(&peer_addr) {
+            peer.bandwidth_tracker.add_downloaded_bytes(data_len);
+        }
+
         match self
             .file_manager
             .as_mut()
@@ -1049,8 +1053,6 @@ impl TorrentManager {
             .write_piece_block(piece_idx as usize, data, begin as u64)
         {
             Ok(piece_completed) => {
-                self.downloaded_bytes += data_len;
-
                 self.piece_requestor.block_request_completed(
                     &peer_addr,
                     &BlockRequest {
@@ -1215,7 +1217,9 @@ impl TorrentManager {
     }
 
     async fn handle_ticker(&mut self) {
+        self.update_bandwidth_stats();
         self.log_stats(self.peers_to_torrent_manager_tx.capacity());
+        self.log_peers_stats();
         self.connect_to_new_peers().await;
         self.send_keep_alives().await;
         self.send_status_to_tracker().await;
@@ -1225,6 +1229,13 @@ impl TorrentManager {
         self.send_pex_messages().await;
         self.send_metadata_reqs().await;
         self.send_pieces_reqs().await;
+    }
+
+    fn update_bandwidth_stats(&mut self) {
+        self.bandwidth_tracker.update();
+        for (_, peer) in self.peers.iter_mut() {
+            peer.bandwidth_tracker.update();
+        }
     }
 
     async fn connect_to_new_peers(&mut self) {
@@ -1476,8 +1487,8 @@ impl TorrentManager {
         self.last_tracker_request_time = SystemTime::now();
         let bytes_left = self.file_manager.as_ref().map(|f| f.bytes_left());
         let info_hash = self.info_hash;
-        let uploaded_bytes = self.uploaded_bytes;
-        let downloaded_bytes = self.downloaded_bytes;
+        let uploaded_bytes = self.bandwidth_tracker.uploaded_bytes();
+        let downloaded_bytes = self.bandwidth_tracker.downloaded_bytes();
         let advertised_peers = self.advertised_peers.clone();
         let tracker_client_mg = self
             .tracker_client
@@ -1561,28 +1572,15 @@ impl TorrentManager {
         }
     }
 
-    fn log_stats(&mut self, peers_to_torrent_manager_channel_capacity: usize) {
+    fn log_stats(&self, peers_to_torrent_manager_channel_capacity: usize) {
         let advertised_peers_lock = self
             .advertised_peers
             .lock()
             .expect("another user panicked while holding the lock");
         let advertised_peers_len = advertised_peers_lock.len();
         drop(advertised_peers_lock);
-        let now = SystemTime::now();
-        let elapsed_s = now
-            .duration_since(self.last_bandwidth_poll)
-            .unwrap_or_default()
-            .as_millis() as f64
-            / 1000f64;
-        let bandwidth_up =
-            (self.uploaded_bytes - self.uploaded_bytes_previous_poll) as f64 / elapsed_s;
-        let bandwidth_down =
-            (self.downloaded_bytes - self.downloaded_bytes_previous_poll) as f64 / elapsed_s;
-        self.uploaded_bytes_previous_poll = self.uploaded_bytes;
-        self.downloaded_bytes_previous_poll = self.downloaded_bytes;
-        self.last_bandwidth_poll = now;
         log::info!(
-            "left: {left}, pieces: {completed_pieces}/{total_pieces} metadata pieces: {known_metadata_pieces}/{total_metadata_pieces} | Up: {up_band}/s, Down: {down_band}/s (tot.: {tot_up}, {tot_down}), wasted: {wasted} | known peers from advertising: {known_peers} (bad: {bad_peers}), connected: {connected_peers}, unchoked: {unchoked_peers} | pending peers_to_torrent_manager msgs: {cur_ch_cap}/{tot_ch_cap}",
+            "left: {left}, pieces: {completed_pieces}/{total_pieces} metadata pieces: {known_metadata_pieces}/{total_metadata_pieces} | {bandwidth_tracker}, wasted: {wasted} | known peers from advertising: {known_peers} (bad: {bad_peers}), connected: {connected_peers}, unchoked: {unchoked_peers} | pending peers_to_torrent_manager msgs: {cur_ch_cap}/{tot_ch_cap}",
             left = self
                 .file_manager
                 .as_ref()
@@ -1598,18 +1596,7 @@ impl TorrentManager {
                 .as_ref()
                 .map(|f| f.num_pieces().to_string())
                 .unwrap_or("?".to_string()),
-            up_band = Size::from_bytes(bandwidth_up)
-                .format()
-                .with_style(Style::Abbreviated),
-            down_band = Size::from_bytes(bandwidth_down)
-                .format()
-                .with_style(Style::Abbreviated),
-            tot_up = Size::from_bytes(self.uploaded_bytes)
-                .format()
-                .with_style(Style::Abbreviated),
-            tot_down = Size::from_bytes(self.downloaded_bytes)
-                .format()
-                .with_style(Style::Abbreviated),
+            bandwidth_tracker = self.bandwidth_tracker,
             wasted = Size::from_bytes(
                 self.file_manager
                     .as_ref()
@@ -1635,6 +1622,27 @@ impl TorrentManager {
             },
             tot_ch_cap = PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY,
         );
+    }
+
+    fn log_peers_stats(&self) {
+        for (peer_addr, peer) in self.peers.iter() {
+            let pending_block_requests = self
+                .piece_requestor
+                .get_pending_block_requests_for_peer(peer_addr);
+            let bandwidth_up = peer.bandwidth_tracker.bandwidth_up();
+            let bandwidth_down = peer.bandwidth_tracker.bandwidth_down();
+            if (!peer.is_peer_choking() && pending_block_requests > 0)
+                || bandwidth_down > 0.0
+                || bandwidth_up > 0.0
+            {
+                log::info!(
+                    "{peer_addr:>22} {bandwidth_tracker}, pending blocks: {pending_block_requests} (on {assigned_pieces} pieces), client: {client_version}",
+                    bandwidth_tracker = peer.bandwidth_tracker,
+                    assigned_pieces = self.piece_requestor.get_assigned_pieces_for_peer(peer_addr),
+                    client_version = peer.client_version.as_deref().unwrap_or("unknown"),
+                )
+            }
+        }
     }
 
     fn corrupted_metadata(&mut self, error: Error) {

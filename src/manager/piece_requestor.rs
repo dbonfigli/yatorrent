@@ -52,13 +52,32 @@ impl PieceRequestor {
         }
     }
 
+    pub fn get_pending_block_requests_for_peer(&self, peer_addr: &PeerAddr) -> usize {
+        self.outstanding_piece_block_requests
+            .get(peer_addr)
+            .map_or(0, |o| o.len())
+    }
+
+    pub fn get_assigned_pieces_for_peer(&self, peer_addr: &PeerAddr) -> usize {
+        self.requested_pieces.get(peer_addr).map_or(0, |r| r.len())
+    }
+
     pub fn block_request_completed(&mut self, peer_addr: &PeerAddr, block_request: &BlockRequest) {
         if let Some(reqs) = self.outstanding_piece_block_requests.get_mut(peer_addr) {
-            if let None = reqs.remove(block_request) {
-                log::debug!(
+            match reqs.remove(block_request) {
+                None => log::debug!(
                     "we received block {:?} from {peer_addr} but request was expired",
                     block_request
-                );
+                ),
+                Some(t) => {
+                    let now = SystemTime::now();
+                    if now.duration_since(t).unwrap_or_default() > Duration::from_secs(60) {
+                        log::debug!(
+                            "requested block from {peer_addr} arrived after {:#?}",
+                            now.duration_since(t).unwrap_or_default()
+                        );
+                    }
+                }
             }
         } else {
             log::debug!(
