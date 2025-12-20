@@ -11,6 +11,9 @@ use std::fmt::Display;
 use std::{fmt, io::Read, str, time::Duration};
 use thiserror::Error;
 
+const DEFAULT_TRACKER_REQUEST_INTERVAL: Duration = Duration::from_secs(600); // high interval by default to avoid bombarding tracker before we get the proper interval from it
+const TRACKER_REQUEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const TRACKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const UDP_TIMEOUT: Duration = Duration::from_secs(15);
 const UDP_RETRY_COOL_OFF_SEC: u64 = 15;
 const UDP_MAX_RETRIES: u32 = 3; // according to https://www.bittorrent.org/beps/bep_0015.html it should be 8, but it is way too much
@@ -121,7 +124,7 @@ impl TrackerClient {
             tracker_id: None,
             listening_port,
             trackers_url: randomized_tiers,
-            tracker_request_interval: Duration::from_secs(600), // high interval by default to avoid bombarding tracker before we get the proper interval from it
+            tracker_request_interval: DEFAULT_TRACKER_REQUEST_INTERVAL,
         }
     }
 
@@ -273,8 +276,8 @@ impl TrackerClient {
         log::debug!("requesting url: {url}");
 
         let body: Vec<u8> = match ClientBuilder::new()
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(10))
+            .connect_timeout(TRACKER_REQUEST_CONNECT_TIMEOUT)
+            .timeout(TRACKER_REQUEST_TIMEOUT)
             .build()?
             .get(url)
             .send()

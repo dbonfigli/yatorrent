@@ -32,6 +32,10 @@ const INFLIGHT_FIND_NODE_TIMEOUT: Duration = Duration::from_secs(12);
 const INFLIGHT_GET_PEERS_TIMEOUT: Duration = Duration::from_secs(12);
 const INFLIGHT_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 const ROUTING_TABLE_REFRESH_TIME: Duration = Duration::from_secs(60);
+const TICK_INTERVAL: Duration = Duration::from_secs(1);
+const NODE_NO_INBOUND_TRAFFIC_FAILURE_TIMEOUT: Duration = Duration::from_secs(900);
+const PING_INTERVAL: Duration = Duration::from_secs(60);
+const NODE_INACTIVITY_PING_THRESHOLD: Duration = Duration::from_secs(600);
 
 const WELL_KNOWN_BOOTSTRAP_NODES: &[&str] = &[
     "dht.libtorrent.org:25401",
@@ -197,7 +201,7 @@ impl DhtManager {
     ) {
         // start ticker
         let (tick_tx, mut tick_rx) = mpsc::channel(1);
-        start_tick(tick_tx, Duration::from_secs(1)).await;
+        start_tick(tick_tx, TICK_INTERVAL).await;
 
         // open ipv4 socket
         let socket = UdpSocket::bind(format!("0.0.0.0:{}", self.listening_dht_port))
@@ -303,8 +307,9 @@ impl DhtManager {
 
         for n in self.routing_table.as_mut_vec() {
             // ping nodes if not seen a reply in the last 10 minutes and last pinged less than 2 minutes ago
-            if now.duration_since(n.last_replied).unwrap_or_default() > Duration::from_secs(600)
-                && now.duration_since(n.last_pinged).unwrap_or_default() > Duration::from_secs(60)
+            if now.duration_since(n.last_replied).unwrap_or_default()
+                > NODE_INACTIVITY_PING_THRESHOLD
+                && now.duration_since(n.last_pinged).unwrap_or_default() > PING_INTERVAL
             {
                 n.last_pinged = now;
                 self.msg_sender
@@ -318,8 +323,10 @@ impl DhtManager {
                     .await;
             }
 
-            // accumulate nodes to be removed if not active anymore in the last 15 minutes
-            if now.duration_since(n.last_replied).unwrap_or_default() > Duration::from_secs(900) {
+            // accumulate nodes to be removed if not active anymore
+            if now.duration_since(n.last_replied).unwrap_or_default()
+                > NODE_NO_INBOUND_TRAFFIC_FAILURE_TIMEOUT
+            {
                 nodes_to_be_removed.push(n.clone());
             }
         }

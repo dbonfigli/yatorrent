@@ -16,6 +16,8 @@ const MAX_OUTSTANDING_PIECES: usize = 2000;
 const MIN_OUTSTANDING_BLOCK_REQUESTS: usize = 10;
 const BLOCK_SIZE_B: u64 = 16384;
 
+const BLOCK_DELAYED_ARRIVAL_LOG_THRESHOLD: Duration = Duration::from_secs(60);
+
 // some peers choke and few moments after unchoke (a thing specs call "fibrillation").
 // even if specs says:
 // "The client should not attempt to send requests for blocks, and it should consider all pending (unanswered) requests to be discarded by the remote peer."
@@ -72,7 +74,9 @@ impl PieceRequestor {
                 ),
                 Some(t) => {
                     let now = SystemTime::now();
-                    if now.duration_since(t).unwrap_or_default() > Duration::from_secs(60) {
+                    if now.duration_since(t).unwrap_or_default()
+                        > BLOCK_DELAYED_ARRIVAL_LOG_THRESHOLD
+                    {
                         log::debug!(
                             "requested block from {peer_addr} arrived after {:#?}",
                             now.duration_since(t).unwrap_or_default()

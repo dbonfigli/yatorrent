@@ -48,6 +48,7 @@ const TO_PEER_CHANNEL_CAPACITY: usize =
     MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT + 700;
 const TO_PEER_CANCEL_CHANNEL_CAPACITY: usize =
     MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT + 200;
+const TICK_INTERVAL: Duration = Duration::from_secs(1);
 
 // can be retrieved per peer if it supports extensions, dict key "reqq",
 // seen: deluge: 2000, qbittorrent: 500, transmission: 500, utorrent: 255, freebox bittorrent 2: 768, maybe variable.
@@ -419,7 +420,7 @@ impl TorrentManager {
 
         // start ticker
         let (tick_tx, tick_rx) = mpsc::channel(1);
-        start_tick(tick_tx, Duration::from_secs(1)).await;
+        start_tick(tick_tx, TICK_INTERVAL).await;
 
         // start control loop to handle channel messages - will block forever
         self.control_loop(tick_rx, dht_to_torrent_manager_rx).await;

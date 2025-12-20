@@ -19,6 +19,8 @@ use crate::util::{force_string, pretty_info_hash};
 pub const MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER: i64 = 500;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 const CANCELLATION_DURATION: Duration = Duration::from_secs(120);
+const PEER_NO_INBOUND_TRAFFIC_FAILURE_TIMEOUT: Duration = Duration::from_secs(180);
+
 const UT_PEX_EXTENSION_ID: i64 = 1;
 const UT_METADATA_EXTENSION_ID: i64 = 2;
 pub enum ToPeerMsg {
@@ -374,10 +376,15 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
     mut wire_proto: T,
 ) {
     loop {
-        match timeout(Duration::from_secs(180), wire_proto.receive()).await {
+        match timeout(
+            PEER_NO_INBOUND_TRAFFIC_FAILURE_TIMEOUT,
+            wire_proto.receive(),
+        )
+        .await
+        {
             Err(_elapsed) => {
                 log::trace!(
-                    "did not receive anything (not even keep-alive messages) from peer in 3 minutes {peer_addr}"
+                    "did not receive anything (not even keep-alive messages) from peer in {PEER_NO_INBOUND_TRAFFIC_FAILURE_TIMEOUT:#?} {peer_addr}"
                 );
                 send_to_torrent_manager(
                     &peers_to_torrent_manager_tx,
