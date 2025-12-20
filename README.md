@@ -45,7 +45,6 @@ Things yet to be implemented / todos:
 - cache writes
 - optionally limit upload/download speed
 - better choking algorithm
-- better block requests pipelining algorithm: use also peer bandwidth stats, tune request queue size
 - check for stalled downloads / try new peers if no current one has a piece we want
 - better algorithm to exclude bad peers for new connections
 - remove not interested peers if we are also not interested if connection count is high

@@ -153,6 +153,10 @@ impl Peer {
         self.haves.as_ref().map_or(false, |haves| haves[piece_idx])
     }
 
+    pub fn bandwidth_tracker(&self) -> &BandwidthTracker {
+        &self.bandwidth_tracker
+    }
+
     async fn send(&mut self, msg: ToPeerMsg) {
         if self.to_peer_tx.capacity() <= 5 {
             log::warn!("low to_peer_tx capacity: {}", self.to_peer_tx.capacity());

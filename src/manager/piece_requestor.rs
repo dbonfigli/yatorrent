@@ -5,7 +5,7 @@ use crate::{
 };
 use rand::seq::SliceRandom;
 use std::{
-    cmp::{Ordering, min},
+    cmp::{Ordering, max, min},
     collections::HashMap,
     time::{Duration, SystemTime},
 };
@@ -13,6 +13,7 @@ use std::{
 pub const MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT: usize = 3000;
 
 const MAX_OUTSTANDING_PIECES: usize = 2000;
+const MIN_OUTSTANDING_BLOCK_REQUESTS: usize = 10;
 const BLOCK_SIZE_B: u64 = 16384;
 
 // some peers choke and few moments after unchoke (a thing specs call "fibrillation").
@@ -179,7 +180,7 @@ impl PieceRequestor {
                     &peer_addr,
                     piece_idx,
                     incomplete_piece.clone(),
-                    capped_reqq(peer.get_reqq()),
+                    max_outstanding_reqs(peer),
                 );
                 requests_to_send.push((peer_addr, reqs_for_piece));
             } else {
@@ -240,7 +241,7 @@ impl PieceRequestor {
                         .get(*peer_addr)
                         .map(|o| o.len())
                         .unwrap_or(0)
-                        < capped_reqq(peer.get_reqq())
+                        < max_outstanding_reqs(peer)
             })
             .map(|(peer_addr, peer)| {
                 let outstanding_piece_block_requests_count = self
@@ -284,7 +285,7 @@ impl PieceRequestor {
 
         if peers_ready_for_new_requests.len() > 0 {
             let peer_addr = peers_ready_for_new_requests[0].0;
-            let request_count = capped_reqq(peers_ready_for_new_requests[0].1.get_reqq());
+            let request_count = max_outstanding_reqs(peers_ready_for_new_requests[0].1);
             let reqs = self.generate_requests_to_send_for_piece(
                 &peer_addr,
                 piece_idx,
@@ -360,7 +361,7 @@ impl PieceRequestor {
             return Vec::new();
         }
         let mut requests_to_send: Vec<BlockRequest> = Vec::new();
-        let request_count = capped_reqq(peer.get_reqq());
+        let request_count = max_outstanding_reqs(peer);
 
         // 1. send requests for new blocks for pieces currently downloading
         match self.requested_pieces.get(peer_addr) {
@@ -429,9 +430,21 @@ impl PieceRequestor {
     }
 }
 
-fn capped_reqq(reqs: usize) -> usize {
-    return min(
-        reqs,
+fn max_outstanding_reqs(peer: &Peer) -> usize {
+    // we want to pipeline requests to a peer so that we ask twice as much the current download rate
+    let bandwidth_down = peer.bandwidth_tracker().bandwidth_down();
+    let reqs_to_fill_cur_bandwidth_twice = (bandwidth_down / BLOCK_SIZE_B as f64 * 2.) as usize;
+
+    // if current bandwith is 0, we want at least some requests to be performed
+    let min_reqs = max(
+        MIN_OUTSTANDING_BLOCK_REQUESTS,
+        reqs_to_fill_cur_bandwidth_twice,
+    );
+
+    // we never want to go above peer advertised reqq, and never too much also
+    let max_reqs = min(
+        peer.get_reqq(),
         MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT,
     );
+    return min(min_reqs, max_reqs);
 }
