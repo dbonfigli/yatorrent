@@ -474,7 +474,7 @@ impl TorrentManager {
             Message::Unchoke => {
                 if let Some(peer) = self.peers.get_mut(&peer_addr) {
                     peer.peer_choking = false;
-                    log::debug!("received unchoke from {peer_addr}");
+                    log::trace!("received unchoke from {peer_addr}");
                     // since we received an unchoke, we can try to send more requests immediately to this peer, without waiting for a tick
                     self.send_pieces_reqs_for_peer(peer_addr).await;
                 }
@@ -619,7 +619,7 @@ impl TorrentManager {
             None => return,
         };
 
-        log::debug!(
+        log::trace!(
             "received choke from peer {peer_addr} with {} outstanding piece block requests",
             self.piece_requestor
                 .outstanding_piece_block_request_count_for_peer(&peer_addr)

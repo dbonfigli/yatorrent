@@ -115,7 +115,7 @@ pub async fn connect_to_new_peer(
                     .await;
                 }
                 Ok(Err(e)) => {
-                    log::trace!("error completing handshake with peer {e}");
+                    log::trace!("error completing handshake with peer {peer_addr}: {e}");
                     send_to_torrent_manager(
                         &peers_to_torrent_manager_tx,
                         PeersToManagerMsg::Error(peer_addr, PeerError::HandshakeError),
@@ -384,7 +384,7 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
         {
             Err(_elapsed) => {
                 log::trace!(
-                    "did not receive anything (not even keep-alive messages) from peer in {PEER_NO_INBOUND_TRAFFIC_FAILURE_TIMEOUT:#?} {peer_addr}"
+                    "did not receive anything (not even keep-alive messages) from peer {peer_addr} in {PEER_NO_INBOUND_TRAFFIC_FAILURE_TIMEOUT:#?}"
                 );
                 send_to_torrent_manager(
                     &peers_to_torrent_manager_tx,
