@@ -1,6 +1,6 @@
 use anyhow::{Error, Result, bail};
 use sha1::{Digest, Sha1};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -17,7 +17,8 @@ use crate::dht::dht_manager::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMs
 use crate::manager::bandwidth_tracker::BandwidthTracker;
 use crate::manager::metadata_handler::MetadataHandler;
 use crate::manager::peer::{
-    self, FastExtensionSupport, MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER, PeerAddr, PeersToManagerMsg, ToPeerCancelMsg, ToPeerMsg
+    self, FastExtensionSupport, MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER, PeerAddr,
+    PeersToManagerMsg, ToPeerCancelMsg, ToPeerMsg,
 };
 use crate::manager::piece_requestor::{
     MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT, PieceRequestor,
@@ -43,11 +44,13 @@ const MAX_CONNECTED_PEERS_TO_ASK_DHT_FOR_MORE: usize = 10;
 const DHT_NEW_PEER_COOL_OFF_PERIOD: Duration = Duration::from_secs(15);
 const DHT_BOOTSTRAP_TIME: Duration = Duration::from_secs(5);
 const KEEP_ALIVE_FREQ: Duration = Duration::from_secs(90);
-const TO_PEER_CHANNEL_CAPACITY: usize =
-    MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT + 700;
+const TO_PEER_CHANNEL_CAPACITY: usize = MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT
+    + MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER as usize
+    + 700;
 const TO_PEER_CANCEL_CHANNEL_CAPACITY: usize =
     MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT + 200;
 const TICK_INTERVAL: Duration = Duration::from_secs(1);
+const RTT_SAMPLES_COUNT: usize = 100;
 
 // can be retrieved per peer if it supports extensions, dict key "reqq",
 // seen: deluge: 2000, qbittorrent: 500, transmission: 500, utorrent: 255, freebox bittorrent 2: 768, maybe variable.
@@ -95,7 +98,7 @@ pub struct Peer {
     bandwidth_tracker: BandwidthTracker,
     client_version: Option<String>,
     rtt: Option<Duration>,
-    rtt_samples: Vec<Duration>,
+    rtt_samples: VecDeque<Duration>,
     supports_fast_extension: bool,
 }
 
@@ -140,7 +143,7 @@ impl Peer {
             client_version: Option::None,
             supports_fast_extension,
             rtt: None,
-            rtt_samples: Vec::new(),
+            rtt_samples: VecDeque::new(),
         }
     }
 
@@ -151,9 +154,9 @@ impl Peer {
     }
 
     fn update_rtt(&mut self, rtt_sample: Duration) {
-        self.rtt_samples.push(rtt_sample);
-        if self.rtt_samples.len() > 50 {
-            self.rtt_samples.remove(0);
+        self.rtt_samples.push_front(rtt_sample);
+        if self.rtt_samples.len() > RTT_SAMPLES_COUNT {
+            self.rtt_samples.pop_back();
         }
         let mut latencies = Duration::ZERO;
         for s in self.rtt_samples.iter() {
@@ -1270,6 +1273,7 @@ impl TorrentManager {
                             continue;
                         }
                         // send "have" to interested peers
+                        // todo: check this better: should we instead send haves to all? or maybe not check the interest flag?
                         if peer.peer_interested
                             && !peer
                                 .haves
