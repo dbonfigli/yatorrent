@@ -13,8 +13,11 @@ use std::{
 pub const MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT: usize = 3000;
 
 const MAX_OUTSTANDING_PIECES: usize = 2000;
-const MIN_OUTSTANDING_BLOCK_REQUESTS: usize = 10;
+const MIN_OUTSTANDING_BLOCK_REQUESTS: usize = 5;
 const BLOCK_SIZE_B: u64 = 16384;
+
+// requests are calculated based on bandwidth so that the fill up the pipe for BUFFER_TIME seconds
+const BUFFER_TIME: f64 = 3.;
 
 const BLOCK_DELAYED_ARRIVAL_LOG_THRESHOLD: Duration = Duration::from_secs(60);
 
@@ -529,14 +532,15 @@ impl PieceRequestor {
 }
 
 fn max_outstanding_reqs(peer: &Peer) -> usize {
-    // we want to pipeline requests to a peer so that we ask twice as much the current download rate
-    let bandwidth_down = peer.bandwidth_tracker().bandwidth_down();
-    let reqs_to_fill_cur_bandwidth_twice = (bandwidth_down / BLOCK_SIZE_B as f64 * 2.) as usize;
+    // we want to pipeline requests to a peer so that the pipe is full for up to BUFFER_TIME seconds
+    let bandwidth_down = peer.bandwidth_tracker().avg_bandwidth_down();
+    let reqs_to_fill_cur_bandwidth_for_buffer_time =
+        (bandwidth_down / BLOCK_SIZE_B as f64 * BUFFER_TIME) as usize;
 
     // if current bandwith is 0, we want at least some requests to be performed
     let min_reqs = max(
         MIN_OUTSTANDING_BLOCK_REQUESTS,
-        reqs_to_fill_cur_bandwidth_twice,
+        reqs_to_fill_cur_bandwidth_for_buffer_time,
     );
 
     // we never want to go above peer advertised reqq, and never too much also
