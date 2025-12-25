@@ -17,8 +17,7 @@ use crate::dht::dht_manager::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMs
 use crate::manager::bandwidth_tracker::BandwidthTracker;
 use crate::manager::metadata_handler::MetadataHandler;
 use crate::manager::peer::{
-    self, MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER, PeerAddr, PeersToManagerMsg,
-    ToPeerCancelMsg, ToPeerMsg,
+    self, FastExtensionSupport, MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER, PeerAddr, PeersToManagerMsg, ToPeerCancelMsg, ToPeerMsg
 };
 use crate::manager::piece_requestor::{
     MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT, PieceRequestor,
@@ -97,6 +96,7 @@ pub struct Peer {
     client_version: Option<String>,
     rtt: Option<Duration>,
     rtt_samples: Vec<Duration>,
+    supports_fast_extension: bool,
 }
 
 enum MetadataMessage {
@@ -115,6 +115,7 @@ impl Peer {
         num_pieces: Option<usize>,
         to_peer_tx: Sender<ToPeerMsg>,
         to_peer_cancel_tx: Sender<ToPeerCancelMsg>,
+        supports_fast_extension: FastExtensionSupport,
     ) -> Self {
         Peer {
             peer_addr,
@@ -137,6 +138,7 @@ impl Peer {
             reqq: DEFAULT_MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER, // the number of outstanding request messages this client supports without dropping any
             bandwidth_tracker: BandwidthTracker::new(),
             client_version: Option::None,
+            supports_fast_extension,
             rtt: None,
             rtt_samples: Vec::new(),
         }
@@ -464,8 +466,8 @@ impl TorrentManager {
                         PeersToManagerMsg::Receive(peer_addr, msg) => {
                             self.handle_receive_message(peer_addr, msg).await;
                         }
-                        PeersToManagerMsg::NewPeer(tcp_stream) => {
-                            self.handle_new_peer(tcp_stream).await;
+                        PeersToManagerMsg::NewPeer(tcp_stream, supports_fast_extension) => {
+                            self.handle_new_peer(tcp_stream, supports_fast_extension).await;
                         }
                         PeersToManagerMsg::PieceBlockRequestFulfilled(peer_addr) => {
                             // should we maybe use a separate channel for this?
@@ -543,6 +545,22 @@ impl TorrentManager {
                 let _ = self
                     .to_dht_manager_tx
                     .send(ToDhtManagerMsg::NewNode(format!("{peer_ip_addr}:{port}")))
+                    .await;
+            }
+            Message::Suggest(piece_idx) => {
+                self.handle_suggest_message(peer_addr, piece_idx).await;
+            }
+            Message::HaveAll => {
+                self.handle_have_all_message(peer_addr).await;
+            }
+            Message::HaveNone => {
+                self.handle_have_none_message(peer_addr).await;
+            }
+            Message::Reject(block_request) => {
+                self.handle_reject_message(peer_addr, block_request).await;
+            }
+            Message::AllowerdFast(piece_idx) => {
+                self.handle_allow_fast_message(peer_addr, piece_idx as usize)
                     .await;
             }
             Message::Extended(extension_id, extended_message, additional_data) => {
@@ -666,41 +684,151 @@ impl TorrentManager {
             None => return,
         };
 
-        if !peer.am_choking {
-            // todo: chocking algorithm is really naive, must improve it to avoid saturating upload
-            if should_choke(
+        if !peer.am_choking
+            && should_choke(
+                // todo: chocking algorithm is really naive, must improve it to avoid saturating upload
                 self.peers_to_torrent_manager_tx.capacity(),
                 peer.outstanding_incoming_piece_block_requests,
                 true,
-            ) {
-                peer.send(ToPeerMsg::Send(Message::Choke)).await;
-                peer.am_choking = true;
-                peer.am_choking_since = SystemTime::now();
-            } else {
-                peer.outstanding_incoming_piece_block_requests += 1;
-                match file_manager.read_piece_block(
-                    block_request.piece_idx as usize,
-                    block_request.block_begin as u64,
-                    block_request.data_len as u64,
-                ) {
-                    Err(e) => {
-                        log::error!("error reading block: {e}");
-                        peer.outstanding_incoming_piece_block_requests -= 1;
-                    }
+            )
+        {
+            peer.send(ToPeerMsg::Send(Message::Choke)).await;
+            peer.am_choking = true;
+            peer.am_choking_since = SystemTime::now();
+        }
 
-                    Ok(data) => {
-                        let data_len = data.len() as u64;
-                        peer.send(ToPeerMsg::Send(Message::Piece(
-                            block_request.piece_idx,
-                            block_request.block_begin,
-                            data,
-                        )))
-                        .await;
-                        peer.bandwidth_tracker.add_uploaded_bytes(data_len);
-                        self.bandwidth_tracker.add_uploaded_bytes(data_len); // todo: we are not keeping track of cancelled pieces
+        if peer.am_choking {
+            if peer.supports_fast_extension {
+                peer.send(ToPeerMsg::Send(Message::Reject(block_request)))
+                    .await;
+            }
+            return;
+        }
+
+        // else, we are not chocking, send block
+        peer.outstanding_incoming_piece_block_requests += 1;
+        match file_manager.read_piece_block(
+            block_request.piece_idx as usize,
+            block_request.block_begin as u64,
+            block_request.data_len as u64,
+        ) {
+            Err(e) => {
+                log::error!("error reading block: {e}");
+                peer.outstanding_incoming_piece_block_requests -= 1;
+            }
+
+            Ok(data) => {
+                let data_len = data.len() as u64;
+                peer.send(ToPeerMsg::Send(Message::Piece(
+                    block_request.piece_idx,
+                    block_request.block_begin,
+                    data,
+                )))
+                .await;
+                peer.bandwidth_tracker.add_uploaded_bytes(data_len);
+                self.bandwidth_tracker.add_uploaded_bytes(data_len); // todo: we are not keeping track of cancelled pieces
+            }
+        }
+    }
+
+    async fn handle_suggest_message(&mut self, peer_addr: String, _piece_idx: u32) {
+        if let Some(peer) = self.peers.get_mut(&peer_addr) {
+            if !peer.supports_fast_extension {
+                log::debug!(
+                    "removing peer {peer_addr}: we received a \"suggest\" fast track message but the peer did not advertise its support"
+                );
+                peer.send(ToPeerMsg::Disconnect()).await;
+                self.remove_peer(peer_addr).await;
+                return;
+            }
+        }
+        // todo: at the moment we ignore these suggestions
+        log::trace!("received a suggest from {peer_addr}");
+    }
+
+    async fn handle_have_all_message(&mut self, peer_addr: String) {
+        let file_manager = match &mut self.file_manager {
+            Some(file_manager) => file_manager,
+            None => return,
+        };
+
+        if let Some(peer) = self.peers.get_mut(&peer_addr) {
+            if !peer.supports_fast_extension {
+                log::debug!(
+                    "removing peer {peer_addr}: we received a \"have all\" fast track message but the peer did not advertise its support"
+                );
+                peer.send(ToPeerMsg::Disconnect()).await;
+                self.remove_peer(peer_addr).await;
+                return;
+            }
+
+            peer.haves = Some(vec![true; file_manager.num_pieces()]);
+
+            // check if we need to send interest
+            if !peer.am_interested {
+                for piece_idx in 0..file_manager.num_pieces() {
+                    if !file_manager.piece_completion_status(piece_idx) {
+                        peer.am_interested = true;
+                        peer.send(ToPeerMsg::Send(Message::Interested)).await;
+                        break;
                     }
                 }
             }
+        }
+        // todo: maybe re-compute assignations immediately here instead of waiting tick
+    }
+
+    async fn handle_have_none_message(&mut self, peer_addr: String) {
+        let file_manager = match &mut self.file_manager {
+            Some(file_manager) => file_manager,
+            None => return,
+        };
+
+        if let Some(peer) = self.peers.get_mut(&peer_addr) {
+            if !peer.supports_fast_extension {
+                log::debug!(
+                    "removing peer {peer_addr}: we received a \"have none\" fast track message but the peer did not advertise its support"
+                );
+                peer.send(ToPeerMsg::Disconnect()).await;
+                self.remove_peer(peer_addr).await;
+                return;
+            }
+
+            peer.haves = Some(vec![false; file_manager.num_pieces()]);
+        }
+    }
+
+    async fn handle_reject_message(&mut self, peer_addr: String, _block_request: BlockRequest) {
+        if let Some(peer) = self.peers.get_mut(&peer_addr) {
+            if !peer.supports_fast_extension {
+                log::debug!(
+                    "removing peer {peer_addr}: we received a \"reject\" fast track message but the peer did not advertise its support"
+                );
+                peer.send(ToPeerMsg::Disconnect()).await;
+                self.remove_peer(peer_addr).await;
+                return;
+            }
+            // for the moment we will ignore this and let the normal fast expiration work after chocke
+        }
+    }
+
+    async fn handle_allow_fast_message(&mut self, peer_addr: String, _piece_idx: usize) {
+        let _file_manager = match &mut self.file_manager {
+            Some(file_manager) => file_manager,
+            None => return,
+        };
+
+        if let Some(peer) = self.peers.get_mut(&peer_addr) {
+            if !peer.supports_fast_extension {
+                log::debug!(
+                    "removing peer {peer_addr}: we received an \"allow fast\" fast track message but the peer did not advertise its support"
+                );
+                peer.send(ToPeerMsg::Disconnect()).await;
+                self.remove_peer(peer_addr).await;
+                return;
+            }
+
+            // for the moment we ignore allow fast messages
         }
     }
 
@@ -1551,7 +1679,11 @@ impl TorrentManager {
         });
     }
 
-    async fn handle_new_peer(&mut self, tcp_stream: TcpStream) {
+    async fn handle_new_peer(
+        &mut self,
+        tcp_stream: TcpStream,
+        supports_fast_extension: FastExtensionSupport,
+    ) {
         let peer_addr = match tcp_stream.peer_addr() {
             Ok(s) => {
                 // send to dht manager the fact that we know a new good peer
@@ -1591,6 +1723,7 @@ impl TorrentManager {
                 self.file_manager.as_ref().map(|f| f.num_pieces()),
                 to_peer_tx,
                 to_peer_cancel_tx,
+                supports_fast_extension,
             ),
         );
         log::debug!("new peer initialized: {peer_addr}");

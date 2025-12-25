@@ -34,7 +34,7 @@ impl Protocol for TcpStream {
                 buf[0] = 19;
                 buf[1..20].copy_from_slice(b"BitTorrent protocol");
                 buf[25] = 0x10; // send support for Extension Protocol
-                buf[27] = 1u8; // send support for DHT
+                buf[27] = 0x1 | 0x04; // send support for DHT and support for Fast Extension
                 buf[28..48].copy_from_slice(&info_hash);
                 buf[48..68].copy_from_slice(&peer_id);
                 return if let Err(e) = write.write_all(&buf).await {
@@ -212,6 +212,61 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                     Ok(())
                 }
             }
+            Message::Suggest(piece_num) => {
+                let mut buf: [u8; 9] = [0; 9];
+                buf[3] = 5;
+                buf[4] = 13;
+                buf[5..9].copy_from_slice(&piece_num.to_be_bytes());
+                if let Err(e) = self.write_all(&buf).await {
+                    Err(e.into())
+                } else {
+                    Ok(())
+                }
+            }
+            Message::HaveAll => {
+                let mut buf: [u8; 5] = [0; 5];
+                buf[3] = 1;
+                buf[4] = 14;
+                if let Err(e) = self.write_all(&buf).await {
+                    Err(e.into())
+                } else {
+                    Ok(())
+                }
+            }
+            Message::HaveNone => {
+                let mut buf: [u8; 5] = [0; 5];
+                buf[3] = 1;
+                buf[4] = 15;
+                if let Err(e) = self.write_all(&buf).await {
+                    Err(e.into())
+                } else {
+                    Ok(())
+                }
+            }
+            Message::Reject(block_request) => {
+                let mut buf: [u8; 17] = [0; 17];
+                buf[3] = 13;
+                buf[4] = 16;
+                buf[5..9].copy_from_slice(&block_request.piece_idx.to_be_bytes());
+                buf[9..13].copy_from_slice(&block_request.block_begin.to_be_bytes());
+                buf[13..17].copy_from_slice(&block_request.data_len.to_be_bytes());
+                if let Err(e) = self.write_all(&buf).await {
+                    Err(e.into())
+                } else {
+                    Ok(())
+                }
+            }
+            Message::AllowerdFast(piece_num) => {
+                let mut buf: [u8; 9] = [0; 9];
+                buf[3] = 5;
+                buf[4] = 17;
+                buf[5..9].copy_from_slice(&piece_num.to_be_bytes());
+                if let Err(e) = self.write_all(&buf).await {
+                    Err(e.into())
+                } else {
+                    Ok(())
+                }
+            }
             Message::Extended(id, value, additional_data) => {
                 let encoded_value = value.encode();
                 let mut buf = vec![0; 6 + encoded_value.len() + additional_data.len()];
@@ -344,6 +399,46 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                     return Err(e.into());
                 }
                 Ok(Message::Port(u16::from_be_bytes(buf)))
+            }
+            // suggest
+            13 => {
+                let mut buf: [u8; 4] = [0; 4];
+                if let Err(e) = self.read_exact(&mut buf).await {
+                    return Err(e.into());
+                }
+                Ok(Message::Suggest(u32::from_be_bytes(buf)))
+            }
+            // have all
+            14 => Ok(Message::HaveAll),
+            // have none
+            15 => Ok(Message::HaveNone),
+            // reject
+            16 => {
+                let mut index_buf: [u8; 4] = [0; 4];
+                if let Err(e) = self.read_exact(&mut index_buf).await {
+                    return Err(e.into());
+                }
+                let mut begin_buf: [u8; 4] = [0; 4];
+                if let Err(e) = self.read_exact(&mut begin_buf).await {
+                    return Err(e.into());
+                }
+                let mut lenght_buf: [u8; 4] = [0; 4];
+                if let Err(e) = self.read_exact(&mut lenght_buf).await {
+                    return Err(e.into());
+                }
+                Ok(Message::Reject(BlockRequest {
+                    piece_idx: u32::from_be_bytes(index_buf),
+                    block_begin: u32::from_be_bytes(begin_buf),
+                    data_len: u32::from_be_bytes(lenght_buf),
+                }))
+            }
+            // allowed fast
+            17 => {
+                let mut buf: [u8; 4] = [0; 4];
+                if let Err(e) = self.read_exact(&mut buf).await {
+                    return Err(e.into());
+                }
+                Ok(Message::AllowerdFast(u32::from_be_bytes(buf)))
             }
             // extension message
             20 => {

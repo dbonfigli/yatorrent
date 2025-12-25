@@ -23,7 +23,12 @@ pub enum Message {
     Request(BlockRequest),
     Piece(u32, u32, Vec<u8>), // index, begin, block of data
     Cancel(BlockRequest),
-    Port(u16),                    // port number
+    Port(u16),    // port number
+    Suggest(u32), // piece index
+    HaveAll,
+    HaveNone,
+    Reject(BlockRequest),
+    AllowerdFast(u32),            // piece index
     Extended(u8, Value, Vec<u8>), // Extension Protocol id, bencoded message, additional raw data (optional, can be 0)
 }
 
@@ -81,6 +86,26 @@ impl fmt::Display for Message {
             }
             Message::Port(p) => {
                 write!(f, "port {p}")
+            }
+
+            Message::Suggest(piece_idx) => {
+                write!(f, "suggest piece id {piece_idx}")
+            }
+            Message::HaveAll => {
+                write!(f, "have all")
+            }
+            Message::HaveNone => {
+                write!(f, "have none")
+            }
+            Message::Reject(block_request) => {
+                write!(
+                    f,
+                    "reject: piece idx: {}, begin: {}, length: {}",
+                    block_request.piece_idx, block_request.block_begin, block_request.data_len
+                )
+            }
+            Message::AllowerdFast(piece_idx) => {
+                write!(f, "allowed fast piece id {piece_idx}")
             }
             Message::Extended(id, value, additional_data) => {
                 write!(

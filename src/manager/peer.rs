@@ -29,11 +29,12 @@ pub enum ToPeerMsg {
 }
 
 pub type PeerAddr = String;
+pub type FastExtensionSupport = bool;
 
 pub enum PeersToManagerMsg {
     Error(PeerAddr, PeerError),
     Receive(PeerAddr, Message),
-    NewPeer(TcpStream),
+    NewPeer(TcpStream, FastExtensionSupport),
     PieceBlockRequestFulfilled(PeerAddr),
 }
 
@@ -122,10 +123,10 @@ pub async fn connect_to_new_peer(
                     )
                     .await;
                 }
-                Ok(Ok(tcp_stream)) => {
+                Ok(Ok((tcp_stream, supports_fast_extension))) => {
                     send_to_torrent_manager(
                         &peers_to_torrent_manager_tx,
-                        PeersToManagerMsg::NewPeer(tcp_stream),
+                        PeersToManagerMsg::NewPeer(tcp_stream, supports_fast_extension),
                     )
                     .await;
                 }
@@ -240,10 +241,10 @@ pub async fn run_new_incoming_peers_handler(
                     Ok(Err(e)) => {
                         log::trace!("handshake failed with peer {remote_addr}: {e}");
                     }
-                    Ok(Ok(tcp_stream)) => {
+                    Ok(Ok((tcp_stream, supports_fast_extension))) => {
                         send_to_torrent_manager(
                             &peers_to_torrent_manager_tx_for_spawn,
-                            PeersToManagerMsg::NewPeer(tcp_stream),
+                            PeersToManagerMsg::NewPeer(tcp_stream, supports_fast_extension),
                         )
                         .await;
                     }
@@ -296,7 +297,7 @@ async fn handshake(
     tcp_wire_protocol_listening_port: u16,
     piece_completion_status: Option<Vec<bool>>,
     metadata_size: Option<i64>,
-) -> Result<TcpStream> {
+) -> Result<(TcpStream, FastExtensionSupport)> {
     let (peer_protocol, reserved, peer_info_hash, peer_id) = stream
         .handshake(info_hash, own_peer_id.as_bytes().try_into()?)
         .await?;
@@ -318,10 +319,22 @@ async fn handshake(
     let peer_addr = addr_or_unknown(&stream);
     let (read, mut write) = tokio::io::split(stream);
 
-    // send bitfield
+    let supports_fast_extension = if reserved[7] & 4u8 != 0 { true } else { false };
+
     if let Some(pcs) = piece_completion_status {
-        write.send(Message::Bitfield(pcs)).await?;
-        log::trace!("bitfield sent to peer {peer_addr}");
+        let have_count = pcs.iter().filter(|status| **status).count();
+        if supports_fast_extension && have_count == pcs.len() {
+            write.send(Message::HaveAll).await?;
+            log::trace!("have all sent to peer {peer_addr}");
+        } else if supports_fast_extension && have_count == 0 {
+            log::trace!("have none sent to peer {peer_addr}");
+        } else {
+            write.send(Message::Bitfield(pcs)).await?;
+            log::trace!("bitfield sent to peer {peer_addr}");
+        }
+    } else {
+        write.send(Message::HaveNone).await?;
+        log::trace!("have none sent to peer {peer_addr}");
     }
 
     // if peer supports DHT, send port
@@ -367,7 +380,7 @@ async fn handshake(
     let stream = read.unsplit(write);
 
     // handshake completed successfully
-    Ok(stream)
+    Ok((stream, supports_fast_extension))
 }
 
 async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
