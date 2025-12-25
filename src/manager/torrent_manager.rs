@@ -1303,6 +1303,7 @@ impl TorrentManager {
                                 }
                             }
                             if !am_still_interested {
+                                peer.am_interested = false;
                                 peer.send(ToPeerMsg::Send(Message::NotInterested)).await;
                             }
                         }
