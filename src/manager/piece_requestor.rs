@@ -65,22 +65,32 @@ impl PieceRequestor {
         self.requested_pieces.get(peer_addr).map_or(0, |r| r.len())
     }
 
-    pub fn block_request_completed(&mut self, peer_addr: &PeerAddr, block_request: &BlockRequest) {
+    pub fn block_request_completed(
+        &mut self,
+        peer_addr: &PeerAddr,
+        block_request: &BlockRequest,
+    ) -> Option<Duration> // the rtt of the request
+    {
         if let Some(reqs) = self.outstanding_piece_block_requests.get_mut(peer_addr) {
             match reqs.remove(block_request) {
-                None => log::debug!(
-                    "we received block {:?} from {peer_addr} but request was expired",
-                    block_request
-                ),
+                None => {
+                    log::debug!(
+                        "we received block {:?} from {peer_addr} but request was expired",
+                        block_request
+                    );
+                    return None;
+                }
                 Some(t) => {
                     let now = SystemTime::now();
-                    if now.duration_since(t).unwrap_or_default()
-                        > BLOCK_DELAYED_ARRIVAL_LOG_THRESHOLD
-                    {
-                        log::debug!(
-                            "requested block from {peer_addr} arrived after {:#?}",
-                            now.duration_since(t).unwrap_or_default()
-                        );
+                    if let Ok(latency) = now.duration_since(t) {
+                        if latency > BLOCK_DELAYED_ARRIVAL_LOG_THRESHOLD {
+                            log::debug!(
+                                "requested block from {peer_addr} arrived after {latency:#?}",
+                            );
+                        }
+                        return Some(latency);
+                    } else {
+                        return None;
                     }
                 }
             }
@@ -89,6 +99,7 @@ impl PieceRequestor {
                 "we received block {:?} from {peer_addr} but request was expired (no outstanding piece requests from this peer at all)",
                 block_request
             );
+            None
         }
     }
 

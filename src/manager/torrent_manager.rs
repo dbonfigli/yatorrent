@@ -95,6 +95,8 @@ pub struct Peer {
     reqq: usize, // reqq received from peer
     bandwidth_tracker: BandwidthTracker,
     client_version: Option<String>,
+    rtt: Option<Duration>,
+    rtt_samples: Vec<Duration>,
 }
 
 enum MetadataMessage {
@@ -135,7 +137,28 @@ impl Peer {
             reqq: DEFAULT_MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER, // the number of outstanding request messages this client supports without dropping any
             bandwidth_tracker: BandwidthTracker::new(),
             client_version: Option::None,
+            rtt: None,
+            rtt_samples: Vec::new(),
         }
+    }
+
+    fn have_count(&self) -> usize {
+        self.haves
+            .as_ref()
+            .map_or(0, |v| v.iter().filter(|x| **x).count())
+    }
+
+    fn update_rtt(&mut self, rtt_sample: Duration) {
+        self.rtt_samples.push(rtt_sample);
+        if self.rtt_samples.len() > 50 {
+            self.rtt_samples.remove(0);
+        }
+        let mut latencies = Duration::ZERO;
+        for s in self.rtt_samples.iter() {
+            latencies += s.clone();
+        }
+        let rtt = latencies.div_f64(self.rtt_samples.len() as f64);
+        self.rtt = Some(rtt);
     }
 
     pub fn get_reqq(&self) -> usize {
@@ -1058,7 +1081,7 @@ impl TorrentManager {
             .write_piece_block(piece_idx as usize, data, begin as u64)
         {
             Ok(piece_completed) => {
-                self.piece_requestor.block_request_completed(
+                let rtt = self.piece_requestor.block_request_completed(
                     &peer_addr,
                     &BlockRequest {
                         piece_idx,
@@ -1066,6 +1089,11 @@ impl TorrentManager {
                         data_len: data_len as u32,
                     },
                 );
+                if let Some(rtt) = rtt {
+                    if let Some(peer) = self.peers.get_mut(&peer_addr) {
+                        peer.update_rtt(rtt);
+                    }
+                }
                 if piece_completed {
                     self.piece_requestor
                         .piece_request_completed(&peer_addr, piece_idx as usize);
@@ -1641,10 +1669,16 @@ impl TorrentManager {
                 || bandwidth_up > 0.0
             {
                 log::info!(
-                    "{peer_addr:>22} {bandwidth_tracker}, pending blocks: {pending_block_requests} (on {assigned_pieces} pieces), client: {client_version}",
+                    "{peer_addr:>22} {bandwidth_tracker}, pending blocks: {pending_block_requests} (on {assigned_pieces} pieces), client: {client_version}, chocked {chocking}, haves: {have}, rtt: {rtt}",
                     bandwidth_tracker = peer.bandwidth_tracker,
                     assigned_pieces = self.piece_requestor.get_assigned_pieces_for_peer(peer_addr),
                     client_version = peer.client_version.as_deref().unwrap_or("unknown"),
+                    chocking = peer.is_peer_choking(),
+                    have = peer.have_count(),
+                    rtt = peer
+                        .rtt
+                        .as_ref()
+                        .map_or("?".to_string(), |rtt| format!("{:.3}s", rtt.as_secs_f64())),
                 )
             }
         }
