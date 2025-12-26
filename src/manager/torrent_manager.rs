@@ -1299,7 +1299,7 @@ impl TorrentManager {
                                     .file_manager
                                     .as_mut()
                                     .expect("invariant checked above")
-                                    .piece_completion_status(piece_idx as usize)
+                                    .piece_completion_status(i)
                                     && peer
                                         .haves
                                         .as_ref()
