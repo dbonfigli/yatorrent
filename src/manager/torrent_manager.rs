@@ -1257,20 +1257,9 @@ impl TorrentManager {
                         .await;
 
                     for (_, peer) in self.peers.iter_mut() {
-                        if peer.haves.is_none() {
-                            continue;
-                        }
-                        // send "have" to interested peers
-                        // todo: check this better: should we instead send haves to all? or maybe not check the interest flag?
-                        if peer.peer_interested
-                            && !peer
-                                .haves
-                                .as_ref()
-                                .expect("haves is initialized if file_manager is")
-                                [piece_idx as usize]
-                        {
-                            peer.send(ToPeerMsg::Send(Message::Have(piece_idx))).await;
-                        }
+                        // send "have" to all peers
+                        peer.send(ToPeerMsg::Send(Message::Have(piece_idx))).await;
+
                         // send "not interested" if needed
                         if peer.am_interested
                             && !peer_has_pieces_we_dont_have(
