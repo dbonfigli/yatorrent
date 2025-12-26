@@ -36,17 +36,17 @@ Options:
   -m, --magnet-uri <MAGNET_URI>
           Magnet Link URI (optional, either this or a torrent file must be provided) [env: MAGNET_URI=]
   -b, --base-path <BASE_PATH>
-          Optional base path where files are downloaded (directory will be created if it does not exist) [env: BASE_PATH=] [default: _current working dir_]
+          Base path where files are downloaded (directory will be created if it does not exist) [env: BASE_PATH=] [default: _current working dir_]
   -p, --port <PORT>
-          Optional listening port [env: PORT=] [default: 8000]
+          Listening port for Torrent protocol [env: PORT=] [default: 8000]
   -d, --dht-port <DHT_PORT>
-          Optional listening port for DHT protocol [env: DHT_PORT=] [default: 8001]
+          Listening port for DHT protocol [env: DHT_PORT=] [default: 8001]
   -l, --log-level <LOG_LEVEL>
-          Optional log level [env: LOG_LEVEL=] [default: info] [possible values: trace, debug, info, warn, error]
+          Log level [env: LOG_LEVEL=] [default: info] [possible values: trace, debug, info, warn, error]
   -s, --show-peers-stats
-          Optional show peers stats, default false [env: SHOW_PEERS_STATS=]
+          Show detailed peers stats per peer [env: SHOW_PEERS_STATS=]
   -c, --max-connected-peers <MAX_CONNECTED_PEERS>
-          max connected peers [env: MAX_CONNECTED_PEERS=] [default: 100]
+          Maximum number of connected peers allowed [env: MAX_CONNECTED_PEERS=] [default: 100]
   -h, --help
           Print help
   -V, --version

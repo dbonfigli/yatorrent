@@ -35,27 +35,27 @@ struct Args {
     #[arg(short, long, env)]
     magnet_uri: Option<String>,
 
-    /// Optional base path where files are downloaded (directory will be created if it does not exist)
+    /// Base path where files are downloaded (directory will be created if it does not exist)
     #[arg(short, long, env, default_value_t = current_dir().expect("current directory cannot be used").to_str().expect("current path must be an utf8 string").to_string())]
     base_path: String,
 
-    /// Optional listening port
+    /// Listening port for Torrent protocol
     #[arg(short, long, env, default_value_t = 8000)]
     port: u16,
 
-    /// Optional listening port for DHT protocol
+    /// Listening port for DHT protocol
     #[arg(short, long, env, default_value_t = 8001)]
     dht_port: u16,
 
-    /// Optional log level
+    /// Log level
     #[arg(short, long, env, default_value_t = LogLevels::Info)]
     log_level: LogLevels,
 
-    /// Optional show peers stats, default false
+    /// Show detailed stats per peer
     #[arg(short, long, env, default_value_t = false)]
     show_peers_stats: bool,
 
-    /// max connected peers
+    /// Maximum number of connected peers allowed
     #[arg(short = 'c', long, env, default_value_t = 100)]
     max_connected_peers: usize,
 }
