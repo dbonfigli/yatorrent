@@ -1287,32 +1287,15 @@ impl TorrentManager {
                             peer.send(ToPeerMsg::Send(Message::Have(piece_idx))).await;
                         }
                         // send "not interested" if needed
-                        if peer.am_interested {
-                            let mut am_still_interested = false;
-                            for i in 0..peer
-                                .haves
-                                .as_ref()
-                                .expect("haves is initialized if file_manager is")
-                                .len()
-                            {
-                                if !self
-                                    .file_manager
-                                    .as_mut()
-                                    .expect("invariant checked above")
-                                    .piece_completion_status(i)
-                                    && peer
-                                        .haves
-                                        .as_ref()
-                                        .expect("haves is initialized if file_manager is")[i]
-                                {
-                                    am_still_interested = true;
-                                    break;
-                                }
-                            }
-                            if !am_still_interested {
-                                peer.am_interested = false;
-                                peer.send(ToPeerMsg::Send(Message::NotInterested)).await;
-                            }
+                        if peer.am_interested
+                            && !peer_has_pieces_we_dont_have(
+                                peer,
+                                self.file_manager.as_mut().expect("invariant checked above"),
+                            )
+                        {
+                            log::trace!("sending not interested to {}", peer.peer_addr);
+                            peer.am_interested = false;
+                            peer.send(ToPeerMsg::Send(Message::NotInterested)).await;
                         }
                     }
                 }
@@ -1958,4 +1941,13 @@ fn ip_port_list_to_compact_format(addrs: Vec<String>) -> Vec<u8> {
         compact_format.append(&mut port.to_be_bytes().to_vec());
     }
     compact_format
+}
+
+fn peer_has_pieces_we_dont_have(peer: &Peer, file_manager: &FileManager) -> bool {
+    for piece_idx in file_manager.missing_pieces() {
+        if peer.have_piece(*piece_idx) {
+            return true;
+        }
+    }
+    false
 }
