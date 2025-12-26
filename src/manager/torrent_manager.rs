@@ -815,9 +815,6 @@ impl TorrentManager {
                 return;
             }
             // for the moment we will ignore this and let the normal fast expiration work after choke
-
-            // self.piece_requestor
-            //     .block_request_rejected(&peer_addr, &block_request);
         }
     }
 
@@ -838,18 +835,6 @@ impl TorrentManager {
             }
 
             // for the moment we ignore allow fast messages
-
-            // let reqs_to_send = self.piece_requestor.generate_requests_for_allow_fast(
-            //     &peer_addr,
-            //     peer,
-            //     piece_idx,
-            //     file_manager,
-            // );
-            // for block_request in reqs_to_send {
-            //     log::trace!("sending fast requests to peer {peer_addr}");
-            //     peer.send(ToPeerMsg::Send(Message::Request(block_request)))
-            //         .await;
-            // }
         }
     }
 
