@@ -10,7 +10,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-pub const MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT: usize = 3000;
+pub const MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT: usize = 500; // same as libtorrent, but we can go up to 2000 if needed
 
 const MAX_OUTSTANDING_PIECES: usize = 2000;
 const MIN_OUTSTANDING_BLOCK_REQUESTS: usize = 5;

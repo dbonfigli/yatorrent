@@ -54,6 +54,10 @@ struct Args {
     /// Optional show peers stats, default false
     #[arg(short, long, env, default_value_t = false)]
     show_peers_stats: bool,
+
+    /// max connected peers
+    #[arg(short = 'c', long, env, default_value_t = 100)]
+    max_connected_peers: usize,
 }
 
 #[derive(clap::ValueEnum, Debug, Clone)]
@@ -136,6 +140,7 @@ async fn main() -> Result<()> {
                     m.nodes,
                     Vec::new(),
                     args.show_peers_stats,
+                    args.max_connected_peers,
                 )
                 .start()
                 .await;
@@ -161,6 +166,7 @@ async fn main() -> Result<()> {
                     Vec::new(),
                     magnet.peer_addresses,
                     args.show_peers_stats,
+                    args.max_connected_peers,
                 )
                 .start()
                 .await;

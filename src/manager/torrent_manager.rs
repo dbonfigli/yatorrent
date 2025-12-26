@@ -38,8 +38,6 @@ use crate::bencoding::Value::{self, Dict, Int, Str};
 
 use super::peer::PeerError;
 
-const CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS: usize = 500;
-const CONNECTED_PEERS_TO_START_NEW_PEER_CONNECTIONS: usize = 350;
 const MAX_CONNECTED_PEERS_TO_ASK_DHT_FOR_MORE: usize = 10;
 const DHT_NEW_PEER_COOL_OFF_PERIOD: Duration = Duration::from_secs(15);
 const DHT_BOOTSTRAP_TIME: Duration = Duration::from_secs(5);
@@ -297,6 +295,13 @@ pub struct TorrentManager {
     request_timeout: Duration,
     show_peers_stats: bool,
 
+    // if we reach this, we stop starting new connections to other peers we know, what we have should be enough
+    // todo: we should add some churning of slow downloading peers upon reaching this limit
+    // todo: we should also cap more this if there are already peers with a good dwnloading speed
+    // otherwise we are just spreading too much the download bandwidth on too many peers, each with a small bandwidth speed
+    // risking to be choked by them because of this and generally being inefficient
+    max_connected_peers: usize,
+
     // internal channels, we store them here to avoid passing them around in nested calls
     to_dht_manager_tx: Sender<ToDhtManagerMsg>,
     to_dht_manager_rx: Option<Receiver<ToDhtManagerMsg>>, // optional bc we will move it to the dht manager at start, todo: should we move creation of this channel there?
@@ -333,6 +338,7 @@ impl TorrentManager {
         dht_nodes: Vec<String>,
         initial_peers: Vec<String>,
         show_peers_details: bool,
+        max_connected_peers: usize,
     ) -> Self {
         let own_peer_id = generate_peer_id();
         let mut initial_advertised_peers = HashMap::new();
@@ -395,6 +401,7 @@ impl TorrentManager {
             added_dropped_peer_events: Vec::new(),
             request_timeout: BASE_REQUEST_TIMEOUT,
             show_peers_stats: show_peers_details,
+            max_connected_peers,
 
             to_dht_manager_tx,
             to_dht_manager_rx: Some(to_dht_manager_rx),
@@ -1341,7 +1348,7 @@ impl TorrentManager {
         if let Some(_) = self.peers.remove(&peer_addr) {
             self.piece_requestor.remove_assigments_to_peer(&peer_addr);
         }
-        if self.peers.len() < CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS {
+        if self.peers.len() < self.max_connected_peers {
             self.ok_to_accept_connection_tx
                 .send(true)
                 .await
@@ -1381,7 +1388,7 @@ impl TorrentManager {
 
     async fn connect_to_new_peers(&mut self) {
         let current_peers_n = self.peers.len();
-        if current_peers_n < CONNECTED_PEERS_TO_START_NEW_PEER_CONNECTIONS {
+        if current_peers_n < self.max_connected_peers {
             let possible_peers_mg = self
                 .advertised_peers
                 .lock()
@@ -1403,11 +1410,12 @@ impl TorrentManager {
                 })
                 .collect::<Vec<_>>();
 
+            log::warn!(
+                "trying to connect to {} peers",
+                self.max_connected_peers - current_peers_n
+            );
             let candidates_for_new_connections: Vec<_> = possible_peers
-                .choose_multiple(
-                    &mut rand::rng(),
-                    CONNECTED_PEERS_TO_START_NEW_PEER_CONNECTIONS - current_peers_n,
-                )
+                .choose_multiple(&mut rand::rng(), self.max_connected_peers - current_peers_n)
                 .collect();
             // todo: better algorithm to select new peers
             for (_, (peer, _)) in candidates_for_new_connections.iter() {
@@ -1709,7 +1717,7 @@ impl TorrentManager {
         log::debug!("new peer initialized: {peer_addr}");
         self.added_dropped_peer_events
             .push((SystemTime::now(), peer_addr, PexEvent::Added));
-        if self.peers.len() > CONNECTED_PEERS_TO_STOP_INCOMING_PEER_CONNECTIONS {
+        if self.peers.len() > self.max_connected_peers {
             log::trace!("stop accepting new peers");
             self.ok_to_accept_connection_tx
                 .send(false)
