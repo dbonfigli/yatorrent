@@ -295,6 +295,7 @@ pub struct TorrentManager {
     last_get_peers_requested_time: SystemTime,
     added_dropped_peer_events: Vec<(SystemTime, PeerAddr, PexEvent)>, // time of event, address of peer for this event, pex event. This field is used to support pex
     request_timeout: Duration,
+    show_peers_stats: bool,
 
     // internal channels, we store them here to avoid passing them around in nested calls
     to_dht_manager_tx: Sender<ToDhtManagerMsg>,
@@ -331,6 +332,7 @@ impl TorrentManager {
         listening_dht_port: u16,
         dht_nodes: Vec<String>,
         initial_peers: Vec<String>,
+        show_peers_details: bool,
     ) -> Self {
         let own_peer_id = generate_peer_id();
         let mut initial_advertised_peers = HashMap::new();
@@ -392,6 +394,7 @@ impl TorrentManager {
                 + DHT_BOOTSTRAP_TIME, // try to wait a bit before the first request, in hope that the dht has been bootstrapped, so that we don't waste time for the first request with an empty routing table
             added_dropped_peer_events: Vec::new(),
             request_timeout: BASE_REQUEST_TIMEOUT,
+            show_peers_stats: show_peers_details,
 
             to_dht_manager_tx,
             to_dht_manager_rx: Some(to_dht_manager_rx),
@@ -689,7 +692,7 @@ impl TorrentManager {
 
         if !peer.am_choking
             && should_choke(
-                // todo: chocking algorithm is really naive, must improve it to avoid saturating upload
+                // todo: choking algorithm is really naive, must improve it to avoid saturating upload
                 self.peers_to_torrent_manager_tx.capacity(),
                 peer.outstanding_incoming_piece_block_requests,
                 true,
@@ -708,7 +711,7 @@ impl TorrentManager {
             return;
         }
 
-        // else, we are not chocking, send block
+        // else, we are not choking, send block
         peer.outstanding_incoming_piece_block_requests += 1;
         match file_manager.read_piece_block(
             block_request.piece_idx as usize,
@@ -811,7 +814,7 @@ impl TorrentManager {
                 self.remove_peer(peer_addr).await;
                 return;
             }
-            // for the moment we will ignore this and let the normal fast expiration work after chocke
+            // for the moment we will ignore this and let the normal fast expiration work after choke
 
             // self.piece_requestor
             //     .block_request_rejected(&peer_addr, &block_request);
@@ -1811,6 +1814,10 @@ impl TorrentManager {
     }
 
     fn log_peers_stats(&self) {
+        if !self.show_peers_stats {
+            return;
+        }
+
         for (peer_addr, peer) in self.peers.iter() {
             let pending_block_requests = self
                 .piece_requestor
@@ -1822,11 +1829,15 @@ impl TorrentManager {
                 || bandwidth_up > 0.0
             {
                 log::info!(
-                    "{peer_addr:>22} {bandwidth_tracker}, pending blocks: {pending_block_requests} (on {assigned_pieces} pieces), client: {client_version}, chocked {chocking}, haves: {have}, rtt: {rtt}",
+                    "{peer_addr:>22} rtt: {rtt}, {bandwidth_tracker}, pending blocks: {pending_block_requests} (on {assigned_pieces} pieces), haves: {have}, client: {client_version}{choking}",
                     bandwidth_tracker = peer.bandwidth_tracker,
                     assigned_pieces = self.piece_requestor.get_assigned_pieces_for_peer(peer_addr),
                     client_version = peer.client_version.as_deref().unwrap_or("unknown"),
-                    chocking = peer.is_peer_choking(),
+                    choking = if peer.is_peer_choking() {
+                        ", choked"
+                    } else {
+                        ""
+                    },
                     have = peer.have_count(),
                     rtt = peer
                         .rtt

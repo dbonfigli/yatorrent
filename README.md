@@ -37,6 +37,7 @@ Options:
   -p, --port <PORT>                  Optional listening port [env: PORT=] [default: 8000]
   -d, --dht-port <DHT_PORT>          Optional listening port for DHT protocol [env: DHT_PORT=] [default: 8001]
   -l, --log-level <LOG_LEVEL>        Optional log level [env: LOG_LEVEL=] [default: info] [possible values: trace, debug, info, warn, error]
+  -s, --show-peers-stats             Optional show peers stats, default false [env: SHOW_PEERS_STATS=]
   -h, --help                         Print help
   -V, --version                      Print version
 ```

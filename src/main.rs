@@ -50,6 +50,10 @@ struct Args {
     /// Optional log level
     #[arg(short, long, env, default_value_t = LogLevels::Info)]
     log_level: LogLevels,
+
+    /// Optional show peers stats, default false
+    #[arg(short, long, env, default_value_t = false)]
+    show_peers_stats: bool,
 }
 
 #[derive(clap::ValueEnum, Debug, Clone)]
@@ -131,6 +135,7 @@ async fn main() -> Result<()> {
                     args.dht_port,
                     m.nodes,
                     Vec::new(),
+                    args.show_peers_stats,
                 )
                 .start()
                 .await;
@@ -155,6 +160,7 @@ async fn main() -> Result<()> {
                     args.dht_port,
                     Vec::new(),
                     magnet.peer_addresses,
+                    args.show_peers_stats,
                 )
                 .start()
                 .await;
