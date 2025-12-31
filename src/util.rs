@@ -37,3 +37,15 @@ pub async fn start_tick(tick_tx: Sender<()>, duration: Duration) {
         }
     });
 }
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const NAME: &str = env!("CARGO_PKG_NAME");
+const GIT_COMMIT: &str = env!("GIT_COMMIT");
+
+pub fn version_string() -> String {
+    if GIT_COMMIT == "unknown" {
+        VERSION.to_string()
+    } else {
+        format!("{NAME} {VERSION} ({GIT_COMMIT})")
+    }
+}

@@ -14,7 +14,7 @@ use crate::bencoding::Value;
 use crate::torrent_protocol::wire_protocol::{
     BlockRequest, Message, Protocol, ProtocolReadHalf, ProtocolWriteHalf,
 };
-use crate::util::{force_string, pretty_info_hash};
+use crate::util::{force_string, pretty_info_hash, version_string};
 
 pub const MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER: i64 = 500;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -366,6 +366,7 @@ async fn handshake(
                 b"reqq".to_vec(),
                 Value::Int(MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER),
             ),
+            (b"v".to_vec(), Value::Str(version_string().into_bytes())),
         ]);
         if let Some(metadata_size) = metadata_size {
             handshake_dict.insert(b"metadata_size".to_vec(), Value::Int(metadata_size));
