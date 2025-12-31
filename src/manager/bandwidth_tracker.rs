@@ -19,6 +19,7 @@ pub struct BandwidthTracker {
     bandwidth_polls: VecDeque<BandwidthPoll>,
     uploaded_bytes: u64,
     downloaded_bytes: u64,
+    last_download_increase_time: SystemTime,
 }
 
 impl BandwidthTracker {
@@ -27,6 +28,7 @@ impl BandwidthTracker {
             bandwidth_polls: VecDeque::new(),
             uploaded_bytes: 0,
             downloaded_bytes: 0,
+            last_download_increase_time: SystemTime::now(),
         }
     }
 
@@ -78,6 +80,11 @@ impl BandwidthTracker {
 
     pub fn add_downloaded_bytes(&mut self, bytes: u64) {
         self.downloaded_bytes += bytes;
+        self.last_download_increase_time = SystemTime::now();
+    }
+
+    pub fn last_download_increase_time(&self) -> SystemTime {
+        self.last_download_increase_time
     }
 
     pub fn uploaded_bytes(&self) -> u64 {

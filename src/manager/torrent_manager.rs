@@ -1,4 +1,5 @@
 use anyhow::{Error, Result, bail};
+use colored::Colorize;
 use sha1::{Digest, Sha1};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr};
@@ -48,7 +49,8 @@ const TO_PEER_CHANNEL_CAPACITY: usize = MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER
 const TO_PEER_CANCEL_CHANNEL_CAPACITY: usize =
     MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT + 200;
 const TICK_INTERVAL: Duration = Duration::from_secs(1);
-const RTT_SAMPLES_COUNT: usize = 100;
+const RTT_SAMPLES_COUNT: usize = 20;
+const TIME_TO_CONSIDER_DOWNLOAD_STALLED: Duration = Duration::from_secs(15);
 
 // can be retrieved per peer if it supports extensions, dict key "reqq",
 // seen: deluge: 2000, qbittorrent: 500, transmission: 500, utorrent: 255, freebox bittorrent 2: 768, maybe variable.
@@ -1410,7 +1412,7 @@ impl TorrentManager {
                 })
                 .collect::<Vec<_>>();
 
-            log::warn!(
+            log::debug!(
                 "trying to connect to {} peers",
                 self.max_connected_peers - current_peers_n
             );
@@ -1794,20 +1796,28 @@ impl TorrentManager {
                 || bandwidth_up > 0.0
             {
                 log::info!(
-                    "{peer_addr:>22} rtt: {rtt}, {bandwidth_tracker}, pending blocks: {pending_block_requests} (on {assigned_pieces} pieces), haves: {have}, client: {client_version}{choking}",
+                    "{peer_addr:>22} rtt: {rtt}, {bandwidth_tracker}, pending blocks: {pending_block_requests} (on {assigned_pieces} pieces), haves: {have}, client: {client_version}{choking}{stalled}",
                     bandwidth_tracker = peer.bandwidth_tracker,
                     assigned_pieces = self.piece_requestor.get_assigned_pieces_for_peer(peer_addr),
                     client_version = peer.client_version.as_deref().unwrap_or("unknown"),
                     choking = if peer.is_peer_choking() {
-                        ", choked"
+                        format!("{}{}", ", ".normal(), "choked".yellow())
                     } else {
-                        ""
+                        "".to_string()
                     },
                     have = peer.have_count(),
-                    rtt = peer
-                        .rtt
-                        .as_ref()
-                        .map_or("?".to_string(), |rtt| format!("{:.3}s", rtt.as_secs_f64())),
+                    rtt = peer.rtt.as_ref().map_or("?".normal(), |rtt| {
+                        if *rtt > Duration::from_secs(10) {
+                            format!("{:.3}s", rtt.as_secs_f64()).yellow()
+                        } else {
+                            format!("{:.3}s", rtt.as_secs_f64()).normal()
+                        }
+                    }),
+                    stalled = if self.peer_download_stalled(peer) {
+                        format!("{}{}", ", ".normal(), "stalled".red())
+                    } else {
+                        "".to_string()
+                    },
                 )
             }
         }
@@ -1819,6 +1829,17 @@ impl TorrentManager {
             error
         );
         self.metadata_handler = MetadataHandler::new(None, None);
+    }
+
+    fn peer_download_stalled(&self, peer: &Peer) -> bool {
+        return self
+            .piece_requestor
+            .get_pending_block_requests_for_peer(&peer.peer_addr)
+            > 0
+            && SystemTime::now()
+                .duration_since(peer.bandwidth_tracker().last_download_increase_time())
+                .unwrap_or_default()
+                > TIME_TO_CONSIDER_DOWNLOAD_STALLED;
     }
 }
 
