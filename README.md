@@ -44,7 +44,7 @@ Options:
   -l, --log-level <LOG_LEVEL>
           Log level [env: LOG_LEVEL=] [default: info] [possible values: trace, debug, info, warn, error]
   -s, --show-peers-stats
-          Show detailed peers stats per peer [env: SHOW_PEERS_STATS=]
+          Show detailed stats per peer [env: SHOW_PEERS_STATS=]
   -c, --max-connected-peers <MAX_CONNECTED_PEERS>
           Maximum number of connected peers allowed [env: MAX_CONNECTED_PEERS=] [default: 100]
   -h, --help
