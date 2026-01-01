@@ -1736,7 +1736,7 @@ impl TorrentManager {
         let advertised_peers_len = advertised_peers_lock.len();
         drop(advertised_peers_lock);
         log::info!(
-            "left: {left}, pieces: {completed_pieces}/{total_pieces} metadata pieces: {known_metadata_pieces}/{total_metadata_pieces} | {bandwidth_tracker}, wasted: {wasted} | known peers from advertising: {known_peers} (bad: {bad_peers}), connected: {connected_peers}, unchoked: {unchoked_peers} | pending peers_to_torrent_manager msgs: {cur_ch_cap}/{tot_ch_cap}",
+            "left: {left}, pieces: {completed_pieces}/{total_pieces}{metadata_pieces} | {bandwidth_tracker}{wasted} | known peers: {known_peers} (bad: {bad_peers}), connected: {connected_peers}, unchoked: {unchoked_peers} | peers_to_torrent_manager pending msgs: {cur_ch_cap}",
             left = self
                 .file_manager
                 .as_ref()
@@ -1752,15 +1752,33 @@ impl TorrentManager {
                 .as_ref()
                 .map(|f| f.num_pieces().to_string())
                 .unwrap_or("?".to_string()),
+            metadata_pieces = match self.metadata_handler.total_metadata_pieces() {
+                0 => format!(
+                    ", metadata pieces: {}/?",
+                    self.metadata_handler.total_metadata_pieces_downloaded()
+                ),
+                total_metadata_pieces => {
+                    let total_downloaded = self.metadata_handler.total_metadata_pieces_downloaded();
+                    if total_metadata_pieces == total_downloaded {
+                        "".to_string()
+                    } else {
+                        format!(", metadata pieces: {total_metadata_pieces}/{total_downloaded}")
+                    }
+                }
+            },
             bandwidth_tracker = self.bandwidth_tracker,
-            wasted = Size::from_bytes(
-                self.file_manager
-                    .as_ref()
-                    .map(|f| f.wasted_bytes())
-                    .unwrap_or(0)
-            )
-            .format()
-            .with_style(Style::Abbreviated),
+            wasted = match self
+                .file_manager
+                .as_ref()
+                .map(|f| f.wasted_bytes())
+                .unwrap_or(0)
+            {
+                0 => "".to_string(),
+                w => format!(
+                    ", wasted: {}",
+                    Size::from_bytes(w).format().with_style(Style::Abbreviated)
+                ),
+            },
             known_peers = advertised_peers_len,
             bad_peers = self.bad_peers.len(),
             connected_peers = self.peers.len(),
@@ -1771,12 +1789,6 @@ impl TorrentManager {
             }),
             cur_ch_cap = PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY
                 - peers_to_torrent_manager_channel_capacity,
-            known_metadata_pieces = self.metadata_handler.total_metadata_pieces_downloaded(),
-            total_metadata_pieces = match self.metadata_handler.total_metadata_pieces() {
-                0 => "?".to_string(),
-                c => c.to_string(),
-            },
-            tot_ch_cap = PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY,
         );
     }
 
