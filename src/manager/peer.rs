@@ -8,9 +8,10 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 
 use crate::bencoding::Value;
+use crate::manager::rate_limiter::RateLimiter;
 use crate::torrent_protocol::wire_protocol::{
     BlockRequest, Message, Protocol, ProtocolReadHalf, ProtocolWriteHalf,
 };
@@ -267,6 +268,8 @@ pub fn start_peer_msg_handlers(
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
     to_peer_rx: Receiver<ToPeerMsg>,
     to_peer_cancel_rx: Receiver<ToPeerCancelMsg>,
+    download_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
+    upload_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
 ) {
     let peers_to_torrent_manager_tx_for_snd_message_handler = peers_to_torrent_manager_tx.clone();
     let (read, write) = tokio::io::split(tcp_stream);
@@ -274,6 +277,7 @@ pub fn start_peer_msg_handlers(
         peer_addr.clone(),
         peers_to_torrent_manager_tx,
         read,
+        download_rate_limiter,
     ));
     let mut snd = tokio::spawn(snd_message_handler(
         peer_addr.clone(),
@@ -281,6 +285,7 @@ pub fn start_peer_msg_handlers(
         peers_to_torrent_manager_tx_for_snd_message_handler,
         write,
         to_peer_cancel_rx,
+        upload_rate_limiter,
     ));
     tokio::spawn(async move {
         tokio::select! {
@@ -388,6 +393,7 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
     peer_addr: String,
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
     mut wire_proto: T,
+    download_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
 ) {
     loop {
         match timeout(
@@ -417,6 +423,12 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
                 break;
             }
             Ok(Ok(proto_msg)) => {
+                // the download rate limiter needs to read a message before deciding if it needs to rate limit,
+                // so here, if we are rate limited, we cannot do anything else other than block everything else until we are unblocked
+                // (also next messages that could be non-piece messages and so not affected by rate limiting)
+                // otherwise, if the next message is also a piece, we fail to enforce the rate limit
+                rate_limit(&proto_msg, &download_rate_limiter).await;
+
                 log::trace!("received from {peer_addr}: {proto_msg}");
                 send_to_torrent_manager(
                     &peers_to_torrent_manager_tx,
@@ -428,17 +440,49 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
     }
 }
 
+async fn rate_limit(proto_msg: &Message, rate_limiter: &Option<Arc<Mutex<RateLimiter>>>) {
+    if let Some(r) = rate_limiter {
+        // at the moment the rate limiter just counts on the actual data downloaded from blocks,
+        // ignoring the message headers other type of messages, dht messages, transport protocol headers...
+        // for now this is acceptable
+        if let Message::Piece(_, _, data) = proto_msg {
+            loop {
+                // many small data requests could starve large ones, but in practice the probability
+                // is really low since most of the time we ask / get requests for a max size block
+                let mut r_mg = r.lock().await;
+                let acquire_result = r_mg.try_acquire(data.len() as u128);
+                drop(r_mg);
+                match acquire_result {
+                    Ok(_) => break,
+                    Err(wait_time) => sleep(wait_time).await,
+                }
+            }
+        }
+    }
+}
+
 async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
     peer_addr: String,
     mut to_peer_rx: Receiver<ToPeerMsg>,
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
     mut wire_proto: T,
     mut to_peer_cancel_rx: Receiver<ToPeerCancelMsg>,
+    upload_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
 ) {
     let mut cancellations = HashMap::<BlockRequest, SystemTime>::new();
     while let Some(manager_msg) = to_peer_rx.recv().await {
         match manager_msg {
             ToPeerMsg::Send(proto_msg) => {
+                // here, if we are waiting due to the rate limit, then _all_ message types (also non-piece messages)
+                // for the same peer are affected and needs to wait for the limit to pass.
+                // In theory we can decide to apply the limit only on sending piece messages and, even if we are
+                // rate limited, we can decide to send other kinds of messages without any delays, but, for now,
+                // it is fine as is because the wait time is usually very small for normal max bandwidth values.
+                //
+                // todo: split handling of send messages for piece and non-piece in 2 different
+                // queues in the future so that non-piece messages are not blocked
+                rate_limit(&proto_msg, &upload_rate_limiter).await;
+
                 let mut is_sending_piece = false;
 
                 // avoid sending data if the request has already been canceled by the peer

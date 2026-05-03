@@ -14,7 +14,7 @@ pub const MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT: usize = 500;
 
 const MAX_OUTSTANDING_PIECES: usize = 2000;
 const MIN_OUTSTANDING_BLOCK_REQUESTS: usize = 5;
-const BLOCK_SIZE_B: u64 = 16384;
+pub const BLOCK_SIZE_B: u64 = 16384;
 
 // requests are calculated based on bandwidth so that they fill up the pipe up to some seconds capped by the below consts
 const RTT_MULTIPLIER: f64 = 1.2;
