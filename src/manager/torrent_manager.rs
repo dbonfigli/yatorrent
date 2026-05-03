@@ -153,9 +153,16 @@ impl Peer {
             .map_or(0, |v| v.iter().filter(|x| **x).count())
     }
 
+    pub fn get_rtt(&self) -> Option<Duration> {
+        self.rtt
+    }
+
     fn update_rtt(&mut self, rtt_sample: Duration) {
         self.rtt_samples.push_front(rtt_sample);
         if self.rtt_samples.len() > RTT_SAMPLES_COUNT {
+            // todo: should we remove old samples only based on number or also based on oldness?
+            // i.e. if we get 20 messages al at the same time now, we lose the "history",
+            // should we keep data up to some 3s instead for example?
             self.rtt_samples.pop_back();
         }
         let mut latencies = Duration::ZERO;
