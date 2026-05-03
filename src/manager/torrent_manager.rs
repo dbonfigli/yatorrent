@@ -12,7 +12,6 @@ use rand::RngExt;
 use rand::seq::IndexedRandom;
 use size::{Size, Style};
 use tokio::net::TcpStream;
-use tokio::sync::Mutex as tokyoMutex;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use crate::dht::dht_manager::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMsg};
@@ -431,9 +430,9 @@ impl TorrentManager {
             peers_to_torrent_manager_rx,
 
             download_rate_limiter: max_download_bandwidth
-                .map(|b| Arc::new(tokyoMutex::new(RateLimiter::new(b as u128)))),
+                .map(|b| Arc::new(tokio::sync::Mutex::new(RateLimiter::new(b as u128)))),
             upload_rate_limiter: max_upload_bandwidth
-                .map(|b| Arc::new(tokyoMutex::new(RateLimiter::new(b as u128)))),
+                .map(|b| Arc::new(tokio::sync::Mutex::new(RateLimiter::new(b as u128)))),
         }
     }
 
