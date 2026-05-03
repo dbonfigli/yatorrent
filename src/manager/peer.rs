@@ -441,21 +441,20 @@ async fn rate_limit(proto_msg: &Message, rate_limiter: &Option<Arc<Mutex<RateLim
         // ignoring the message headers other type of messages, dht messages, transport protocol headers...
         // for now this is acceptable
         if let Message::Piece(_, _, data) = proto_msg {
-            // this mutex means that when a peer is rate limited, all the others peers are also blocked
-            // this might look bad but almost all the piece messages have the same size,
-            // "consume" will wait exactly the amount of time necessary to refill the needed tokens that is usually very small for normal max bandwidth values
-            // and thanks to this we avoid starvation and complicated logic to re-check the actual capacity after the wait
+            // this mutex means that when a peer is rate limited and blocked on a send or receive operation, all the others peers are also blocked.
+            // This might look bad, but:
+            // * almost all the piece messages have the same size, so a send or receive for another peer most probably would have to wait anyway
+            // * consume" will wait exactly the amount of time that is necessary to refill the needed tokens and this wait time is usually very small for normal max bandwidth values
+            // on the other hand, thanks to this we avoid starvation and a complicated logic to re-check the actual capacity after the wait time
             let mut r_mg = r.lock().await;
 
-            // the wait here means that we will stop receiving messages until the bucket is refilled *ALSO* for other non-piece types of messages.
-            //
+            // the wait here means that we will stop sending/receiving messages until the bucket is refilled *ALSO* for other non-piece types of messages.
             // The download rate limiter needs to read a message before deciding if it needs to rate limit,
-            // so for it we cannot do anything else other than block everything when the limit is reached.
-            //
+            // so for it we cannot do anything else other than block everything when the limit is reached (if the next message is also a piece, we fail to rate limit).
             // On the upload rate limiter, instead, in theory we can decide to apply the limit only on sending piece messages
-            // and, even if the limit is reached, we can decide to send the other kinds of messages without delays.
-            // But, for now, it is fine as is because the wait is usually very small for normal max bandwidth values.
-            // todo: split handling of send messages for piece and non-piece in 2 different queues in the future.
+            // and, even if the limit is reached, we can decide to send other kinds of messages without delays.
+            // But, for now, it is fine as is because the wait time is usually very small for normal max bandwidth values.
+            // todo: split handling of send messages for piece and non-piece in 2 different queues in the future to that non-piece messages are not blocked.
             r_mg.consume(data.len()).await
         }
     }
@@ -473,7 +472,6 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
     while let Some(manager_msg) = to_peer_rx.recv().await {
         match manager_msg {
             ToPeerMsg::Send(proto_msg) => {
-
                 rate_limit(&proto_msg, &upload_rate_limiter).await;
 
                 let mut is_sending_piece = false;
