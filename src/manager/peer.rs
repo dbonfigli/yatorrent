@@ -11,6 +11,7 @@ use tokio::sync::mpsc::Sender;
 use tokio::time::timeout;
 
 use crate::bencoding::Value;
+use crate::manager::rate_limiter::RateLimiter;
 use crate::torrent_protocol::wire_protocol::{
     BlockRequest, Message, Protocol, ProtocolReadHalf, ProtocolWriteHalf,
 };
@@ -267,6 +268,7 @@ pub fn start_peer_msg_handlers(
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
     to_peer_rx: Receiver<ToPeerMsg>,
     to_peer_cancel_rx: Receiver<ToPeerCancelMsg>,
+    download_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
 ) {
     let peers_to_torrent_manager_tx_for_snd_message_handler = peers_to_torrent_manager_tx.clone();
     let (read, write) = tokio::io::split(tcp_stream);
@@ -274,6 +276,7 @@ pub fn start_peer_msg_handlers(
         peer_addr.clone(),
         peers_to_torrent_manager_tx,
         read,
+        download_rate_limiter,
     ));
     let mut snd = tokio::spawn(snd_message_handler(
         peer_addr.clone(),
@@ -388,6 +391,7 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
     peer_addr: String,
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
     mut wire_proto: T,
+    download_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
 ) {
     loop {
         match timeout(
@@ -417,6 +421,7 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
                 break;
             }
             Ok(Ok(proto_msg)) => {
+                rate_limit(&proto_msg, &download_rate_limiter).await;
                 log::trace!("received from {peer_addr}: {proto_msg}");
                 send_to_torrent_manager(
                     &peers_to_torrent_manager_tx,
@@ -424,6 +429,25 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
                 )
                 .await;
             }
+        }
+    }
+}
+
+async fn rate_limit(proto_msg: &Message, download_rate_limiter: &Option<Arc<Mutex<RateLimiter>>>) {
+    if let Some(r) = download_rate_limiter {
+        // at the moment the rate limiter just counts on the actual data downloaded from blocks,
+        // ignoring the message headers other type of messages, dht messages, transport protocol headers...
+        // for how this is acceptable
+        if let Message::Piece(_, _, data) = proto_msg {
+            // this mutex means that when a peer is rate limited, all the others also are blocked
+            // this might look bad but almost all the piece messages have the same size,
+            // "consume" will wait exactly the amount of time necessary to refill the needed tokens that is usually very small for normal max bandwidth values
+            // and thanks to this we avoid starvation and complicated logic to re-check capacity after wait
+            let mut r_mg = r.lock().await;
+
+            // the wait here means that we will stop receiving messages until the bucket is refilled ALSO for other non-piece types of messages
+            // this is fine because the wait is usually very small for normal max bandwidth values
+            r_mg.consume(data.len()).await
         }
     }
 }

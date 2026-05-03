@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{CommandFactory, Parser};
 use manager::torrent_manager;
+use size::{self, Size};
 use std::env::current_dir;
 use std::path::Path;
 use std::process::exit;
@@ -60,6 +61,10 @@ struct Args {
     /// Maximum number of connected peers allowed
     #[arg(short = 'c', long, env, default_value_t = 100)]
     max_connected_peers: usize,
+
+    /// Max allowerd total download bandwidth, with associated unit, e.g 10MiB (MiB is different from MB, the value is always bytes regardless of the case of "b", optional, no limit if not provided)
+    #[arg(short = 'z', long, env)]
+    max_download_bandwidth: Option<String>,
 }
 
 #[derive(clap::ValueEnum, Debug, Clone)]
@@ -105,6 +110,11 @@ async fn main() -> Result<()> {
         }
     }
 
+    let max_download_bandwidth = get_bandwitdh(args.max_download_bandwidth).map(|d| {
+        log::info!("capping download bandwidth at {d}");
+        d.bytes()
+    });
+
     // read torrent file and start manager
     if let Some(torrent_file) = args.torrent_file {
         let contents = match fs::read(&torrent_file) {
@@ -147,6 +157,7 @@ async fn main() -> Result<()> {
                     Vec::new(),
                     args.show_peers_stats,
                     args.max_connected_peers,
+                    max_download_bandwidth,
                 )
                 .start()
                 .await;
@@ -173,6 +184,7 @@ async fn main() -> Result<()> {
                     magnet.peer_addresses,
                     args.show_peers_stats,
                     args.max_connected_peers,
+                    max_download_bandwidth,
                 )
                 .start()
                 .await;
@@ -190,4 +202,14 @@ async fn main() -> Result<()> {
         .print_help()
         .expect("contradictory arguments");
     exit(1);
+}
+
+fn get_bandwitdh(bandwidth: Option<String>) -> Option<Size> {
+    bandwidth.map(|b| match Size::from_str(&b) {
+        Err(e) => {
+            log::error!("could not parse bandwidth {b}: {e}");
+            exit(1)
+        }
+        Ok(v) => v,
+    })
 }
