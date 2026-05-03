@@ -14,10 +14,12 @@ pub const MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT: usize = 500;
 
 const MAX_OUTSTANDING_PIECES: usize = 2000;
 const MIN_OUTSTANDING_BLOCK_REQUESTS: usize = 5;
-const BLOCK_SIZE_B: u64 = 16384;
+pub const BLOCK_SIZE_B: u64 = 16384;
 
-// requests are calculated based on bandwidth so that the fill up the pipe for BUFFER_TIME seconds
-const BUFFER_TIME: f64 = 3.;
+// requests are calculated based on bandwidth so that they fill up the pipe up to some seconds capped by the below consts
+const RTT_MULTIPLIER: f64 = 1.2;
+const MIN_TARGET_BUFFER_TIME_SECONDS: f64 = 0.5;
+const MAX_TARGET_BUFFER_TIME_SECONDS: f64 = 2.;
 
 const BLOCK_DELAYED_ARRIVAL_LOG_THRESHOLD: Duration = Duration::from_secs(60);
 
@@ -449,10 +451,21 @@ impl PieceRequestor {
 }
 
 fn max_outstanding_reqs(peer: &Peer) -> usize {
-    // we want to pipeline requests to a peer so that the pipe is full for up to BUFFER_TIME seconds
     let bandwidth_down = peer.bandwidth_tracker().avg_bandwidth_down();
+
+    let rtt = peer
+        .get_rtt()
+        .unwrap_or(Duration::from_secs(1))
+        .as_secs_f64();
+
+    // we want to pipeline requests to a peer so that the pipe is full for up to the target buffer time
+    let target_buffer_time = (rtt * RTT_MULTIPLIER).clamp(
+        MIN_TARGET_BUFFER_TIME_SECONDS,
+        MAX_TARGET_BUFFER_TIME_SECONDS,
+    );
+
     let reqs_to_fill_cur_bandwidth_for_buffer_time =
-        (bandwidth_down / BLOCK_SIZE_B as f64 * BUFFER_TIME) as usize;
+        (bandwidth_down / BLOCK_SIZE_B as f64 * target_buffer_time) as usize;
 
     // if current bandwith is 0, we want at least some requests to be performed
     let min_reqs = max(
@@ -465,5 +478,6 @@ fn max_outstanding_reqs(peer: &Peer) -> usize {
         peer.get_reqq(),
         MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT,
     );
+
     return min(min_reqs, max_reqs);
 }

@@ -47,6 +47,10 @@ Options:
           Show detailed stats per peer [env: SHOW_PEERS_STATS=]
   -c, --max-connected-peers <MAX_CONNECTED_PEERS>
           Maximum number of connected peers allowed [env: MAX_CONNECTED_PEERS=] [default: 100]
+  -z, --max-download-bandwidth <MAX_DOWNLOAD_BANDWIDTH>
+          Max allowerd total download bandwidth, with associated unit, e.g 10MiB (MiB is different from MB, the value is always bytes regardless of the case of "b", optional, no limit if not provided) [env: MAX_DOWNLOAD_BANDWIDTH=]
+  -u, --max-upload-bandwidth <MAX_UPLOAD_BANDWIDTH>
+          Max allowerd total upload bandwidth, with associated unit, e.g 10MiB (MiB is different from MB, the value is always bytes regardless of the case of "b", optional, no limit if not provided) [env: MAX_UPLOAD_BANDWIDTH=]
   -h, --help
           Print help
   -V, --version
@@ -56,7 +60,6 @@ Options:
 Things yet to be implemented / todos:
 
 - cache writes
-- optionally limit upload/download speed
 - better choking algorithm
 - check for stalled downloads / try new peers if no current one has a piece we want
 - better algorithm to exclude bad peers for new connections
