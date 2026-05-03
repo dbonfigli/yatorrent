@@ -325,7 +325,8 @@ pub struct TorrentManager {
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
     peers_to_torrent_manager_rx: Receiver<PeersToManagerMsg>,
 
-    rate_limiter: Option<Arc<tokio::sync::Mutex<RateLimiter>>>,
+    download_rate_limiter: Option<Arc<tokio::sync::Mutex<RateLimiter>>>,
+    upload_rate_limiter: Option<Arc<tokio::sync::Mutex<RateLimiter>>>,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -353,6 +354,7 @@ impl TorrentManager {
         show_peers_details: bool,
         max_connected_peers: usize,
         max_download_bandwidth: Option<i64>,
+        max_upload_bandwidth: Option<i64>,
     ) -> Self {
         let own_peer_id = generate_peer_id();
         let mut initial_advertised_peers = HashMap::new();
@@ -428,7 +430,9 @@ impl TorrentManager {
             peers_to_torrent_manager_tx,
             peers_to_torrent_manager_rx,
 
-            rate_limiter: max_download_bandwidth
+            download_rate_limiter: max_download_bandwidth
+                .map(|b| Arc::new(tokyoMutex::new(RateLimiter::new(b as f64)))),
+            upload_rate_limiter: max_upload_bandwidth
                 .map(|b| Arc::new(tokyoMutex::new(RateLimiter::new(b as f64)))),
         }
     }
@@ -1714,14 +1718,14 @@ impl TorrentManager {
         };
         let (to_peer_tx, to_peer_rx) = mpsc::channel(TO_PEER_CHANNEL_CAPACITY);
         let (to_peer_cancel_tx, to_peer_cancel_rx) = mpsc::channel(TO_PEER_CANCEL_CHANNEL_CAPACITY);
-        let rate_limiter_for_peer = self.rate_limiter.as_ref().map(|a| a.clone());
         peer::start_peer_msg_handlers(
             peer_addr.clone(),
             tcp_stream,
             self.peers_to_torrent_manager_tx.clone(),
             to_peer_rx,
             to_peer_cancel_rx,
-            rate_limiter_for_peer,
+            self.download_rate_limiter.as_ref().map(|a| a.clone()),
+            self.upload_rate_limiter.as_ref().map(|a| a.clone()),
         );
         self.peers.insert(
             peer_addr.clone(),

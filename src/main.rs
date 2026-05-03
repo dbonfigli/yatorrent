@@ -65,6 +65,10 @@ struct Args {
     /// Max allowerd total download bandwidth, with associated unit, e.g 10MiB (MiB is different from MB, the value is always bytes regardless of the case of "b", optional, no limit if not provided)
     #[arg(short = 'z', long, env)]
     max_download_bandwidth: Option<String>,
+
+    /// Max allowerd total upload bandwidth, with associated unit, e.g 10MiB (MiB is different from MB, the value is always bytes regardless of the case of "b", optional, no limit if not provided)
+    #[arg(short = 'u', long, env)]
+    max_upload_bandwidth: Option<String>,
 }
 
 #[derive(clap::ValueEnum, Debug, Clone)]
@@ -115,6 +119,11 @@ async fn main() -> Result<()> {
         d.bytes()
     });
 
+    let max_upload_bandwidth = get_bandwitdh(args.max_upload_bandwidth).map(|d| {
+        log::info!("capping upload bandwidth at {d}");
+        d.bytes()
+    });
+
     // read torrent file and start manager
     if let Some(torrent_file) = args.torrent_file {
         let contents = match fs::read(&torrent_file) {
@@ -158,6 +167,7 @@ async fn main() -> Result<()> {
                     args.show_peers_stats,
                     args.max_connected_peers,
                     max_download_bandwidth,
+                    max_upload_bandwidth,
                 )
                 .start()
                 .await;
@@ -185,6 +195,7 @@ async fn main() -> Result<()> {
                     args.show_peers_stats,
                     args.max_connected_peers,
                     max_download_bandwidth,
+                    max_upload_bandwidth,
                 )
                 .start()
                 .await;

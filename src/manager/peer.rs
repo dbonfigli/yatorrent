@@ -269,6 +269,7 @@ pub fn start_peer_msg_handlers(
     to_peer_rx: Receiver<ToPeerMsg>,
     to_peer_cancel_rx: Receiver<ToPeerCancelMsg>,
     download_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
+    upload_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
 ) {
     let peers_to_torrent_manager_tx_for_snd_message_handler = peers_to_torrent_manager_tx.clone();
     let (read, write) = tokio::io::split(tcp_stream);
@@ -284,6 +285,7 @@ pub fn start_peer_msg_handlers(
         peers_to_torrent_manager_tx_for_snd_message_handler,
         write,
         to_peer_cancel_rx,
+        upload_rate_limiter,
     ));
     tokio::spawn(async move {
         tokio::select! {
@@ -433,20 +435,27 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
     }
 }
 
-async fn rate_limit(proto_msg: &Message, download_rate_limiter: &Option<Arc<Mutex<RateLimiter>>>) {
-    if let Some(r) = download_rate_limiter {
+async fn rate_limit(proto_msg: &Message, rate_limiter: &Option<Arc<Mutex<RateLimiter>>>) {
+    if let Some(r) = rate_limiter {
         // at the moment the rate limiter just counts on the actual data downloaded from blocks,
         // ignoring the message headers other type of messages, dht messages, transport protocol headers...
-        // for how this is acceptable
+        // for now this is acceptable
         if let Message::Piece(_, _, data) = proto_msg {
-            // this mutex means that when a peer is rate limited, all the others also are blocked
+            // this mutex means that when a peer is rate limited, all the others peers are also blocked
             // this might look bad but almost all the piece messages have the same size,
             // "consume" will wait exactly the amount of time necessary to refill the needed tokens that is usually very small for normal max bandwidth values
-            // and thanks to this we avoid starvation and complicated logic to re-check capacity after wait
+            // and thanks to this we avoid starvation and complicated logic to re-check the actual capacity after the wait
             let mut r_mg = r.lock().await;
 
-            // the wait here means that we will stop receiving messages until the bucket is refilled ALSO for other non-piece types of messages
-            // this is fine because the wait is usually very small for normal max bandwidth values
+            // the wait here means that we will stop receiving messages until the bucket is refilled *ALSO* for other non-piece types of messages.
+            //
+            // The download rate limiter needs to read a message before deciding if it needs to rate limit,
+            // so for it we cannot do anything else other than block everything when the limit is reached.
+            //
+            // On the upload rate limiter, instead, in theory we can decide to apply the limit only on sending piece messages
+            // and, even if the limit is reached, we can decide to send the other kinds of messages without delays.
+            // But, for now, it is fine as is because the wait is usually very small for normal max bandwidth values.
+            // todo: split handling of send messages for piece and non-piece in 2 different queues in the future.
             r_mg.consume(data.len()).await
         }
     }
@@ -458,11 +467,15 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
     mut wire_proto: T,
     mut to_peer_cancel_rx: Receiver<ToPeerCancelMsg>,
+    upload_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
 ) {
     let mut cancellations = HashMap::<BlockRequest, SystemTime>::new();
     while let Some(manager_msg) = to_peer_rx.recv().await {
         match manager_msg {
             ToPeerMsg::Send(proto_msg) => {
+
+                rate_limit(&proto_msg, &upload_rate_limiter).await;
+
                 let mut is_sending_piece = false;
 
                 // avoid sending data if the request has already been canceled by the peer
