@@ -1,7 +1,7 @@
 use anyhow::{Error, Result, bail};
 use colored::Colorize;
 use sha1::{Digest, Sha1};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -27,14 +27,15 @@ use crate::manager::piece_requestor::{
 use crate::manager::rate_limiter::RateLimiter;
 use crate::metadata::infodict::{self};
 use crate::metadata::metainfo::get_files;
-use crate::persistence::file_manager::ShaCorruptedError;
+use crate::persistence::file_manager::{
+    FileManagerStatus, FileManagerToTorrentManagerMsg, ReadPieceBlockRequest,
+    ReadPieceBlockResponse, ShaCorruptedError, ToFileManagerMsg, WritePieceBlockRequest,
+    WritePieceBlockResponse, start_file_manager,
+};
 use crate::torrent_protocol::wire_protocol::{BlockRequest, Message};
 use crate::tracker;
+use crate::tracker::{Event, NoTrackerError, Response, TrackerClient};
 use crate::util::{force_string, start_tick};
-use crate::{
-    persistence::file_manager::FileManager,
-    tracker::{Event, NoTrackerError, Response, TrackerClient},
-};
 
 use crate::bencoding::Value::{self, Dict, Int, Str};
 
@@ -284,7 +285,7 @@ impl Peer {
 }
 
 pub struct TorrentManager {
-    file_manager: Option<FileManager>,
+    file_manager_status: Option<FileManagerStatus>,
     metadata_handler: MetadataHandler,
     base_path: PathBuf,
     tracker_client: Arc<Mutex<TrackerClient>>,
@@ -324,6 +325,11 @@ pub struct TorrentManager {
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
     peers_to_torrent_manager_rx: Receiver<PeersToManagerMsg>,
 
+    to_file_manager_tx: Sender<ToFileManagerMsg>,
+    to_file_manager_rx: Option<Receiver<ToFileManagerMsg>>, // optional bc we will move it to the file manager handler at start
+    file_manager_to_torrent_manager_tx: Option<Sender<FileManagerToTorrentManagerMsg>>, // optional bc we will move it to the file manager handler at start
+    file_manager_to_torrent_manager_rx: Receiver<FileManagerToTorrentManagerMsg>,
+
     download_rate_limiter: Option<Arc<tokio::sync::Mutex<RateLimiter>>>,
     upload_rate_limiter: Option<Arc<tokio::sync::Mutex<RateLimiter>>>,
 }
@@ -335,7 +341,7 @@ enum PexEvent {
 }
 
 impl TorrentManager {
-    pub fn new(
+    pub async fn new(
         info_hash: [u8; 20],
         base_path: &Path,
         listening_torrent_wire_protocol_port: u16,
@@ -379,16 +385,12 @@ impl TorrentManager {
         let (piece_completion_status_tx, piece_completion_status_rx) = mpsc::channel(100);
         let (peers_to_torrent_manager_tx, peers_to_torrent_manager_rx) =
             mpsc::channel::<PeersToManagerMsg>(PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY);
-        TorrentManager {
-            file_manager: match files_data {
-                Some((file_list, piece_length, piece_hashes)) => Some(FileManager::new(
-                    base_path,
-                    file_list,
-                    piece_length,
-                    piece_hashes,
-                )),
-                None => None,
-            },
+        let (to_file_manager_tx, to_file_manager_rx) = mpsc::channel(100);
+        let (file_manager_to_torrent_manager_tx, file_manager_to_torrent_manager_rx) =
+            mpsc::channel(100);
+
+        let mut tm = TorrentManager {
+            file_manager_status: None,
             metadata_handler: MetadataHandler::new(
                 raw_metadata.as_ref().map(|m| m.len() as i64).or(None),
                 raw_metadata,
@@ -428,12 +430,50 @@ impl TorrentManager {
             piece_completion_status_rx: Some(piece_completion_status_rx),
             peers_to_torrent_manager_tx,
             peers_to_torrent_manager_rx,
+            to_file_manager_tx,
+            to_file_manager_rx: Some(to_file_manager_rx),
+            file_manager_to_torrent_manager_tx: Some(file_manager_to_torrent_manager_tx),
+            file_manager_to_torrent_manager_rx,
 
             download_rate_limiter: max_download_bandwidth
                 .map(|b| Arc::new(tokio::sync::Mutex::new(RateLimiter::new(b as u128)))),
             upload_rate_limiter: max_upload_bandwidth
                 .map(|b| Arc::new(tokio::sync::Mutex::new(RateLimiter::new(b as u128)))),
+        };
+
+        // todo make this more elegant
+        match files_data {
+            Some((file_list, piece_length, piece_hashes)) => {
+                let mut missing_pieces = BTreeSet::new();
+                for idx in 0..piece_hashes.len() {
+                    missing_pieces.insert(idx);
+                }
+                tm.file_manager_status = Some(FileManagerStatus {
+                    piece_hashes: piece_hashes.clone(),
+                    piece_to_files: Vec::new(),
+                    piece_completion_status: vec![false; piece_hashes.len()],
+                    missing_pieces: missing_pieces,
+                    incomplete_pieces: HashMap::new(),
+                    wasted_bytes: 0,
+                });
+                start_file_manager(
+                    base_path,
+                    file_list,
+                    piece_length,
+                    piece_hashes,
+                    tm.to_file_manager_rx
+                        .take()
+                        .expect("no to_file_manager_rx, has start been called twice?"),
+                    tm.file_manager_to_torrent_manager_tx.take().expect(
+                        "no file_manager_to_torrent_manager_tx, has start been called twice?",
+                    ),
+                )
+                .await;
+            }
+            None => {}
         }
+
+        return tm;
     }
 
     pub async fn start(&mut self) {
@@ -459,7 +499,7 @@ impl TorrentManager {
             self.info_hash.clone(),
             self.own_peer_id.clone(),
             self.listening_torrent_wire_protocol_port.clone(),
-            self.file_manager
+            self.file_manager_status
                 .as_ref()
                 .map(|f| f.current_piece_completion_status()),
             self.ok_to_accept_connection_rx
@@ -494,17 +534,33 @@ impl TorrentManager {
                 Some(msg) = self.peers_to_torrent_manager_rx.recv() => {
                     match msg {
                         PeersToManagerMsg::Error(peer_addr, error_type) => {
+                            log::warn!("handing PeersToManagerMsg::Error");
                             self.handle_peer_error(peer_addr, error_type).await;
                         }
                         PeersToManagerMsg::Receive(peer_addr, msg) => {
+                            log::warn!("handing PeersToManagerMsg::Receive");
                             self.handle_receive_message(peer_addr, msg).await;
                         }
                         PeersToManagerMsg::NewPeer(tcp_stream, supports_fast_extension) => {
+                            log::warn!("handing PeersToManagerMsg::NewPeer");
                             self.handle_new_peer(tcp_stream, supports_fast_extension).await;
                         }
                         PeersToManagerMsg::PieceBlockRequestFulfilled(peer_addr) => {
                             // should we maybe use a separate channel for this?
+                            log::warn!("handing PeersToManagerMsg::PieceBlockRequestFulfilled");
                             self.handle_piece_block_request_fulfilled(peer_addr);
+                        },
+                    }
+                }
+                Some(msg) = self.file_manager_to_torrent_manager_rx.recv() => {
+                    match msg {
+                        FileManagerToTorrentManagerMsg::WritePieceBlockResponse(write_piece_block_response) => {
+                            log::warn!("handing FileManagerToTorrentManagerMsg::WritePieceBlockResponse {}", self.file_manager_to_torrent_manager_rx.capacity());
+                            self.handle_write_piece_block_response(write_piece_block_response).await;
+                        },
+                        FileManagerToTorrentManagerMsg::ReadPieceBlockResponse(read_piece_block_response) => {
+                            log::warn!("handing FileManagerToTorrentManagerMsg::ReadPieceBlockResponse {}", self.file_manager_to_torrent_manager_rx.capacity());
+                            self.handle_read_piece_block_response(read_piece_block_response).await;
                         },
                     }
                 }
@@ -518,6 +574,147 @@ impl TorrentManager {
                     drop(advertised_peers_mg);
                 }
                 else => break,
+            }
+        }
+    }
+
+    async fn handle_write_piece_block_response(
+        &mut self,
+        write_piece_block_response: WritePieceBlockResponse,
+    ) {
+        self.file_manager_status = Some(write_piece_block_response.new_file_manager_status);
+        match write_piece_block_response.response {
+            Ok(piece_completed) => {
+                let rtt = self.piece_requestor.block_request_completed(
+                    &write_piece_block_response.request.requestor_peer_addr,
+                    &BlockRequest {
+                        piece_idx: write_piece_block_response.request.piece_idx as u32,
+                        block_begin: write_piece_block_response.request.block_begin as u32,
+                        data_len: write_piece_block_response.request.data_len as u32,
+                    },
+                );
+                if let Some(rtt) = rtt {
+                    if let Some(peer) = self
+                        .peers
+                        .get_mut(&write_piece_block_response.request.requestor_peer_addr)
+                    {
+                        peer.update_rtt(rtt);
+                    }
+                }
+                if piece_completed {
+                    self.piece_requestor.piece_request_completed(
+                        &write_piece_block_response.request.requestor_peer_addr,
+                        write_piece_block_response.request.piece_idx,
+                    );
+
+                    if !self.completed_sent_to_tracker
+                        && self
+                            .file_manager_status
+                            .as_mut()
+                            .expect("invariant checked above")
+                            .completed()
+                    {
+                        log::warn!("torrent download completed");
+                        self.completed_sent_to_tracker = true;
+                        self.async_request_to_tracker(Event::Completed).await;
+                    }
+
+                    let _ = self
+                        .piece_completion_status_tx
+                        .send(
+                            self.file_manager_status
+                                .as_mut()
+                                .expect("invariant checked above")
+                                .current_piece_completion_status(),
+                        )
+                        .await;
+
+                    for (_, peer) in self.peers.iter_mut() {
+                        // send "have" to all peers
+                        peer.send(ToPeerMsg::Send(Message::Have(
+                            write_piece_block_response.request.piece_idx as u32,
+                        )))
+                        .await;
+
+                        // send "not interested" if needed
+                        if peer.am_interested
+                            && !peer_has_pieces_we_dont_have(
+                                peer,
+                                self.file_manager_status
+                                    .as_mut()
+                                    .expect("invariant checked above"),
+                            )
+                        {
+                            log::trace!("sending not interested to {}", peer.peer_addr);
+                            peer.am_interested = false;
+                            peer.send(ToPeerMsg::Send(Message::NotInterested)).await;
+                        }
+                    }
+                }
+                // since we received a piece block, we can try to send more requests immediately to this peer, without waiting for a tick
+                self.send_pieces_reqs_for_peer(
+                    write_piece_block_response.request.requestor_peer_addr,
+                )
+                .await;
+            }
+            Err(e) => {
+                log::error!(
+                    "cannot write block received from {}: {e}",
+                    write_piece_block_response.request.requestor_peer_addr
+                );
+
+                // keep track of corruptions, remove if too many
+                if let Some(_) = e.downcast_ref::<ShaCorruptedError>() {
+                    let peer = match self
+                        .peers
+                        .get_mut(&write_piece_block_response.request.requestor_peer_addr)
+                    {
+                        Some(peer) => peer,
+                        None => return,
+                    };
+                    peer.corruption_errors += 1;
+                    if peer.corruption_errors > MAX_CORRUPTION_ERRORS {
+                        log::warn!(
+                            "removing peer {} due to too many corrupted pieces received",
+                            write_piece_block_response.request.requestor_peer_addr
+                        );
+                        peer.send(ToPeerMsg::Disconnect()).await;
+                        self.remove_peer(write_piece_block_response.request.requestor_peer_addr)
+                            .await;
+                    }
+                }
+            }
+        }
+    }
+
+    async fn handle_read_piece_block_response(
+        &mut self,
+        read_piece_block_response: ReadPieceBlockResponse,
+    ) {
+        let peer = match self
+            .peers
+            .get_mut(&read_piece_block_response.request.requestor_peer_addr)
+        {
+            Some(peer) => peer,
+            None => return,
+        };
+
+        match read_piece_block_response.response {
+            Err(e) => {
+                log::error!("error reading block: {e}");
+                peer.outstanding_incoming_piece_block_requests -= 1;
+            }
+
+            Ok(data) => {
+                let data_len = data.len() as u64;
+                peer.send(ToPeerMsg::Send(Message::Piece(
+                    read_piece_block_response.request.piece_idx as u32,
+                    read_piece_block_response.request.block_begin as u32,
+                    data,
+                )))
+                .await;
+                peer.bandwidth_tracker.add_uploaded_bytes(data_len);
+                self.bandwidth_tracker.add_uploaded_bytes(data_len); // todo: we are not keeping track of cancelled pieces
             }
         }
     }
@@ -614,8 +811,8 @@ impl TorrentManager {
             None => return,
         };
 
-        let file_manager = match &mut self.file_manager {
-            Some(file_manager) => file_manager,
+        let file_manager_status = match &mut self.file_manager_status {
+            Some(file_manager_status) => file_manager_status,
             None => return,
         };
 
@@ -629,7 +826,9 @@ impl TorrentManager {
             peer_haves[piece_idx as usize] = true;
 
             // send interest if needed
-            if !peer.am_interested && !file_manager.piece_completion_status(piece_idx as usize) {
+            if !peer.am_interested
+                && !file_manager_status.piece_completion_status(piece_idx as usize)
+            {
                 peer.am_interested = true;
                 peer.send(ToPeerMsg::Send(Message::Interested)).await;
             }
@@ -643,16 +842,16 @@ impl TorrentManager {
     }
 
     async fn handle_receive_bitfield_message(&mut self, peer_addr: String, bitfield: Vec<bool>) {
-        let file_manager = match &mut self.file_manager {
-            Some(file_manager) => file_manager,
+        let file_manager_status = match &mut self.file_manager_status {
+            Some(file_manager_status) => file_manager_status,
             None => return,
         };
 
-        if bitfield.len() < file_manager.num_pieces() {
+        if bitfield.len() < file_manager_status.num_pieces() {
             log::warn!(
                 "received wrongly sized bitfield from peer {peer_addr}: received {} bits but expected {}",
                 bitfield.len(),
-                file_manager.num_pieces()
+                file_manager_status.num_pieces()
             );
             self.bad_peers.insert(peer_addr.clone());
             self.remove_peer(peer_addr).await;
@@ -663,7 +862,7 @@ impl TorrentManager {
             }
 
             // bitfield is byte aligned, it could contain more bits than pieces in the torrent
-            peer.haves = Some(bitfield[0..file_manager.num_pieces()].to_vec());
+            peer.haves = Some(bitfield[0..file_manager_status.num_pieces()].to_vec());
             let haves = peer.haves.as_ref().expect("just added above");
             log::trace!(
                 "received bitfield from peer {peer_addr}: it has {}/{} pieces",
@@ -676,7 +875,7 @@ impl TorrentManager {
             // check if we need to send interest
             if !peer.am_interested {
                 for piece_idx in 0..haves.len() {
-                    if !file_manager.piece_completion_status(piece_idx) && haves[piece_idx] {
+                    if !file_manager_status.piece_completion_status(piece_idx) && haves[piece_idx] {
                         peer.am_interested = true;
                         peer.send(ToPeerMsg::Send(Message::Interested)).await;
                         break;
@@ -707,8 +906,8 @@ impl TorrentManager {
         peer_addr: String,
         block_request: BlockRequest,
     ) {
-        let file_manager = match &mut self.file_manager {
-            Some(file_manager) => file_manager,
+        let _ = match &mut self.file_manager_status {
+            Some(_) => {}
             None => return,
         };
 
@@ -738,30 +937,24 @@ impl TorrentManager {
             return;
         }
 
-        // else, we are not choking, send block
+        // else, we are not choking, we can send the block, read the piece, once read, we will send it
         peer.outstanding_incoming_piece_block_requests += 1;
-        match file_manager.read_piece_block(
-            block_request.piece_idx as usize,
-            block_request.block_begin as u64,
-            block_request.data_len as u64,
-        ) {
-            Err(e) => {
-                log::error!("error reading block: {e}");
-                peer.outstanding_incoming_piece_block_requests -= 1;
-            }
 
-            Ok(data) => {
-                let data_len = data.len() as u64;
-                peer.send(ToPeerMsg::Send(Message::Piece(
-                    block_request.piece_idx,
-                    block_request.block_begin,
-                    data,
-                )))
-                .await;
-                peer.bandwidth_tracker.add_uploaded_bytes(data_len);
-                self.bandwidth_tracker.add_uploaded_bytes(data_len); // todo: we are not keeping track of cancelled pieces
-            }
-        }
+        log::warn!(
+            "sending ToFileManagerMsg::ReadPieceBlock(ReadPieceBlockRequest {}",
+            self.to_file_manager_tx.capacity()
+        );
+
+        let _ = self
+            .to_file_manager_tx
+            .send(ToFileManagerMsg::ReadPieceBlock(ReadPieceBlockRequest {
+                requestor_peer_addr: peer_addr,
+                piece_idx: block_request.piece_idx as usize,
+                block_begin: block_request.block_begin as u64,
+                block_length: block_request.data_len as u64,
+            }))
+            .await;
+        // once the block is read, we will send it on handle_read_piece_block_response
     }
 
     async fn handle_suggest_message(&mut self, peer_addr: String, _piece_idx: u32) {
@@ -780,8 +973,8 @@ impl TorrentManager {
     }
 
     async fn handle_have_all_message(&mut self, peer_addr: String) {
-        let file_manager = match &mut self.file_manager {
-            Some(file_manager) => file_manager,
+        let file_manager_status = match &mut self.file_manager_status {
+            Some(file_manager_status) => file_manager_status,
             None => return,
         };
 
@@ -795,12 +988,12 @@ impl TorrentManager {
                 return;
             }
 
-            peer.haves = Some(vec![true; file_manager.num_pieces()]);
+            peer.haves = Some(vec![true; file_manager_status.num_pieces()]);
 
             // check if we need to send interest
             if !peer.am_interested {
-                for piece_idx in 0..file_manager.num_pieces() {
-                    if !file_manager.piece_completion_status(piece_idx) {
+                for piece_idx in 0..file_manager_status.num_pieces() {
+                    if !file_manager_status.piece_completion_status(piece_idx) {
                         peer.am_interested = true;
                         peer.send(ToPeerMsg::Send(Message::Interested)).await;
                         break;
@@ -812,7 +1005,7 @@ impl TorrentManager {
     }
 
     async fn handle_have_none_message(&mut self, peer_addr: String) {
-        let file_manager = match &mut self.file_manager {
+        let file_manager_status = match &mut self.file_manager_status {
             Some(file_manager) => file_manager,
             None => return,
         };
@@ -827,7 +1020,7 @@ impl TorrentManager {
                 return;
             }
 
-            peer.haves = Some(vec![false; file_manager.num_pieces()]);
+            peer.haves = Some(vec![false; file_manager_status.num_pieces()]);
         }
     }
 
@@ -846,7 +1039,7 @@ impl TorrentManager {
     }
 
     async fn handle_allow_fast_message(&mut self, peer_addr: String, _piece_idx: usize) {
-        let _file_manager = match &mut self.file_manager {
+        let _file_manager_status = match &mut self.file_manager_status {
             Some(file_manager) => file_manager,
             None => return,
         };
@@ -1142,7 +1335,7 @@ impl TorrentManager {
             }
         };
 
-        if self.file_manager.is_some() || piece_idx < 0 {
+        if self.file_manager_status.is_some() || piece_idx < 0 {
             // we are not interested in this message
             return;
         }
@@ -1181,12 +1374,29 @@ impl TorrentManager {
                 log::warn!(
                     "metadata download completed, we can now start downloading the actual torrent data..."
                 );
-                self.file_manager = Some(FileManager::new(
+
+                // tm.file_manager_status = Some(FileManagerStatus {
+                //     piece_hashes: piece_hashes.clone(),
+                //     piece_to_files: Vec::new(),
+                //     piece_completion_status: vec![false; piece_hashes.len()],
+                //     missing_pieces: BTreeSet::new(),
+                //     incomplete_pieces: HashMap::new(),
+                //     wasted_bytes: 0,
+                // });
+                start_file_manager(
                     self.base_path.as_path(),
                     get_files(&m),
                     piece_length,
                     piece_hashes,
-                ));
+                    self.to_file_manager_rx
+                        .take()
+                        .expect("no to_file_manager_rx, has start been called twice?"),
+                    self.file_manager_to_torrent_manager_tx.take().expect(
+                        "no file_manager_to_torrent_manager_tx, has start been called twice?",
+                    ),
+                )
+                .await;
+
                 // we finally have the metadata and can exchange files
                 // we discarded have messages (we could not save them because we could not know how many pieces there were in total)
                 // and, most importantly, bitfield messages from peers till now, so, let's disconnect from the current peers:
@@ -1225,7 +1435,7 @@ impl TorrentManager {
         begin: u32,
         data: Vec<u8>,
     ) {
-        if self.file_manager.is_none() {
+        if self.file_manager_status.is_none() {
             return;
         }
 
@@ -1235,98 +1445,20 @@ impl TorrentManager {
             peer.bandwidth_tracker.add_downloaded_bytes(data_len);
         }
 
-        match self
-            .file_manager
-            .as_mut()
-            .expect("invariant checked above")
-            .write_piece_block(piece_idx as usize, data, begin as u64)
-        {
-            Ok(piece_completed) => {
-                let rtt = self.piece_requestor.block_request_completed(
-                    &peer_addr,
-                    &BlockRequest {
-                        piece_idx,
-                        block_begin: begin,
-                        data_len: data_len as u32,
-                    },
-                );
-                if let Some(rtt) = rtt {
-                    if let Some(peer) = self.peers.get_mut(&peer_addr) {
-                        peer.update_rtt(rtt);
-                    }
-                }
-                if piece_completed {
-                    self.piece_requestor
-                        .piece_request_completed(&peer_addr, piece_idx as usize);
-
-                    if !self.completed_sent_to_tracker
-                        && self
-                            .file_manager
-                            .as_mut()
-                            .expect("invariant checked above")
-                            .completed()
-                    {
-                        log::warn!("torrent download completed");
-                        self.completed_sent_to_tracker = true;
-                        self.async_request_to_tracker(Event::Completed).await;
-                    }
-
-                    // ignore errors here: it can happen that the channel is closed on the other side if the rx handler loop exited
-                    // due to network errors and the peer is still lingering in self.peers because the control message about the error is not yet been handled
-                    let _ = self
-                        .piece_completion_status_tx
-                        .send(
-                            self.file_manager
-                                .as_mut()
-                                .expect("invariant checked above")
-                                .current_piece_completion_status(),
-                        )
-                        .await;
-
-                    for (_, peer) in self.peers.iter_mut() {
-                        // send "have" to all peers
-                        peer.send(ToPeerMsg::Send(Message::Have(piece_idx))).await;
-
-                        // send "not interested" if needed
-                        if peer.am_interested
-                            && !peer_has_pieces_we_dont_have(
-                                peer,
-                                self.file_manager.as_mut().expect("invariant checked above"),
-                            )
-                        {
-                            log::trace!("sending not interested to {}", peer.peer_addr);
-                            peer.am_interested = false;
-                            peer.send(ToPeerMsg::Send(Message::NotInterested)).await;
-                        }
-                    }
-                }
-                // since we received a piece block, we can try to send more requests immediately to this peer, without waiting for a tick
-                self.send_pieces_reqs_for_peer(peer_addr).await;
-            }
-            Err(e) => {
-                log::error!("cannot write block received from {peer_addr}: {e}");
-
-                // keep track of corruptions, remove if too many
-                if let Some(_) = e.downcast_ref::<ShaCorruptedError>() {
-                    let peer = match self.peers.get_mut(&peer_addr) {
-                        Some(peer) => peer,
-                        None => return,
-                    };
-                    peer.corruption_errors += 1;
-                    if peer.corruption_errors > MAX_CORRUPTION_ERRORS {
-                        log::warn!(
-                            "removing peer {peer_addr} due to too many corrupted pieces received"
-                        );
-                        peer.send(ToPeerMsg::Disconnect()).await;
-                        self.remove_peer(peer_addr).await;
-                    }
-                }
-            }
-        }
+        let _ = self
+            .to_file_manager_tx
+            .send(ToFileManagerMsg::WritePieceBlock(WritePieceBlockRequest {
+                requestor_peer_addr: peer_addr,
+                piece_idx: piece_idx as usize,
+                data,
+                block_begin: begin as u64,
+            }))
+            .await;
+        // once block has been confirmed to be written, the logic will continue at handle_write_piece_block_response
     }
 
     async fn send_pieces_reqs_for_peer(&mut self, peer_addr: String) {
-        let file_manager = match &self.file_manager {
+        let file_manager_status = match &self.file_manager_status {
             Some(file_manager) => file_manager,
             None => return,
         };
@@ -1340,7 +1472,7 @@ impl TorrentManager {
         let reqs_to_send = self.piece_requestor.generate_requests_to_send_for_peer(
             &peer_addr,
             &peer,
-            file_manager,
+            file_manager_status,
         );
 
         // finally send requests
@@ -1445,7 +1577,7 @@ impl TorrentManager {
                     self.info_hash,
                     self.own_peer_id.clone(),
                     self.listening_torrent_wire_protocol_port,
-                    self.file_manager
+                    self.file_manager_status
                         .as_ref()
                         .map(|f| f.current_piece_completion_status()),
                     self.metadata_handler.raw_metadata_size(),
@@ -1509,7 +1641,7 @@ impl TorrentManager {
                 && !should_choke(
                     self.peers_to_torrent_manager_tx.capacity(),
                     peer.outstanding_incoming_piece_block_requests,
-                    self.file_manager.is_some(),
+                    self.file_manager_status.is_some(),
                 )
             {
                 peer.am_choking = false;
@@ -1520,10 +1652,10 @@ impl TorrentManager {
 
     async fn check_endgame_status(&mut self) {
         // check endgame status a decrease request timeout if needed
-        if let Some(file_manager) = &self.file_manager {
+        if let Some(file_manager_status) = &self.file_manager_status {
             if self.request_timeout != ENDGAME_REQUEST_TIMEOUT {
-                let completed_pieces = file_manager.completed_pieces();
-                let total_pieces = file_manager.num_pieces();
+                let completed_pieces = file_manager_status.completed_pieces();
+                let total_pieces = file_manager_status.num_pieces();
                 if (completed_pieces as f64) / (total_pieces as f64) * 100.
                     > ENDGAME_START_AT_COMPLETION_PERCENTAGE
                 {
@@ -1589,7 +1721,7 @@ impl TorrentManager {
     }
 
     async fn send_metadata_reqs(&mut self) {
-        if self.file_manager.is_some() {
+        if self.file_manager_status.is_some() {
             return;
         }
         // we still have to download the metadata, ask metadata pieces to peers
@@ -1608,7 +1740,7 @@ impl TorrentManager {
     }
 
     async fn send_pieces_reqs(&mut self) {
-        let file_manager = match &self.file_manager {
+        let file_manager_status = match &self.file_manager_status {
             Some(file_manager) => file_manager,
             None => return,
         };
@@ -1634,7 +1766,7 @@ impl TorrentManager {
         // compute requests from piece requestor
         let reqs_to_send = self
             .piece_requestor
-            .generate_requests_to_send(&self.peers, file_manager);
+            .generate_requests_to_send(&self.peers, file_manager_status);
 
         // finally send requests
         for (peer_addr, block_requests) in reqs_to_send {
@@ -1654,7 +1786,7 @@ impl TorrentManager {
 
     async fn async_request_to_tracker(&mut self, event: Event) {
         self.last_tracker_request_time = SystemTime::now();
-        let bytes_left = self.file_manager.as_ref().map(|f| f.bytes_left());
+        let bytes_left = self.file_manager_status.as_ref().map(|f| f.bytes_left());
         let info_hash = self.info_hash;
         let uploaded_bytes = self.bandwidth_tracker.uploaded_bytes();
         let downloaded_bytes = self.bandwidth_tracker.downloaded_bytes();
@@ -1730,7 +1862,7 @@ impl TorrentManager {
             peer_addr.clone(),
             Peer::new(
                 peer_addr.clone(),
-                self.file_manager.as_ref().map(|f| f.num_pieces()),
+                self.file_manager_status.as_ref().map(|f| f.num_pieces()),
                 to_peer_tx,
                 to_peer_cancel_tx,
                 supports_fast_extension,
@@ -1756,19 +1888,19 @@ impl TorrentManager {
         let advertised_peers_len = advertised_peers_lock.len();
         drop(advertised_peers_lock);
         log::info!(
-            "left: {left}, pieces: {completed_pieces}/{total_pieces}{metadata_pieces} | {bandwidth_tracker}{wasted} | known peers: {known_peers} (bad: {bad_peers}), connected: {connected_peers}, unchoked: {unchoked_peers} | peers_to_torrent_manager pending msgs: {cur_ch_cap}",
+            "left: {left}, pieces: {completed_pieces}/{total_pieces}{metadata_pieces} | {bandwidth_tracker}{wasted} | known peers: {known_peers} (bad: {bad_peers}), connected: {connected_peers}, unchoked: {unchoked_peers} | peers_to_torrent_manager pending msgs: {cur_ch_cap} | to_file_manager {to_file_m}",
             left = self
-                .file_manager
+                .file_manager_status
                 .as_ref()
                 .map(|f| Size::from_bytes(f.bytes_left()).to_string())
                 .unwrap_or("?".to_string()),
             completed_pieces = self
-                .file_manager
+                .file_manager_status
                 .as_ref()
                 .map(|f| f.completed_pieces())
                 .unwrap_or(0),
             total_pieces = self
-                .file_manager
+                .file_manager_status
                 .as_ref()
                 .map(|f| f.num_pieces().to_string())
                 .unwrap_or("?".to_string()),
@@ -1788,7 +1920,7 @@ impl TorrentManager {
             },
             bandwidth_tracker = self.bandwidth_tracker,
             wasted = match self
-                .file_manager
+                .file_manager_status
                 .as_ref()
                 .map(|f| f.wasted_bytes())
                 .unwrap_or(0)
@@ -1809,6 +1941,7 @@ impl TorrentManager {
             }),
             cur_ch_cap = PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY
                 - peers_to_torrent_manager_channel_capacity,
+            to_file_m = self.to_file_manager_tx.capacity()
         );
     }
 
@@ -1978,8 +2111,8 @@ fn ip_port_list_to_compact_format(addrs: Vec<String>) -> Vec<u8> {
     compact_format
 }
 
-fn peer_has_pieces_we_dont_have(peer: &Peer, file_manager: &FileManager) -> bool {
-    for piece_idx in file_manager.missing_pieces() {
+fn peer_has_pieces_we_dont_have(peer: &Peer, file_manager_status: &FileManagerStatus) -> bool {
+    for piece_idx in file_manager_status.missing_pieces() {
         if peer.have_piece(*piece_idx) {
             return true;
         }
