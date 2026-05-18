@@ -387,7 +387,10 @@ impl TorrentManager {
             mpsc::channel::<PeersToManagerMsg>(PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY);
         let (to_file_manager_tx, to_file_manager_rx) = mpsc::channel(100);
         let (file_manager_to_torrent_manager_tx, file_manager_to_torrent_manager_rx) =
-            mpsc::channel(100);
+            mpsc::channel(
+                max_connected_peers * MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT // max outbounded requests
+                + max_connected_peers * MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER as usize, // max inbound requests
+            );
 
         let mut tm = TorrentManager {
             file_manager_status: None,
@@ -534,20 +537,20 @@ impl TorrentManager {
                 Some(msg) = self.peers_to_torrent_manager_rx.recv() => {
                     match msg {
                         PeersToManagerMsg::Error(peer_addr, error_type) => {
-                            log::warn!("handing PeersToManagerMsg::Error");
+                            // log::warn!("handing PeersToManagerMsg::Error");
                             self.handle_peer_error(peer_addr, error_type).await;
                         }
                         PeersToManagerMsg::Receive(peer_addr, msg) => {
-                            log::warn!("handing PeersToManagerMsg::Receive");
+                            // log::warn!("handing PeersToManagerMsg::Receive");
                             self.handle_receive_message(peer_addr, msg).await;
                         }
                         PeersToManagerMsg::NewPeer(tcp_stream, supports_fast_extension) => {
-                            log::warn!("handing PeersToManagerMsg::NewPeer");
+                            // log::warn!("handing PeersToManagerMsg::NewPeer");
                             self.handle_new_peer(tcp_stream, supports_fast_extension).await;
                         }
                         PeersToManagerMsg::PieceBlockRequestFulfilled(peer_addr) => {
                             // should we maybe use a separate channel for this?
-                            log::warn!("handing PeersToManagerMsg::PieceBlockRequestFulfilled");
+                            // log::warn!("handing PeersToManagerMsg::PieceBlockRequestFulfilled");
                             self.handle_piece_block_request_fulfilled(peer_addr);
                         },
                     }
@@ -555,11 +558,11 @@ impl TorrentManager {
                 Some(msg) = self.file_manager_to_torrent_manager_rx.recv() => {
                     match msg {
                         FileManagerToTorrentManagerMsg::WritePieceBlockResponse(write_piece_block_response) => {
-                            log::warn!("handing FileManagerToTorrentManagerMsg::WritePieceBlockResponse {}", self.file_manager_to_torrent_manager_rx.capacity());
+                            // log::warn!("handing FileManagerToTorrentManagerMsg::WritePieceBlockResponse {}", self.file_manager_to_torrent_manager_rx.capacity());
                             self.handle_write_piece_block_response(write_piece_block_response).await;
                         },
                         FileManagerToTorrentManagerMsg::ReadPieceBlockResponse(read_piece_block_response) => {
-                            log::warn!("handing FileManagerToTorrentManagerMsg::ReadPieceBlockResponse {}", self.file_manager_to_torrent_manager_rx.capacity());
+                            // log::warn!("handing FileManagerToTorrentManagerMsg::ReadPieceBlockResponse {}", self.file_manager_to_torrent_manager_rx.capacity());
                             self.handle_read_piece_block_response(read_piece_block_response).await;
                         },
                     }

@@ -337,7 +337,7 @@ impl FileManager {
         file_manager_to_torrent_manager_tx: Sender<FileManagerToTorrentManagerMsg>,
     ) {
         let data_len = write_piece_block_request.data.len();
-        log::warn!("writing piece",);
+        // log::warn!("writing piece",);
         let result = self
             .write_piece_block(
                 write_piece_block_request.piece_idx,
@@ -345,10 +345,10 @@ impl FileManager {
                 write_piece_block_request.block_begin,
             )
             .await;
-        log::warn!(
-            "sending FileManagerToTorrentManagerMsg::WritePieceBlockResponse {}",
-            file_manager_to_torrent_manager_tx.capacity()
-        );
+        // log::warn!(
+        //     "sending FileManagerToTorrentManagerMsg::WritePieceBlockResponse {}",
+        //     file_manager_to_torrent_manager_tx.capacity()
+        // );
         let _ = file_manager_to_torrent_manager_tx
             .send(FileManagerToTorrentManagerMsg::WritePieceBlockResponse(
                 WritePieceBlockResponse {
