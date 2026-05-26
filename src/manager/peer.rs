@@ -332,6 +332,7 @@ async fn handshake(
             write.send(Message::HaveAll).await?;
             log::trace!("have all sent to peer {peer_addr}");
         } else if supports_fast_extension && have_count == 0 {
+            write.send(Message::HaveNone).await?;
             log::trace!("have none sent to peer {peer_addr}");
         } else {
             write.send(Message::Bitfield(pcs)).await?;
