@@ -151,13 +151,14 @@ pub async fn run_new_incoming_peers_handler(
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
     raw_metadata_size: Option<i64>,
 ) {
-    let ok_to_accept_connection_for_rcv = Arc::new(Mutex::new(true)); // accept new connections at start
+    let ok_to_accept_connection_for_rcv: Arc<Mutex<bool>> = Arc::new(Mutex::new(true)); // accept new connections at start
     let ok_to_accept_connection = ok_to_accept_connection_for_rcv.clone();
 
-    let metadata_size_for_rcv = Arc::new(Mutex::new(raw_metadata_size));
+    let metadata_size_for_rcv: Arc<Mutex<Option<i64>>> = Arc::new(Mutex::new(raw_metadata_size));
     let metadata_size = metadata_size_for_rcv.clone();
 
-    let piece_completion_status_for_rcv = Arc::new(Mutex::new(piece_completion_status));
+    let piece_completion_status_for_rcv: Arc<Mutex<Option<Vec<bool>>>> =
+        Arc::new(Mutex::new(piece_completion_status));
     let piece_completion_status = piece_completion_status_for_rcv.clone();
 
     tokio::spawn(async move {
