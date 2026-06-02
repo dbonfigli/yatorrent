@@ -1,6 +1,6 @@
 use crate::{
     manager::{peer::PeerAddr, torrent_manager::Peer},
-    persistence::{torrent_data_status::TorrentDataStatus, piece::Piece},
+    persistence::{piece::Piece, torrent_data_status::TorrentDataStatus},
     torrent_protocol::wire_protocol::BlockRequest,
 };
 use rand::seq::SliceRandom;
@@ -392,7 +392,7 @@ impl PieceRequestor {
                     .map(|(i, p)| (*i, p.clone()))
                     .collect::<Vec<(usize, Piece)>>()
                 {
-                    if !torrent_data_status.piece_completion_status(piece_idx) {
+                    if !torrent_data_status.piece_is_completed(piece_idx) {
                         let reqs = &mut self.generate_requests_to_send_for_piece(
                             peer_addr,
                             piece_idx,

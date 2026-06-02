@@ -6,8 +6,7 @@ use crate::persistence::{
 };
 
 pub struct TorrentDataStatus {
-    piece_completion_status: Vec<bool>, // piece identified by position in array -> download completed / incomplete TODO WE CAN DERIVE THIS
-    missing_pieces: BTreeSet<usize>,    // ordered set of piece indexes yet to be completed
+    missing_pieces: BTreeSet<usize>, // ordered set of piece indexes yet to be completed
     incomplete_pieces: HashMap<usize, Piece>, // piece id -> piece with downloaded fragments
     wasted_bytes: usize,
 
@@ -31,7 +30,6 @@ impl TorrentDataStatus {
         }
         let total_pieces = piece_completion_status.len();
         TorrentDataStatus {
-            piece_completion_status,
             missing_pieces,
             incomplete_pieces: HashMap::new(),
             wasted_bytes: 0,
@@ -41,13 +39,16 @@ impl TorrentDataStatus {
         }
     }
 
-    // TODO OPTIMIZE THIS
     pub fn current_piece_completion_status(&self) -> Vec<bool> {
-        self.piece_completion_status.clone()
+        let mut completed = vec![false; self.total_pieces];
+        for idx in 0..completed.len() {
+            completed[idx] = self.piece_is_completed(idx);
+        }
+        completed
     }
 
-    pub fn piece_completion_status(&self, idx: usize) -> bool {
-        self.piece_completion_status[idx]
+    pub fn piece_is_completed(&self, idx: usize) -> bool {
+        self.missing_pieces.get(&idx).is_none()
     }
 
     pub fn num_pieces(&self) -> usize {
@@ -60,8 +61,8 @@ impl TorrentDataStatus {
 
     pub fn bytes_left(&self) -> u64 {
         let mut left = self.missing_pieces.len() as u64 * self.normal_piece_length;
-        if self.missing_pieces.get(&(self.total_pieces - 1)).is_none() {
-            // last piece already downloaded, adjust its size
+        if self.missing_pieces.get(&(self.total_pieces - 1)).is_some() {
+            // last piece yet to be downloaded, adjust its size
             left = left - self.normal_piece_length + self.last_piece_lenght;
         }
         left
@@ -97,8 +98,6 @@ impl TorrentDataStatus {
                         .remove(&write_piece_block_response.request.piece_idx);
                     self.incomplete_pieces
                         .remove(&write_piece_block_response.request.piece_idx);
-                    self.piece_completion_status[write_piece_block_response.request.piece_idx] =
-                        true;
                 } else {
                     self.incomplete_pieces.insert(
                         write_piece_block_response.request.piece_idx,
