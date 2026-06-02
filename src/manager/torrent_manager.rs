@@ -46,9 +46,14 @@ const MAX_CONNECTED_PEERS_TO_ASK_DHT_FOR_MORE: usize = 10;
 const DHT_NEW_PEER_COOL_OFF_PERIOD: Duration = Duration::from_secs(15);
 const DHT_BOOTSTRAP_TIME: Duration = Duration::from_secs(5);
 const KEEP_ALIVE_FREQ: Duration = Duration::from_secs(90);
+
+// this capacity is enough to hold all the possible block requests that can be inflight and all the incoming requests
+// that we support before a choke, still, we need extra capacity to run have messages in case of fast download of pieces
+// other kind of messages are really low on volume
 const TO_PEER_CHANNEL_CAPACITY: usize = MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT
     + MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER as usize
     + 700;
+
 const TO_PEER_CANCEL_CHANNEL_CAPACITY: usize =
     MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT + 200;
 const TICK_INTERVAL: Duration = Duration::from_secs(1);
