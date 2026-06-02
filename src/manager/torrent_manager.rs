@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use std::{iter, path::Path};
+use tokio::runtime::Handle;
 
 use rand::RngExt;
 use rand::seq::IndexedRandom;
@@ -459,10 +460,13 @@ impl TorrentManager {
                 .expect("no to_file_manager_rx, has start been called twice?");
             let file_manager_to_torrent_manager_tx =
                 torrent_manager.file_manager_to_torrent_manager_tx.clone();
-            tokio::spawn(async move {
-                file_manager
-                    .start(to_file_manager_rx, file_manager_to_torrent_manager_tx)
-                    .await;
+            let handle = Handle::current();
+            std::thread::spawn(move || {
+                handle.block_on(async move {
+                    file_manager
+                        .start(to_file_manager_rx, file_manager_to_torrent_manager_tx)
+                        .await;
+                })
             });
         }
 
@@ -1364,10 +1368,13 @@ impl TorrentManager {
                     .expect("no to_file_manager_rx, has start been called twice?");
                 let file_manager_to_torrent_manager_tx =
                     self.file_manager_to_torrent_manager_tx.clone();
-                tokio::spawn(async move {
-                    file_manager
-                        .start(to_file_manager_rx, file_manager_to_torrent_manager_tx)
-                        .await;
+                let handle = Handle::current();
+                std::thread::spawn(move || {
+                    handle.block_on(async move {
+                        file_manager
+                            .start(to_file_manager_rx, file_manager_to_torrent_manager_tx)
+                            .await;
+                    })
                 });
 
                 // update new incoming peers handler with new data info
