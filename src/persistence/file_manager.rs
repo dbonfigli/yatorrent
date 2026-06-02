@@ -1,14 +1,14 @@
 use anyhow::{Result, bail};
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
-use std::{cmp, fs};
-use thiserror::Error;
-
-use std::fs::File;
-
 use sha1::{Digest, Sha1};
 use size::Size;
+use std::cmp;
+use std::collections::{HashMap, HashSet};
+use std::io::SeekFrom;
+use std::path::{Path, PathBuf};
+use thiserror::Error;
+use tokio::fs::{self, File};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::persistence::piece::Piece;
 
@@ -20,17 +20,26 @@ pub struct ShaCorruptedError {
     piece_idx: usize,
 }
 
+#[derive(Error, Debug)]
+#[error(
+    "error on reading whole piece for final sha check {piece_idx}, marking this piece as missing: {error}"
+)]
+pub struct ShaCheckReadError {
+    piece_idx: usize,
+    error: anyhow::Error,
+}
+
 pub struct FileManager {
     file_list: Vec<(PathBuf, u64, bool)>, // name with path, size, download completed / incomplete
     piece_hashes: Vec<[u8; 20]>,          // piece identified by position in array -> hash
     piece_to_files: Vec<Vec<(PathBuf, u64, u64)>>, // piece identified by position in array -> list of files the piece belong to, with start byte and end byte within that file. A piece can span many files
+    normal_piece_length: u64,
+    last_piece_lenght: u64,
 
     // mutable fields
     piece_completion_status: Vec<bool>, // piece identified by position in array -> download completed / incomplete
-    missing_pieces: BTreeSet<usize>,    // ordered set of piece indexes yet to be completed
     file_handles: FileHandles,
     incomplete_pieces: HashMap<usize, Piece>, // piece id -> piece with downloaded fragments
-    wasted_bytes: usize,
 }
 
 struct FileHandles {
@@ -46,13 +55,13 @@ impl FileHandles {
         }
     }
 
-    fn get_file(&mut self, file_path: &PathBuf, open_for_write: bool) -> Result<&File> {
+    async fn get_file(&mut self, file_path: &PathBuf, open_for_write: bool) -> Result<&mut File> {
         if !self.file_handles.contains_key(file_path)
             || (open_for_write && !self.opened_for_write.contains(file_path))
         {
             if open_for_write && !self.opened_for_write.contains(file_path) {
                 if let Some(dir) = file_path.parent() {
-                    fs::create_dir_all(dir)?;
+                    fs::create_dir_all(dir).await?;
                 }
                 self.opened_for_write.insert(file_path.clone());
             }
@@ -60,18 +69,64 @@ impl FileHandles {
                 .read(true)
                 .write(open_for_write)
                 .create(open_for_write)
-                .open(file_path)?;
+                .open(file_path)
+                .await?;
             self.file_handles.insert(file_path.clone(), f);
         }
         Ok(self
             .file_handles
-            .get(file_path)
+            .get_mut(file_path)
             .expect("file is present since we fetched it or inserted if missing"))
     }
 }
 
+pub struct WritePieceBlockRequest {
+    pub requestor_peer_addr: String,
+    pub piece_idx: usize,
+    pub data: Vec<u8>,
+    pub block_begin: u64,
+}
+
+pub struct WritePieceBlockRequestReference {
+    pub requestor_peer_addr: String,
+    pub piece_idx: usize,
+}
+
+pub struct FileManagerStatusUpdates {
+    pub piece_is_completed: bool,
+    pub wasted_bytes: usize,
+    pub incomplete_piece: Option<Piece>,
+}
+
+pub struct WritePieceBlockResponse {
+    pub request: WritePieceBlockRequestReference,
+    pub response: Result<FileManagerStatusUpdates>,
+}
+
+pub struct ReadPieceBlockRequest {
+    pub requestor_peer_addr: String,
+    pub piece_idx: usize,
+    pub block_begin: u64,
+    pub block_length: u64,
+}
+
+pub struct ReadPieceBlockResponse {
+    pub request: ReadPieceBlockRequest,
+    pub response: Result<Vec<u8>>,
+}
+
+pub enum ToFileManagerMsg {
+    WritePieceBlock(WritePieceBlockRequest),
+    ReadPieceBlock(ReadPieceBlockRequest),
+}
+
+pub enum FileManagerToTorrentManagerMsg {
+    WritePieceBlockResponse(WritePieceBlockResponse),
+    ReadPieceBlockResponse(ReadPieceBlockResponse),
+}
+
 impl FileManager {
-    pub fn new(
+    pub async fn new(
         base_path: &Path,
         file_list: Vec<(String, u64)>,
         piece_length: u64,
@@ -154,30 +209,102 @@ impl FileManager {
         // initialize piece_completion_status
         let piece_completion_status = vec![false; piece_hashes.len()];
 
-        let mut missing_pieces = BTreeSet::new();
-        for idx in 0..piece_hashes.len() {
-            missing_pieces.insert(idx);
+        let mut last_piece_lenght = 0;
+        for (_, start, end) in piece_to_files[piece_hashes.len() - 1].iter() {
+            last_piece_lenght += end - start;
         }
+
         let mut file_manager = FileManager {
             file_list: fm_file_list,
             piece_hashes,
             piece_to_files,
             piece_completion_status,
-            missing_pieces,
             file_handles: FileHandles::new(),
             incomplete_pieces: HashMap::new(),
-            wasted_bytes: 0,
+            normal_piece_length: piece_length as u64,
+            last_piece_lenght,
         };
 
-        file_manager.refresh_completed_pieces();
+        file_manager.refresh_completed_pieces().await;
         file_manager.refresh_completed_files();
         file_manager.log_file_completion_stats();
 
         file_manager
     }
 
-    pub fn refresh_completed_pieces(&mut self) {
+    pub async fn start(
+        &mut self,
+        mut to_file_manager_rx: Receiver<ToFileManagerMsg>,
+        file_manager_to_torrent_manager_tx: Sender<FileManagerToTorrentManagerMsg>,
+    ) {
+        loop {
+            tokio::select! {
+                Some(msg) = to_file_manager_rx.recv() => {
+                    match msg {
+                        ToFileManagerMsg::WritePieceBlock(write_piece_block_request) => {
+                            self.handle_write_piece_block(write_piece_block_request, &file_manager_to_torrent_manager_tx).await;
+                        },
+                            ToFileManagerMsg::ReadPieceBlock(read_piece_block_request) => {
+                            self.handle_read_piece_block(read_piece_block_request, &file_manager_to_torrent_manager_tx).await;
+                        },
+                    }
+                }
+                else => break,
+            }
+        }
+    }
+
+    async fn handle_write_piece_block(
+        &mut self,
+        write_piece_block_request: WritePieceBlockRequest,
+        file_manager_to_torrent_manager_tx: &Sender<FileManagerToTorrentManagerMsg>,
+    ) {
+        let result = self
+            .write_piece_block(
+                write_piece_block_request.piece_idx,
+                write_piece_block_request.data,
+                write_piece_block_request.block_begin,
+            )
+            .await;
+        file_manager_to_torrent_manager_tx
+            .send(FileManagerToTorrentManagerMsg::WritePieceBlockResponse(
+                WritePieceBlockResponse {
+                    request: WritePieceBlockRequestReference {
+                        requestor_peer_addr: write_piece_block_request.requestor_peer_addr,
+                        piece_idx: write_piece_block_request.piece_idx,
+                    },
+                    response: result,
+                },
+            ))
+            .await
+            .expect("torrent manager closed the file_manager_to_torrent_manager_rx channel, this should never happen");
+    }
+
+    async fn handle_read_piece_block(
+        &mut self,
+        read_piece_block_request: ReadPieceBlockRequest,
+        file_manager_to_torrent_manager_tx: &Sender<FileManagerToTorrentManagerMsg>,
+    ) {
+        let result = self
+            .read_piece_block(
+                read_piece_block_request.piece_idx,
+                read_piece_block_request.block_begin,
+                read_piece_block_request.block_length,
+            )
+            .await;
+        file_manager_to_torrent_manager_tx
+            .send(FileManagerToTorrentManagerMsg::ReadPieceBlockResponse(
+                ReadPieceBlockResponse {
+                    request: read_piece_block_request,
+                    response: result,
+                },
+            ))
+            .await.expect("torrent manager closed the file_manager_to_torrent_manager_rx channel, this should never happen");
+    }
+
+    async fn refresh_completed_pieces(&mut self) {
         log::info!("checking pieces already downloaded...");
+        let mut total_completed = 0;
         for idx in 0..self.piece_hashes.len() {
             // print progress
             if idx % (cmp::max(10, self.piece_to_files.len()) / 10) == 0 {
@@ -186,7 +313,9 @@ impl FileManager {
                     f64::round((idx as f64 * 100.0) / self.piece_to_files.len() as f64)
                 );
             }
-            match self.read_piece_block_with_have_piece_check(idx, 0, self.piece_length(idx), false)
+            match self
+                .read_piece_block_with_have_piece_check(idx, 0, self.piece_length(idx), false)
+                .await
             {
                 Err(_) => {
                     self.piece_completion_status[idx] = false;
@@ -195,14 +324,11 @@ impl FileManager {
                     let piece_sha: [u8; 20] = Sha1::digest(buf).into();
                     let sha_ok = self.piece_hashes[idx] == piece_sha;
                     self.piece_completion_status[idx] = sha_ok;
-                    if sha_ok {
-                        self.missing_pieces.remove(&idx);
-                    }
+                    total_completed += 1;
                 }
             }
         }
 
-        let total_completed = self.completed_pieces();
         log::info!(
             "checking pieces already downloaded completed: {total_completed} out of {} ({}%) pieces already completed",
             self.piece_completion_status.len(),
@@ -210,12 +336,8 @@ impl FileManager {
         );
     }
 
-    pub fn completed_pieces(&self) -> usize {
-        self.piece_hashes.len() - self.missing_pieces.len()
-    }
-
     // this depends on an up-to-date piece_completion_status
-    pub fn refresh_completed_files(&mut self) {
+    fn refresh_completed_files(&mut self) {
         for i in 0..self.file_list.len() {
             self.file_list[i].2 = true;
         }
@@ -232,7 +354,7 @@ impl FileManager {
         }
     }
 
-    pub fn log_file_completion_stats(&self) {
+    fn log_file_completion_stats(&self) {
         let total_completed = self
             .file_list
             .iter()
@@ -252,25 +374,24 @@ impl FileManager {
         }
     }
 
-    // the last piece could have a size less than the others
     pub fn piece_length(&self, piece_idx: usize) -> u64 {
-        let mut total_size = 0;
-        for (_, start, end) in self.piece_to_files[piece_idx].iter() {
-            total_size += end - start;
+        if piece_idx == self.piece_hashes.len() - 1 {
+            return self.last_piece_lenght as u64;
         }
-        total_size
+        return self.normal_piece_length as u64;
     }
 
-    pub fn read_piece_block(
+    async fn read_piece_block(
         &mut self,
         piece_idx: usize,
         block_begin: u64,
         block_length: u64,
     ) -> Result<Vec<u8>> {
         self.read_piece_block_with_have_piece_check(piece_idx, block_begin, block_length, true)
+            .await
     }
 
-    fn read_piece_block_with_have_piece_check(
+    async fn read_piece_block_with_have_piece_check(
         &mut self,
         piece_idx: usize,
         block_begin: u64,
@@ -321,24 +442,22 @@ impl FileManager {
                 block_bytes_still_to_read -= end - file_offset;
             }
 
-            let mut opened_file = self.file_handles.get_file(file_path, false)?;
-            opened_file.seek(SeekFrom::Start(file_offset))?;
+            let opened_file = self.file_handles.get_file(file_path, false).await?;
+            opened_file.seek(SeekFrom::Start(file_offset)).await?;
             let mut file_buf: Vec<u8> = vec![0; bytes_to_read as usize];
-            opened_file.read_exact(&mut file_buf)?;
+            opened_file.read_exact(&mut file_buf).await?;
             block_buf.append(&mut file_buf); // todo: optimize this more: avoid appending, create a buf large enough from the start
         }
 
         Ok(block_buf)
     }
 
-    pub fn write_piece_block(
+    async fn write_piece_block(
         &mut self,
         piece_idx: usize,
         data: Vec<u8>,
         block_begin: u64, // position in the piece where to start writing data
-    ) -> Result<bool> {
-        // if ok, return if piece is completed / not completed
-
+    ) -> Result<FileManagerStatusUpdates> {
         if piece_idx >= self.num_pieces() {
             bail!(
                 "cannot write block: piece idx {piece_idx} would overflow total pieces ({})",
@@ -349,8 +468,11 @@ impl FileManager {
         // avoid useless writes if we already have the piece
         if self.piece_completion_status[piece_idx] {
             log::trace!("we already have the piece {piece_idx}, will avoid to writing it again");
-            self.wasted_bytes += data.len();
-            return Ok(true);
+            return Ok(FileManagerStatusUpdates {
+                piece_is_completed: true,
+                wasted_bytes: data.len(),
+                incomplete_piece: None,
+            });
         }
 
         let piece_len = self.piece_length(piece_idx);
@@ -368,8 +490,11 @@ impl FileManager {
             log::trace!(
                 "we already have written all the data in this block (begin: {block_begin} length: {data_len}) for piece {piece_idx}, will avoid writing it again"
             );
-            self.wasted_bytes += data.len();
-            return Ok(false);
+            return Ok(FileManagerStatusUpdates {
+                piece_is_completed: false,
+                wasted_bytes: data.len(),
+                incomplete_piece: Some(piece.clone()),
+            });
         }
 
         // finally write this block
@@ -390,10 +515,11 @@ impl FileManager {
                 continue;
             }
             let data_to_write = cmp::min(file_end - file_start, data_still_to_be_written);
-            let mut opened_file = self.file_handles.get_file(file_path, true)?;
-            opened_file.seek(SeekFrom::Start(file_start))?;
+            let opened_file = self.file_handles.get_file(file_path, true).await?;
+            opened_file.seek(SeekFrom::Start(file_start)).await?;
             opened_file
-                .write_all(&data[data_cursor as usize..(data_cursor + data_to_write) as usize])?;
+                .write_all(&data[data_cursor as usize..(data_cursor + data_to_write) as usize])
+                .await?;
             data_cursor += data_to_write;
             data_still_to_be_written -= data_to_write;
         }
@@ -405,66 +531,40 @@ impl FileManager {
             self.incomplete_pieces.remove(&piece_idx);
 
             // final sha check
-            let read_piece_data =
-                self.read_piece_block_with_have_piece_check(piece_idx, 0, piece_len, false)?;
+            let read_piece_data = match self
+                .read_piece_block_with_have_piece_check(piece_idx, 0, piece_len, false)
+                .await
+            {
+                Ok(data) => data,
+                Err(error) => bail!(ShaCheckReadError { piece_idx, error }),
+            };
             let piece_sha: [u8; 20] = Sha1::digest(read_piece_data).into();
             if piece_sha != self.piece_hashes[piece_idx] {
                 bail!(ShaCorruptedError { piece_idx });
             } else {
                 self.piece_completion_status[piece_idx] = true;
-                self.missing_pieces.remove(&piece_idx);
                 self.refresh_completed_files(); //todo: optimize this
             }
-            Ok(true)
+            Ok(FileManagerStatusUpdates {
+                piece_is_completed: true,
+                wasted_bytes: 0,
+                incomplete_piece: None,
+            })
         } else {
-            Ok(false)
+            Ok(FileManagerStatusUpdates {
+                piece_is_completed: false,
+                wasted_bytes: 0,
+                incomplete_piece: Some(piece.clone()),
+            })
         }
     }
 
-    pub fn num_pieces(&self) -> usize {
+    fn num_pieces(&self) -> usize {
         self.piece_hashes.len()
-    }
-
-    pub fn wasted_bytes(&self) -> usize {
-        self.wasted_bytes
-    }
-
-    pub fn bytes_left(&self) -> u64 {
-        let mut total = 0;
-        let mut total_completed = 0;
-        for idx in 0..self.piece_completion_status.len() {
-            let piece_len = self.piece_length(idx);
-            total += piece_len;
-            if self.piece_completion_status[idx] {
-                total_completed += piece_len;
-            }
-        }
-        total - total_completed
-    }
-
-    pub fn completed(&self) -> bool {
-        for status in self.piece_completion_status.iter() {
-            if !status {
-                return false;
-            }
-        }
-        true
-    }
-
-    pub fn piece_completion_status(&self, idx: usize) -> bool {
-        self.piece_completion_status[idx]
-    }
-
-    pub fn missing_pieces(&self) -> &BTreeSet<usize> {
-        &self.missing_pieces
     }
 
     pub fn current_piece_completion_status(&self) -> Vec<bool> {
         self.piece_completion_status.clone()
-    }
-
-    pub fn incomplete_pieces(&self) -> &HashMap<usize, Piece> {
-        &self.incomplete_pieces
     }
 }
 
@@ -474,8 +574,8 @@ mod tests {
 
     use super::FileManager;
 
-    #[test]
-    fn test_pieces_to_files_1() {
+    #[tokio::test]
+    async fn test_pieces_to_files_1() {
         let file_list = vec![
             ("f1".to_string(), 5),
             ("f2".to_string(), 20),
@@ -488,7 +588,7 @@ mod tests {
         ];
         let piece_length = 10;
 
-        let res = FileManager::new(Path::new("relative/"), file_list, piece_length, pieces);
+        let res = FileManager::new(Path::new("relative/"), file_list, piece_length, pieces).await;
         assert_eq!(
             res.piece_to_files,
             vec![
@@ -505,34 +605,34 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_pieces_to_files_2() {
+    #[tokio::test]
+    async fn test_pieces_to_files_2() {
         let file_list = vec![("f1".to_string(), 5)];
         let pieces = vec![b"aaaaaaaaaaaaaaaaaaaa".to_owned()];
         let piece_length = 5;
 
-        let res = FileManager::new(Path::new("/absolute/"), file_list, piece_length, pieces);
+        let res = FileManager::new(Path::new("/absolute/"), file_list, piece_length, pieces).await;
         assert_eq!(
             res.piece_to_files,
             vec![vec![(PathBuf::from("/absolute/f1"), 0, 5)]]
         );
     }
 
-    #[test]
-    fn test_pieces_to_files_3() {
+    #[tokio::test]
+    async fn test_pieces_to_files_3() {
         let file_list = vec![("f1".to_string(), 5)];
         let pieces = vec![b"aaaaaaaaaaaaaaaaaaaa".to_owned()];
         let piece_length = 6;
 
-        let res = FileManager::new(Path::new("hello/moto"), file_list, piece_length, pieces);
+        let res = FileManager::new(Path::new("hello/moto"), file_list, piece_length, pieces).await;
         assert_eq!(
             res.piece_to_files,
             vec![vec![(PathBuf::from("hello/moto/f1"), 0, 5)]]
         );
     }
 
-    #[test]
-    fn test_pieces_to_files_4() {
+    #[tokio::test]
+    async fn test_pieces_to_files_4() {
         let file_list = vec![
             ("f1".to_string(), 10),
             ("f2".to_string(), 10),
@@ -547,7 +647,7 @@ mod tests {
         ];
         let piece_length = 10;
 
-        let res = FileManager::new(Path::new("./"), file_list, piece_length, pieces);
+        let res = FileManager::new(Path::new("./"), file_list, piece_length, pieces).await;
         assert_eq!(
             res.piece_to_files,
             vec![
@@ -562,8 +662,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_refresh_completed_files_1() {
+    #[tokio::test]
+    async fn test_refresh_completed_files_1() {
         let file_list = vec![
             ("f1".to_string(), 10),
             ("f2".to_string(), 10),
@@ -578,7 +678,7 @@ mod tests {
         ];
         let piece_length = 10;
 
-        let mut res = FileManager::new(Path::new("./"), file_list, piece_length, pieces);
+        let mut res = FileManager::new(Path::new("./"), file_list, piece_length, pieces).await;
         res.piece_completion_status = vec![false, true, false];
         res.refresh_completed_files();
         assert_eq!(
@@ -593,8 +693,8 @@ mod tests {
         )
     }
 
-    #[test]
-    fn test_refresh_completed_files_2() {
+    #[tokio::test]
+    async fn test_refresh_completed_files_2() {
         let file_list = vec![
             ("f1".to_string(), 10),
             ("f2".to_string(), 10),
@@ -609,7 +709,7 @@ mod tests {
         ];
         let piece_length = 10;
 
-        let mut res = FileManager::new(Path::new("./"), file_list, piece_length, pieces);
+        let mut res = FileManager::new(Path::new("./"), file_list, piece_length, pieces).await;
         res.piece_completion_status = vec![true, false, true];
         res.refresh_completed_files();
         assert_eq!(
@@ -624,8 +724,8 @@ mod tests {
         )
     }
 
-    #[test]
-    fn test_refresh_completed_files_3() {
+    #[tokio::test]
+    async fn test_refresh_completed_files_3() {
         let file_list = vec![
             ("f1".to_string(), 5),
             ("f2".to_string(), 20),
@@ -638,7 +738,8 @@ mod tests {
         ];
         let piece_length = 10;
 
-        let mut res = FileManager::new(Path::new("relative/"), file_list, piece_length, pieces);
+        let mut res =
+            FileManager::new(Path::new("relative/"), file_list, piece_length, pieces).await;
         res.piece_completion_status = vec![true, true, true];
         res.refresh_completed_files();
         assert_eq!(

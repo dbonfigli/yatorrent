@@ -155,7 +155,7 @@ async fn main() -> Result<()> {
                         "The .torrent file contains a \"nodes\" field, the torrent is announcing also via specific DHT nodes"
                     );
                 }
-                TorrentManager::new(
+                let mut torrent_manager = TorrentManager::new(
                     m.info_hash,
                     base_path,
                     args.port,
@@ -171,8 +171,8 @@ async fn main() -> Result<()> {
                     max_download_bandwidth,
                     max_upload_bandwidth,
                 )
-                .start()
                 .await;
+                torrent_manager.start().await;
                 exit(0);
             }
             Err(e) => {
@@ -183,7 +183,7 @@ async fn main() -> Result<()> {
     } else if let Some(magnet_uri) = args.magnet_uri {
         match magnet::Magnet::new(magnet_uri) {
             Ok(magnet) => {
-                TorrentManager::new(
+                let mut torrent_manager = TorrentManager::new(
                     magnet.info_hash,
                     base_path,
                     args.port,
@@ -199,8 +199,8 @@ async fn main() -> Result<()> {
                     max_download_bandwidth,
                     max_upload_bandwidth,
                 )
-                .start()
                 .await;
+                torrent_manager.start().await;
                 exit(0);
             }
             Err(e) => {

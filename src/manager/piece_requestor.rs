@@ -1,6 +1,6 @@
 use crate::{
     manager::{peer::PeerAddr, torrent_manager::Peer},
-    persistence::{file_manager::FileManager, piece::Piece},
+    persistence::{torrent_data_status::TorrentDataStatus, piece::Piece},
     torrent_protocol::wire_protocol::BlockRequest,
 };
 use rand::seq::SliceRandom;
@@ -172,7 +172,7 @@ impl PieceRequestor {
     pub fn generate_requests_to_send(
         &mut self,
         peers: &HashMap<String, Peer>,
-        file_manager: &FileManager,
+        torrent_data_status: &TorrentDataStatus,
     ) -> Vec<(PeerAddr, Vec<BlockRequest>)> {
         let mut requests_to_send: Vec<(PeerAddr, Vec<BlockRequest>)> = Vec::new();
 
@@ -215,7 +215,7 @@ impl PieceRequestor {
         }
 
         // 2. assign incomplete pieces if not assigned yet
-        for (piece_idx, piece) in file_manager.incomplete_pieces().iter() {
+        for (piece_idx, piece) in torrent_data_status.incomplete_pieces().iter() {
             if !self.outstanding_piece_assignments.contains_key(piece_idx) {
                 if let Some((peer_addr, reqs)) = self.assign_piece_reqs(*piece_idx, peers, piece) {
                     requests_to_send.push((peer_addr, reqs));
@@ -224,7 +224,7 @@ impl PieceRequestor {
         }
 
         // 3. assign other pieces, in order
-        for piece_idx in file_manager.missing_pieces() {
+        for piece_idx in torrent_data_status.missing_pieces() {
             if self.outstanding_piece_assignments.len() > MAX_OUTSTANDING_PIECES {
                 break; // too many outstanding piece requests, stop assigment
             }
@@ -235,7 +235,7 @@ impl PieceRequestor {
             match self.assign_piece_reqs(
                 *piece_idx,
                 peers,
-                &Piece::new(file_manager.piece_length(*piece_idx)),
+                &Piece::new(torrent_data_status.piece_length(*piece_idx)),
             ) {
                 Some((peer_addr, reqs)) => requests_to_send.push((peer_addr, reqs)),
                 None => break, // we could not find a possible peer to assign this piece, it means there is no capacity left, stop assigment
@@ -375,7 +375,7 @@ impl PieceRequestor {
         &mut self,
         peer_addr: &String,
         peer: &Peer,
-        file_manager: &FileManager,
+        torrent_data_status: &TorrentDataStatus,
     ) -> Vec<BlockRequest> {
         if peer.is_peer_choking() {
             return Vec::new();
@@ -392,7 +392,7 @@ impl PieceRequestor {
                     .map(|(i, p)| (*i, p.clone()))
                     .collect::<Vec<(usize, Piece)>>()
                 {
-                    if !file_manager.piece_completion_status(piece_idx) {
+                    if !torrent_data_status.piece_completion_status(piece_idx) {
                         let reqs = &mut self.generate_requests_to_send_for_piece(
                             peer_addr,
                             piece_idx,
@@ -406,7 +406,7 @@ impl PieceRequestor {
         }
 
         // 2. assign incomplete pieces if not assigned yet
-        for (piece_idx, piece) in file_manager.incomplete_pieces().iter() {
+        for (piece_idx, piece) in torrent_data_status.incomplete_pieces().iter() {
             if !self.peer_can_allocate_requests(peer_addr, request_count) {
                 break;
             }
@@ -424,7 +424,7 @@ impl PieceRequestor {
         }
 
         // 3. assign other pieces, in order
-        for piece_idx in file_manager.missing_pieces() {
+        for piece_idx in torrent_data_status.missing_pieces() {
             if self.outstanding_piece_assignments.len() > MAX_OUTSTANDING_PIECES {
                 break;
             }
@@ -440,7 +440,7 @@ impl PieceRequestor {
             let reqs = &mut self.generate_requests_to_send_for_piece(
                 peer_addr,
                 *piece_idx,
-                Piece::new(file_manager.piece_length(*piece_idx)),
+                Piece::new(torrent_data_status.piece_length(*piece_idx)),
                 request_count,
             );
             requests_to_send.append(reqs);
