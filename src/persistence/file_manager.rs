@@ -1,13 +1,14 @@
 use anyhow::{Result, bail};
 use sha1::{Digest, Sha1};
 use size::Size;
-use std::cmp;
 use std::collections::{HashMap, HashSet};
-use std::io::SeekFrom;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::SystemTime;
+use std::{cmp, fs};
 use thiserror::Error;
-use tokio::fs::{self, File};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::persistence::piece::Piece;
@@ -55,13 +56,13 @@ impl FileHandles {
         }
     }
 
-    async fn get_file(&mut self, file_path: &PathBuf, open_for_write: bool) -> Result<&mut File> {
+    fn get_file(&mut self, file_path: &PathBuf, open_for_write: bool) -> Result<&File> {
         if !self.file_handles.contains_key(file_path)
             || (open_for_write && !self.opened_for_write.contains(file_path))
         {
             if open_for_write && !self.opened_for_write.contains(file_path) {
                 if let Some(dir) = file_path.parent() {
-                    fs::create_dir_all(dir).await?;
+                    fs::create_dir_all(dir)?;
                 }
                 self.opened_for_write.insert(file_path.clone());
             }
@@ -69,13 +70,12 @@ impl FileHandles {
                 .read(true)
                 .write(open_for_write)
                 .create(open_for_write)
-                .open(file_path)
-                .await?;
+                .open(file_path)?;
             self.file_handles.insert(file_path.clone(), f);
         }
         Ok(self
             .file_handles
-            .get_mut(file_path)
+            .get(file_path)
             .expect("file is present since we fetched it or inserted if missing"))
     }
 }
@@ -442,10 +442,10 @@ impl FileManager {
                 block_bytes_still_to_read -= end - file_offset;
             }
 
-            let opened_file = self.file_handles.get_file(file_path, false).await?;
-            opened_file.seek(SeekFrom::Start(file_offset)).await?;
+            let mut opened_file = self.file_handles.get_file(file_path, false)?;
+            opened_file.seek(SeekFrom::Start(file_offset))?;
             let mut file_buf: Vec<u8> = vec![0; bytes_to_read as usize];
-            opened_file.read_exact(&mut file_buf).await?;
+            opened_file.read_exact(&mut file_buf)?;
             block_buf.append(&mut file_buf); // todo: optimize this more: avoid appending, create a buf large enough from the start
         }
 
@@ -498,31 +498,46 @@ impl FileManager {
         }
 
         // finally write this block
-        let mut data_cursor: u64 = 0;
-        let mut data_still_to_be_written = data_len;
-        let mut piece_cursor_to_begin = 0;
-        for (file_path, file_start, file_end) in self.piece_to_files[piece_idx].iter() {
-            if data_still_to_be_written == 0 {
-                break;
-            }
-            let mut file_start = *file_start;
-            let file_end = *file_end;
-            if block_begin - piece_cursor_to_begin < file_end - file_start {
-                file_start += block_begin - piece_cursor_to_begin;
-                piece_cursor_to_begin = block_begin;
-            } else {
-                piece_cursor_to_begin += file_end - file_start;
-                continue;
-            }
-            let data_to_write = cmp::min(file_end - file_start, data_still_to_be_written);
-            let opened_file = self.file_handles.get_file(file_path, true).await?;
-            opened_file.seek(SeekFrom::Start(file_start)).await?;
-            opened_file
-                .write_all(&data[data_cursor as usize..(data_cursor + data_to_write) as usize])
-                .await?;
-            data_cursor += data_to_write;
-            data_still_to_be_written -= data_to_write;
+        let pieces_to_files = self.piece_to_files[piece_idx].clone();
+        let mut files = HashMap::new();
+        for (file_path, _, _) in pieces_to_files.iter() {
+            let opened_file = self.file_handles.get_file(file_path, true)?.try_clone()?;
+            files.insert(file_path.clone(), opened_file);
         }
+
+        let r = tokio::task::spawn_blocking(move || {
+            let start = SystemTime::now();
+
+            let mut data_cursor: u64 = 0;
+            let mut data_still_to_be_written = data_len;
+            let mut piece_cursor_to_begin = 0;
+            for (file_path, file_start, file_end) in pieces_to_files.iter() {
+                if data_still_to_be_written == 0 {
+                    break;
+                }
+                let mut file_start = *file_start;
+                let file_end = *file_end;
+                if block_begin - piece_cursor_to_begin < file_end - file_start {
+                    file_start += block_begin - piece_cursor_to_begin;
+                    piece_cursor_to_begin = block_begin;
+                } else {
+                    piece_cursor_to_begin += file_end - file_start;
+                    continue;
+                }
+                let data_to_write = cmp::min(file_end - file_start, data_still_to_be_written);
+                let mut opened_file = files.get(file_path).unwrap();
+                opened_file.seek(SeekFrom::Start(file_start)).unwrap();
+                opened_file
+                    .write_all(&data[data_cursor as usize..(data_cursor + data_to_write) as usize])
+                    .unwrap();
+                data_cursor += data_to_write;
+                data_still_to_be_written -= data_to_write;
+
+                let dur = start.elapsed();
+                log::warn!("elapsed: {}", dur.unwrap().as_micros());
+            }
+        })
+        .await;
 
         piece.add_fragment(block_begin, block_begin + data_len - 1);
 
