@@ -33,7 +33,7 @@ pub struct FileManager {
     piece_hashes: Vec<[u8; 20]>,          // piece identified by position in array -> hash
     piece_to_files: Vec<Vec<(PathBuf, u64, u64)>>, // piece identified by position in array -> list of files the piece belong to, with start byte and end byte within that file. A piece can span many files
     normal_piece_length: u64,
-    last_piece_lenght: u64,
+    last_piece_length: u64,
 
     // mutable fields
     piece_completion_status: Vec<bool>, // piece identified by position in array -> download completed / incomplete
@@ -207,9 +207,9 @@ impl FileManager {
         // initialize piece_completion_status
         let piece_completion_status = vec![false; piece_hashes.len()];
 
-        let mut last_piece_lenght = 0;
+        let mut last_piece_length = 0;
         for (_, start, end) in piece_to_files[piece_hashes.len() - 1].iter() {
-            last_piece_lenght += end - start;
+            last_piece_length += end - start;
         }
 
         let mut file_manager = FileManager {
@@ -220,7 +220,7 @@ impl FileManager {
             file_handles: FileHandles::new(),
             incomplete_pieces: HashMap::new(),
             normal_piece_length: piece_length as u64,
-            last_piece_lenght,
+            last_piece_length,
         };
 
         file_manager.refresh_completed_pieces();
@@ -368,7 +368,7 @@ impl FileManager {
 
     pub fn piece_length(&self, piece_idx: usize) -> u64 {
         if piece_idx == self.piece_hashes.len() - 1 {
-            return self.last_piece_lenght as u64;
+            return self.last_piece_length as u64;
         }
         return self.normal_piece_length as u64;
     }

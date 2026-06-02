@@ -13,14 +13,14 @@ pub struct TorrentDataStatus {
     // immutable fields
     total_pieces: usize,
     normal_piece_length: u64,
-    last_piece_lenght: u64,
+    last_piece_length: u64,
 }
 
 impl TorrentDataStatus {
     pub fn new(
         piece_completion_status: Vec<bool>,
         normal_piece_length: u64,
-        last_piece_lenght: u64,
+        last_piece_length: u64,
     ) -> TorrentDataStatus {
         let mut missing_pieces = BTreeSet::new();
         for (idx, present) in piece_completion_status.iter().enumerate() {
@@ -35,7 +35,7 @@ impl TorrentDataStatus {
             wasted_bytes: 0,
             total_pieces,
             normal_piece_length,
-            last_piece_lenght,
+            last_piece_length,
         }
     }
 
@@ -63,7 +63,7 @@ impl TorrentDataStatus {
         let mut left = self.missing_pieces.len() as u64 * self.normal_piece_length;
         if self.missing_pieces.get(&(self.total_pieces - 1)).is_some() {
             // last piece yet to be downloaded, adjust its size
-            left = left - self.normal_piece_length + self.last_piece_lenght;
+            left = left - self.normal_piece_length + self.last_piece_length;
         }
         left
     }
@@ -83,7 +83,7 @@ impl TorrentDataStatus {
     }
     pub fn piece_length(&self, piece_idx: usize) -> u64 {
         if piece_idx == self.total_pieces - 1 {
-            return self.last_piece_lenght as u64;
+            return self.last_piece_length as u64;
         }
         return self.normal_piece_length as u64;
     }
