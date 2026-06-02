@@ -124,7 +124,7 @@ pub enum FileManagerToTorrentManagerMsg {
 }
 
 impl FileManager {
-    pub async fn new(
+    pub fn new(
         base_path: &Path,
         file_list: Vec<(String, u64)>,
         piece_length: u64,
@@ -223,7 +223,7 @@ impl FileManager {
             last_piece_lenght,
         };
 
-        file_manager.refresh_completed_pieces().await;
+        file_manager.refresh_completed_pieces();
         file_manager.refresh_completed_files();
         file_manager.log_file_completion_stats();
 
@@ -257,13 +257,11 @@ impl FileManager {
         write_piece_block_request: WritePieceBlockRequest,
         file_manager_to_torrent_manager_tx: &Sender<FileManagerToTorrentManagerMsg>,
     ) {
-        let result = self
-            .write_piece_block(
-                write_piece_block_request.piece_idx,
-                write_piece_block_request.data,
-                write_piece_block_request.block_begin,
-            )
-            .await;
+        let result = self.write_piece_block(
+            write_piece_block_request.piece_idx,
+            write_piece_block_request.data,
+            write_piece_block_request.block_begin,
+        );
         file_manager_to_torrent_manager_tx
             .send(FileManagerToTorrentManagerMsg::WritePieceBlockResponse(
                 WritePieceBlockResponse {
@@ -283,13 +281,11 @@ impl FileManager {
         read_piece_block_request: ReadPieceBlockRequest,
         file_manager_to_torrent_manager_tx: &Sender<FileManagerToTorrentManagerMsg>,
     ) {
-        let result = self
-            .read_piece_block(
-                read_piece_block_request.piece_idx,
-                read_piece_block_request.block_begin,
-                read_piece_block_request.block_length,
-            )
-            .await;
+        let result = self.read_piece_block(
+            read_piece_block_request.piece_idx,
+            read_piece_block_request.block_begin,
+            read_piece_block_request.block_length,
+        );
         file_manager_to_torrent_manager_tx
             .send(FileManagerToTorrentManagerMsg::ReadPieceBlockResponse(
                 ReadPieceBlockResponse {
@@ -300,7 +296,7 @@ impl FileManager {
             .await.expect("torrent manager closed the file_manager_to_torrent_manager_rx channel, this should never happen");
     }
 
-    async fn refresh_completed_pieces(&mut self) {
+    fn refresh_completed_pieces(&mut self) {
         log::info!("checking pieces already downloaded...");
         let mut total_completed = 0;
         for idx in 0..self.piece_hashes.len() {
@@ -311,9 +307,7 @@ impl FileManager {
                     f64::round((idx as f64 * 100.0) / self.piece_to_files.len() as f64)
                 );
             }
-            match self
-                .read_piece_block_with_have_piece_check(idx, 0, self.piece_length(idx), false)
-                .await
+            match self.read_piece_block_with_have_piece_check(idx, 0, self.piece_length(idx), false)
             {
                 Err(_) => {
                     self.piece_completion_status[idx] = false;
@@ -379,17 +373,16 @@ impl FileManager {
         return self.normal_piece_length as u64;
     }
 
-    async fn read_piece_block(
+    fn read_piece_block(
         &mut self,
         piece_idx: usize,
         block_begin: u64,
         block_length: u64,
     ) -> Result<Vec<u8>> {
         self.read_piece_block_with_have_piece_check(piece_idx, block_begin, block_length, true)
-            .await
     }
 
-    async fn read_piece_block_with_have_piece_check(
+    fn read_piece_block_with_have_piece_check(
         &mut self,
         piece_idx: usize,
         block_begin: u64,
@@ -450,7 +443,7 @@ impl FileManager {
         Ok(block_buf)
     }
 
-    async fn write_piece_block(
+    fn write_piece_block(
         &mut self,
         piece_idx: usize,
         data: Vec<u8>,
@@ -528,13 +521,11 @@ impl FileManager {
             self.incomplete_pieces.remove(&piece_idx);
 
             // final sha check
-            let read_piece_data = match self
-                .read_piece_block_with_have_piece_check(piece_idx, 0, piece_len, false)
-                .await
-            {
-                Ok(data) => data,
-                Err(error) => bail!(ShaCheckReadError { piece_idx, error }),
-            };
+            let read_piece_data =
+                match self.read_piece_block_with_have_piece_check(piece_idx, 0, piece_len, false) {
+                    Ok(data) => data,
+                    Err(error) => bail!(ShaCheckReadError { piece_idx, error }),
+                };
             let piece_sha: [u8; 20] = Sha1::digest(read_piece_data).into();
             if piece_sha != self.piece_hashes[piece_idx] {
                 bail!(ShaCorruptedError { piece_idx });
@@ -571,8 +562,8 @@ mod tests {
 
     use super::FileManager;
 
-    #[tokio::test]
-    async fn test_pieces_to_files_1() {
+    #[test]
+    fn test_pieces_to_files_1() {
         let file_list = vec![
             ("f1".to_string(), 5),
             ("f2".to_string(), 20),
@@ -585,7 +576,7 @@ mod tests {
         ];
         let piece_length = 10;
 
-        let res = FileManager::new(Path::new("relative/"), file_list, piece_length, pieces).await;
+        let res = FileManager::new(Path::new("relative/"), file_list, piece_length, pieces);
         assert_eq!(
             res.piece_to_files,
             vec![
@@ -602,34 +593,34 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_pieces_to_files_2() {
+    #[test]
+    fn test_pieces_to_files_2() {
         let file_list = vec![("f1".to_string(), 5)];
         let pieces = vec![b"aaaaaaaaaaaaaaaaaaaa".to_owned()];
         let piece_length = 5;
 
-        let res = FileManager::new(Path::new("/absolute/"), file_list, piece_length, pieces).await;
+        let res = FileManager::new(Path::new("/absolute/"), file_list, piece_length, pieces);
         assert_eq!(
             res.piece_to_files,
             vec![vec![(PathBuf::from("/absolute/f1"), 0, 5)]]
         );
     }
 
-    #[tokio::test]
-    async fn test_pieces_to_files_3() {
+    #[test]
+    fn test_pieces_to_files_3() {
         let file_list = vec![("f1".to_string(), 5)];
         let pieces = vec![b"aaaaaaaaaaaaaaaaaaaa".to_owned()];
         let piece_length = 6;
 
-        let res = FileManager::new(Path::new("hello/moto"), file_list, piece_length, pieces).await;
+        let res = FileManager::new(Path::new("hello/moto"), file_list, piece_length, pieces);
         assert_eq!(
             res.piece_to_files,
             vec![vec![(PathBuf::from("hello/moto/f1"), 0, 5)]]
         );
     }
 
-    #[tokio::test]
-    async fn test_pieces_to_files_4() {
+    #[test]
+    fn test_pieces_to_files_4() {
         let file_list = vec![
             ("f1".to_string(), 10),
             ("f2".to_string(), 10),
@@ -644,7 +635,7 @@ mod tests {
         ];
         let piece_length = 10;
 
-        let res = FileManager::new(Path::new("./"), file_list, piece_length, pieces).await;
+        let res = FileManager::new(Path::new("./"), file_list, piece_length, pieces);
         assert_eq!(
             res.piece_to_files,
             vec![
@@ -659,8 +650,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_refresh_completed_files_1() {
+    #[test]
+    fn test_refresh_completed_files_1() {
         let file_list = vec![
             ("f1".to_string(), 10),
             ("f2".to_string(), 10),
@@ -675,7 +666,7 @@ mod tests {
         ];
         let piece_length = 10;
 
-        let mut res = FileManager::new(Path::new("./"), file_list, piece_length, pieces).await;
+        let mut res = FileManager::new(Path::new("./"), file_list, piece_length, pieces);
         res.piece_completion_status = vec![false, true, false];
         res.refresh_completed_files();
         assert_eq!(
@@ -690,8 +681,8 @@ mod tests {
         )
     }
 
-    #[tokio::test]
-    async fn test_refresh_completed_files_2() {
+    #[test]
+    fn test_refresh_completed_files_2() {
         let file_list = vec![
             ("f1".to_string(), 10),
             ("f2".to_string(), 10),
@@ -706,7 +697,7 @@ mod tests {
         ];
         let piece_length = 10;
 
-        let mut res = FileManager::new(Path::new("./"), file_list, piece_length, pieces).await;
+        let mut res = FileManager::new(Path::new("./"), file_list, piece_length, pieces);
         res.piece_completion_status = vec![true, false, true];
         res.refresh_completed_files();
         assert_eq!(
@@ -721,8 +712,8 @@ mod tests {
         )
     }
 
-    #[tokio::test]
-    async fn test_refresh_completed_files_3() {
+    #[test]
+    fn test_refresh_completed_files_3() {
         let file_list = vec![
             ("f1".to_string(), 5),
             ("f2".to_string(), 20),
@@ -735,8 +726,7 @@ mod tests {
         ];
         let piece_length = 10;
 
-        let mut res =
-            FileManager::new(Path::new("relative/"), file_list, piece_length, pieces).await;
+        let mut res = FileManager::new(Path::new("relative/"), file_list, piece_length, pieces);
         res.piece_completion_status = vec![true, true, true];
         res.refresh_completed_files();
         assert_eq!(

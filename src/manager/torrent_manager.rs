@@ -355,7 +355,7 @@ enum PexEvent {
 }
 
 impl TorrentManager {
-    pub async fn new(
+    pub fn new(
         info_hash: [u8; 20],
         base_path: &Path,
         listening_torrent_wire_protocol_port: u16,
@@ -453,7 +453,7 @@ impl TorrentManager {
         if let Some((file_list, piece_length, piece_hashes)) = files_data {
             let total_pieces = piece_hashes.len();
             let mut file_manager =
-                FileManager::new(base_path, file_list, piece_length, piece_hashes).await;
+                FileManager::new(base_path, file_list, piece_length, piece_hashes);
             torrent_manager.torrent_data_status = Some(TorrentDataStatus::new(
                 file_manager.current_piece_completion_status(),
                 file_manager.piece_length(0),
@@ -1360,8 +1360,7 @@ impl TorrentManager {
                     get_files(&m),
                     piece_length,
                     piece_hashes,
-                )
-                .await;
+                );
                 self.torrent_data_status = Some(TorrentDataStatus::new(
                     file_manager.current_piece_completion_status(),
                     file_manager.piece_length(0),
