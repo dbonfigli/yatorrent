@@ -205,7 +205,11 @@ impl Peer {
 
     async fn send(&mut self, msg: ToPeerMsg) {
         if self.to_peer_tx.capacity() <= 5 {
-            log::warn!("low to_peer_tx capacity: {}", self.to_peer_tx.capacity());
+            log::warn!(
+                "low to_peer_tx capacity to {}: {}",
+                self.peer_addr,
+                self.to_peer_tx.capacity()
+            );
         }
         self.last_sent = SystemTime::now();
         let _ = self.to_peer_tx.send(msg).await;
