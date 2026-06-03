@@ -191,6 +191,7 @@ pub async fn run_new_incoming_peers_handler(
                         },
                     }
                 }
+                else => break,
             }
         }
     });

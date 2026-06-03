@@ -90,7 +90,7 @@ pub struct WritePieceBlockRequestReference {
     pub piece_idx: usize,
 }
 
-pub struct FileManagerStatusUpdates {
+pub struct TorrentDataStatusUpdates {
     pub piece_is_completed: bool,
     pub wasted_bytes: usize,
     pub incomplete_piece: Option<Piece>,
@@ -98,7 +98,7 @@ pub struct FileManagerStatusUpdates {
 
 pub struct WritePieceBlockResponse {
     pub request: WritePieceBlockRequestReference,
-    pub response: Result<FileManagerStatusUpdates>,
+    pub response: Result<TorrentDataStatusUpdates>,
 }
 
 pub struct ReadPieceBlockRequest {
@@ -316,7 +316,9 @@ impl FileManager {
                     let piece_sha: [u8; 20] = Sha1::digest(buf).into();
                     let sha_ok = self.piece_hashes[idx] == piece_sha;
                     self.piece_completion_status[idx] = sha_ok;
-                    total_completed += 1;
+                    if sha_ok {
+                        total_completed += 1;
+                    }
                 }
             }
         }
@@ -448,7 +450,7 @@ impl FileManager {
         piece_idx: usize,
         data: Vec<u8>,
         block_begin: u64, // position in the piece where to start writing data
-    ) -> Result<FileManagerStatusUpdates> {
+    ) -> Result<TorrentDataStatusUpdates> {
         if piece_idx >= self.num_pieces() {
             bail!(
                 "cannot write block: piece idx {piece_idx} would overflow total pieces ({})",
@@ -459,7 +461,7 @@ impl FileManager {
         // avoid useless writes if we already have the piece
         if self.piece_completion_status[piece_idx] {
             log::trace!("we already have the piece {piece_idx}, will avoid to writing it again");
-            return Ok(FileManagerStatusUpdates {
+            return Ok(TorrentDataStatusUpdates {
                 piece_is_completed: true,
                 wasted_bytes: data.len(),
                 incomplete_piece: None,
@@ -481,7 +483,7 @@ impl FileManager {
             log::trace!(
                 "we already have written all the data in this block (begin: {block_begin} length: {data_len}) for piece {piece_idx}, will avoid writing it again"
             );
-            return Ok(FileManagerStatusUpdates {
+            return Ok(TorrentDataStatusUpdates {
                 piece_is_completed: false,
                 wasted_bytes: data.len(),
                 incomplete_piece: Some(piece.clone()),
@@ -533,13 +535,13 @@ impl FileManager {
                 self.piece_completion_status[piece_idx] = true;
                 self.refresh_completed_files(); //todo: optimize this
             }
-            Ok(FileManagerStatusUpdates {
+            Ok(TorrentDataStatusUpdates {
                 piece_is_completed: true,
                 wasted_bytes: 0,
                 incomplete_piece: None,
             })
         } else {
-            Ok(FileManagerStatusUpdates {
+            Ok(TorrentDataStatusUpdates {
                 piece_is_completed: false,
                 wasted_bytes: 0,
                 incomplete_piece: Some(piece.clone()),
