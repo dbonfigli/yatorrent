@@ -1,10 +1,13 @@
 use anyhow::{Result, bail};
 use sha1::{Digest, Sha1};
 use size::Size;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(unix)]
+use std::io;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::{cmp, fs};
 use thiserror::Error;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -42,39 +45,50 @@ pub struct FileManager {
 }
 
 struct FileHandles {
-    file_handles: HashMap<PathBuf, File>,
-    opened_for_write: HashSet<PathBuf>,
+    file_handles_for_r: HashMap<PathBuf, Arc<File>>,
+    file_handles_for_w: HashMap<PathBuf, Arc<File>>,
 }
 
 impl FileHandles {
     fn new() -> FileHandles {
         FileHandles {
-            file_handles: HashMap::new(),
-            opened_for_write: HashSet::new(),
+            file_handles_for_r: HashMap::new(),
+            file_handles_for_w: HashMap::new(),
         }
     }
 
-    fn get_file(&mut self, file_path: &PathBuf, open_for_write: bool) -> Result<&File> {
-        if !self.file_handles.contains_key(file_path)
-            || (open_for_write && !self.opened_for_write.contains(file_path))
-        {
-            if open_for_write && !self.opened_for_write.contains(file_path) {
+    fn get_file(&mut self, file_path: &PathBuf, open_for_write: bool) -> Result<Arc<File>> {
+        if open_for_write {
+            if !self.file_handles_for_w.contains_key(file_path) {
                 if let Some(dir) = file_path.parent() {
                     fs::create_dir_all(dir)?;
                 }
-                self.opened_for_write.insert(file_path.clone());
+                let f = File::options()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .open(file_path)?;
+                self.file_handles_for_w
+                    .insert(file_path.clone(), Arc::new(f));
             }
-            let f = File::options()
-                .read(true)
-                .write(open_for_write)
-                .create(open_for_write)
-                .open(file_path)?;
-            self.file_handles.insert(file_path.clone(), f);
+            return Ok(self
+                .file_handles_for_w
+                .get(file_path)
+                .expect("file is present since we fetched it or inserted if missing")
+                .clone());
         }
-        Ok(self
-            .file_handles
+
+        // this will fail if file does not exist, but we have a gate to prevent this if we know we don't have it
+        if !self.file_handles_for_r.contains_key(file_path) {
+            let f = File::options().read(true).open(file_path)?;
+            self.file_handles_for_r
+                .insert(file_path.clone(), Arc::new(f));
+        }
+        return Ok(self
+            .file_handles_for_r
             .get(file_path)
-            .expect("file is present since we fetched it or inserted if missing"))
+            .expect("file is present since we fetched it or inserted if missing")
+            .clone());
     }
 }
 
@@ -121,6 +135,29 @@ pub enum ToFileManagerMsg {
 pub enum FileManagerToTorrentManagerMsg {
     WritePieceBlockResponse(WritePieceBlockResponse),
     ReadPieceBlockResponse(ReadPieceBlockResponse),
+}
+
+#[cfg(unix)]
+fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.read_exact_at(buf, offset)
+}
+
+#[cfg(windows)]
+fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !buf.is_empty() {
+        let n = file.seek_read(buf, offset)?;
+        if n == 0 {
+            return Err(io::Error::new(
+                ErrorKind::UnexpectedEof,
+                "failed to fill whole buffer",
+            ));
+        }
+        offset += n as u64;
+        buf = &mut buf[n..];
+    }
+    Ok(())
 }
 
 impl FileManager {
@@ -281,12 +318,33 @@ impl FileManager {
         read_piece_block_request: ReadPieceBlockRequest,
         file_manager_to_torrent_manager_tx: &Sender<FileManagerToTorrentManagerMsg>,
     ) {
-        let result = self.read_piece_block(
+        // let result = self.read_piece_block(
+        //     read_piece_block_request.piece_idx,
+        //     read_piece_block_request.block_begin,
+        //     read_piece_block_request.block_length,
+        // );
+
+        self.read_piece_block_pre_checks(
             read_piece_block_request.piece_idx,
             read_piece_block_request.block_begin,
             read_piece_block_request.block_length,
-        );
-        file_manager_to_torrent_manager_tx
+            false,
+        )
+        .unwrap();
+        let files = self
+            .get_file_info_for_piece(read_piece_block_request.piece_idx)
+            .unwrap();
+        let files_data = self.piece_to_files[read_piece_block_request.piece_idx].clone();
+
+        let file_manager_to_torrent_manager_tx = file_manager_to_torrent_manager_tx.clone();
+        tokio::spawn(async move {
+            let result = read_data(
+                files,
+                files_data,
+                read_piece_block_request.block_begin,
+                read_piece_block_request.block_length,
+            );
+            file_manager_to_torrent_manager_tx
             .send(FileManagerToTorrentManagerMsg::ReadPieceBlockResponse(
                 ReadPieceBlockResponse {
                     request: read_piece_block_request,
@@ -294,6 +352,7 @@ impl FileManager {
                 },
             ))
             .await.expect("torrent manager closed the file_manager_to_torrent_manager_rx channel, this should never happen");
+        });
     }
 
     fn refresh_completed_pieces(&mut self) {
@@ -384,13 +443,13 @@ impl FileManager {
         self.read_piece_block_with_have_piece_check(piece_idx, block_begin, block_length, true)
     }
 
-    fn read_piece_block_with_have_piece_check(
-        &mut self,
+    fn read_piece_block_pre_checks(
+        &self,
         piece_idx: usize,
         block_begin: u64,
         block_length: u64,
         check_if_have_piece: bool,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<()> {
         if piece_idx >= self.piece_to_files.len() {
             bail!(
                 "requested to read piece idx {piece_idx} that is not in range (total pieces: {})",
@@ -406,43 +465,35 @@ impl FileManager {
         if check_if_have_piece && !self.piece_completion_status[piece_idx] {
             bail!("requested to read piece idx {piece_idx} that we don't have");
         }
-        let mut block_buf = Vec::<u8>::new();
-        let mut current_piece_offset = 0;
-        let mut block_bytes_still_to_read = block_length;
-        for (file_path, start, end) in self.piece_to_files[piece_idx].iter() {
-            let mut file_offset = *start;
-            if current_piece_offset != block_begin {
-                let piece_fragment_size_in_file = end - start;
-                if piece_fragment_size_in_file < block_begin - current_piece_offset {
-                    // the current chunk of data in the file is not enough to reach the beginning of the block we want to read
-                    // move forward to the next file
-                    current_piece_offset += piece_fragment_size_in_file;
-                    continue;
-                } else {
-                    file_offset = start + (block_begin - current_piece_offset);
-                    current_piece_offset = block_begin;
-                }
-            }
+        Ok(())
+    }
 
-            let bytes_to_read;
-            if block_bytes_still_to_read == 0 {
-                break;
-            } else if end - file_offset > block_bytes_still_to_read {
-                bytes_to_read = block_bytes_still_to_read;
-                block_bytes_still_to_read = 0;
-            } else {
-                bytes_to_read = end - file_offset;
-                block_bytes_still_to_read -= end - file_offset;
-            }
-
-            let mut opened_file = self.file_handles.get_file(file_path, false)?;
-            opened_file.seek(SeekFrom::Start(file_offset))?;
-            let mut file_buf: Vec<u8> = vec![0; bytes_to_read as usize];
-            opened_file.read_exact(&mut file_buf)?;
-            block_buf.append(&mut file_buf); // todo: optimize this more: avoid appending, create a buf large enough from the start
+    fn get_file_info_for_piece(&mut self, piece_idx: usize) -> Result<HashMap<PathBuf, Arc<File>>> {
+        let mut files = HashMap::new();
+        for (file_path, _, _) in self.piece_to_files[piece_idx].iter() {
+            let f = self.file_handles.get_file(file_path, false)?;
+            files.insert(file_path.clone(), f);
         }
+        Ok(files)
+    }
 
-        Ok(block_buf)
+    fn read_piece_block_with_have_piece_check(
+        &mut self,
+        piece_idx: usize,
+        block_begin: u64,
+        block_length: u64,
+        check_if_have_piece: bool,
+    ) -> Result<Vec<u8>> {
+        self.read_piece_block_pre_checks(
+            piece_idx,
+            block_begin,
+            block_length,
+            check_if_have_piece,
+        )?;
+        let files: HashMap<PathBuf, Arc<File>> = self.get_file_info_for_piece(piece_idx)?;
+        let files_data: Vec<(PathBuf, u64, u64)> = self.piece_to_files[piece_idx].clone();
+
+        return read_data(files, files_data, block_begin, block_length);
     }
 
     fn write_piece_block(
@@ -556,6 +607,52 @@ impl FileManager {
     pub fn current_piece_completion_status(&self) -> Vec<bool> {
         self.piece_completion_status.clone()
     }
+}
+
+fn read_data(
+    files: HashMap<PathBuf, Arc<File>>,
+    files_data: Vec<(PathBuf, u64, u64)>,
+    block_begin: u64,
+    block_length: u64,
+) -> Result<Vec<u8>> {
+    let mut block_buf = Vec::<u8>::new();
+    let mut current_piece_offset = 0;
+    let mut block_bytes_still_to_read = block_length;
+    for (file_path, start, end) in files_data.iter() {
+        let mut file_offset = *start;
+        if current_piece_offset != block_begin {
+            let piece_fragment_size_in_file = end - start;
+            if piece_fragment_size_in_file < block_begin - current_piece_offset {
+                // the current chunk of data in the file is not enough to reach the beginning of the block we want to read
+                // move forward to the next file
+                current_piece_offset += piece_fragment_size_in_file;
+                continue;
+            } else {
+                file_offset = start + (block_begin - current_piece_offset);
+                current_piece_offset = block_begin;
+            }
+        }
+
+        let bytes_to_read;
+        if block_bytes_still_to_read == 0 {
+            break;
+        } else if end - file_offset > block_bytes_still_to_read {
+            bytes_to_read = block_bytes_still_to_read;
+            block_bytes_still_to_read = 0;
+        } else {
+            bytes_to_read = end - file_offset;
+            block_bytes_still_to_read -= end - file_offset;
+        }
+
+        let opened_file = files
+            .get(file_path)
+            .expect("we know we got all the required files");
+        let mut file_buf: Vec<u8> = vec![0; bytes_to_read as usize];
+        read_at(opened_file, &mut file_buf, file_offset).unwrap();
+        block_buf.append(&mut file_buf); // todo: optimize this more: avoid appending, create a buf large enough from the start
+    }
+
+    Ok(block_buf)
 }
 
 #[cfg(test)]
