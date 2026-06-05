@@ -337,7 +337,7 @@ impl FileManager {
         let files_data = self.piece_to_files[read_piece_block_request.piece_idx].clone();
 
         let file_manager_to_torrent_manager_tx = file_manager_to_torrent_manager_tx.clone();
-        tokio::spawn(async move {
+        tokio::task::spawn_blocking(move || {
             let result = read_data(
                 files,
                 files_data,
@@ -345,13 +345,14 @@ impl FileManager {
                 read_piece_block_request.block_length,
             );
             file_manager_to_torrent_manager_tx
-            .send(FileManagerToTorrentManagerMsg::ReadPieceBlockResponse(
-                ReadPieceBlockResponse {
-                    request: read_piece_block_request,
-                    response: result,
-                },
-            ))
-            .await.expect("torrent manager closed the file_manager_to_torrent_manager_rx channel, this should never happen");
+                .blocking_send(FileManagerToTorrentManagerMsg::ReadPieceBlockResponse(
+                    ReadPieceBlockResponse {
+                        request: read_piece_block_request,
+                        response: result,
+                    },
+                ))
+                .unwrap();
+            // .await.expect("torrent manager closed the file_manager_to_torrent_manager_rx channel, this should never happen");
         });
     }
 
