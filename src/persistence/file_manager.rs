@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::{cmp, fs};
 use thiserror::Error;
+use tokio::sync::Semaphore;
 use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::persistence::piece::Piece;
@@ -42,6 +43,7 @@ pub struct FileManager {
     piece_completion_status: Vec<bool>, // piece identified by position in array -> download completed / incomplete
     file_handles: FileHandles,
     incomplete_pieces: HashMap<usize, Piece>, // piece id -> piece with downloaded fragments
+    fs_reads_semaphore: tokio::sync::Semaphore,
 }
 
 struct FileHandles {
@@ -258,6 +260,7 @@ impl FileManager {
             incomplete_pieces: HashMap::new(),
             normal_piece_length: piece_length as u64,
             last_piece_length,
+            fs_reads_semaphore: tokio::sync::Semaphore::new(1),
         };
 
         file_manager.refresh_completed_pieces();
@@ -337,7 +340,26 @@ impl FileManager {
         let files_data = self.piece_to_files[read_piece_block_request.piece_idx].clone();
 
         let file_manager_to_torrent_manager_tx = file_manager_to_torrent_manager_tx.clone();
-        tokio::task::spawn_blocking(move || {
+        // let _ = self.fs_reads_semaphore.acquire().await.unwrap();
+        // tokio::task::spawn_blocking(move || {
+        //     let result = read_data(
+        //         files,
+        //         files_data,
+        //         read_piece_block_request.block_begin,
+        //         read_piece_block_request.block_length,
+        //     );
+        //     file_manager_to_torrent_manager_tx
+        //         .blocking_send(FileManagerToTorrentManagerMsg::ReadPieceBlockResponse(
+        //             ReadPieceBlockResponse {
+        //                 request: read_piece_block_request,
+        //                 response: result,
+        //             },
+        //         ))
+        //         .unwrap();
+        //     // .await.expect("torrent manager closed the file_manager_to_torrent_manager_rx channel, this should never happen");
+        // });
+
+        // tokio::task::spawn(async move {
             let result = read_data(
                 files,
                 files_data,
@@ -345,15 +367,14 @@ impl FileManager {
                 read_piece_block_request.block_length,
             );
             file_manager_to_torrent_manager_tx
-                .blocking_send(FileManagerToTorrentManagerMsg::ReadPieceBlockResponse(
+                .send(FileManagerToTorrentManagerMsg::ReadPieceBlockResponse(
                     ReadPieceBlockResponse {
                         request: read_piece_block_request,
                         response: result,
                     },
                 ))
-                .unwrap();
-            // .await.expect("torrent manager closed the file_manager_to_torrent_manager_rx channel, this should never happen");
-        });
+             .await.expect("torrent manager closed the file_manager_to_torrent_manager_rx channel, this should never happen");
+        // });
     }
 
     fn refresh_completed_pieces(&mut self) {
