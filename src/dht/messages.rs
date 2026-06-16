@@ -518,7 +518,7 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
                     "got krpc message that is a response (y=r) and has a values list with a value that is not a bencoded string"
                 ),
             };
-            if peer_str.len() % 6 != 0 {
+            if peer_str.len() != 6 {
                 bail!(
                     "got krpc message that is a response (y=r) and has a values list with a value in the r map that is not a bencoded string with length divisible by 6"
                 );
