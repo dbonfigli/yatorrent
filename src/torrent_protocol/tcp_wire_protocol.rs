@@ -341,14 +341,14 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                 if let Err(e) = self.read_exact(&mut begin_buf).await {
                     return Err(e.into());
                 }
-                let mut lenght_buf: [u8; 4] = [0; 4];
-                if let Err(e) = self.read_exact(&mut lenght_buf).await {
+                let mut length_buf: [u8; 4] = [0; 4];
+                if let Err(e) = self.read_exact(&mut length_buf).await {
                     return Err(e.into());
                 }
                 Ok(Message::Request(BlockRequest {
                     piece_idx: u32::from_be_bytes(index_buf),
                     block_begin: u32::from_be_bytes(begin_buf),
-                    data_len: u32::from_be_bytes(lenght_buf),
+                    data_len: u32::from_be_bytes(length_buf),
                 }))
             }
             // piece
@@ -382,14 +382,14 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                 if let Err(e) = self.read_exact(&mut begin_buf).await {
                     return Err(e.into());
                 }
-                let mut lenght_buf: [u8; 4] = [0; 4];
-                if let Err(e) = self.read_exact(&mut lenght_buf).await {
+                let mut length_buf: [u8; 4] = [0; 4];
+                if let Err(e) = self.read_exact(&mut length_buf).await {
                     return Err(e.into());
                 }
                 Ok(Message::Cancel(BlockRequest {
                     piece_idx: u32::from_be_bytes(index_buf),
                     block_begin: u32::from_be_bytes(begin_buf),
-                    data_len: u32::from_be_bytes(lenght_buf),
+                    data_len: u32::from_be_bytes(length_buf),
                 }))
             }
             // port
@@ -422,14 +422,14 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                 if let Err(e) = self.read_exact(&mut begin_buf).await {
                     return Err(e.into());
                 }
-                let mut lenght_buf: [u8; 4] = [0; 4];
-                if let Err(e) = self.read_exact(&mut lenght_buf).await {
+                let mut length_buf: [u8; 4] = [0; 4];
+                if let Err(e) = self.read_exact(&mut length_buf).await {
                     return Err(e.into());
                 }
                 Ok(Message::Reject(BlockRequest {
                     piece_idx: u32::from_be_bytes(index_buf),
                     block_begin: u32::from_be_bytes(begin_buf),
-                    data_len: u32::from_be_bytes(lenght_buf),
+                    data_len: u32::from_be_bytes(length_buf),
                 }))
             }
             // allowed fast

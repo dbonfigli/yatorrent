@@ -7,7 +7,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use std::{iter, path::Path};
-use tokio::runtime::Handle;
 
 use rand::RngExt;
 use rand::seq::IndexedRandom;
@@ -29,8 +28,8 @@ use crate::manager::rate_limiter::RateLimiter;
 use crate::metadata::infodict::{self};
 use crate::metadata::metainfo::get_files;
 use crate::persistence::file_manager::{
-    FileManager, FileManagerToTorrentManagerMsg, ReadPieceBlockRequest, ReadPieceBlockResponse,
-    ShaCorruptedError, ToFileManagerMsg, WritePieceBlockRequest, WritePieceBlockResponse,
+    MAX_CONCURRENT_READ_OPS, ReadPieceBlockRequest, ReadPieceBlockResponse, ShaCorruptedError,
+    WritePieceBlockRequest, WritePieceBlockResponse, start_file_manager,
 };
 use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::torrent_protocol::wire_protocol::{BlockRequest, Message};
@@ -48,7 +47,7 @@ const DHT_BOOTSTRAP_TIME: Duration = Duration::from_secs(5);
 const KEEP_ALIVE_FREQ: Duration = Duration::from_secs(90);
 
 // this capacity is enough to hold all the possible block requests that can be inflight and all the incoming requests
-// that we support before a choke, still, we need extra capacity to run have messages in case of fast download of pieces
+// that we support before a choke, still, we need extra capacity to send "have" messages in case of fast download of pieces,
 // other kind of messages are really low on volume
 const TO_PEER_CHANNEL_CAPACITY: usize = MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT
     + MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER as usize
@@ -87,10 +86,22 @@ const MAX_CORRUPTION_ERRORS: u32 = 20; // max sha1 corruption errors on blocks a
 const TO_NEW_INCOMING_PEERS_HANDLER_CHANNEL_CAPACITY: usize = 100;
 const TO_DHT_MANAGER_CHANNEL_CAPACITY: usize = 1000;
 
-// this is the number of enqueued disk operations
-const TORRENT_MANAGER_TO_FILE_MANAGER_CHANNEL_CAPACITY: usize = 200;
-// it is important that this value is less than TORRENT_MANAGER_TO_FILE_MANAGER_CHANNEL_CAPACITY, to avoid a deadlock
-const FILE_MANAGER_TO_TORRENT_MANAGER_CHANNEL_CAPACITY: usize = 190;
+// the number of enqueued disk read operations requests.
+// This should be > than MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER, otherwise a single peer that is righfully sending the max number of block requets we advertise will lead to it being chocked (when read reqs channel cap is 0)
+const READ_REQUESTS_CHANNEL_CAPACITY: usize = 2500;
+// the number of enqueued disk read operations respones.
+// It is important that this value is less than READ_REQUESTS_CHANNEL_CAPACITY, to avoid a deadlock.
+// The size of this is impacting used memory, each message can carry 16 KB of data.
+const READ_RESPONSES_CHANNEL_CAPACITY: usize = 1000;
+
+// the number of enqueued disk writes operations requests
+const WRITE_REQUESTS_CHANNEL_CAPACITY: usize = 200;
+// the number of enqueued disk write operations respones.
+// it is important that this value is less than WRITE_REQUESTS_CHANNEL_CAPACITY, to avoid a deadlock.
+// The size of this is impacting used memory, each message can carry 16 KB of data.
+const WRITE_RESPONSES_CHANNEL_CAPACITY: usize = 190;
+
+const MAX_ALLOWED_BLOCK_REQUEST_SIZE_B: u32 = 16384 * 4; // the max request size we allow from peers, in bytes. In theory none should ask for more than 16KB, here we are a bit lenient
 
 pub struct Peer {
     peer_addr: String,
@@ -339,10 +350,15 @@ pub struct TorrentManager {
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
     peers_to_torrent_manager_rx: Receiver<PeersToManagerMsg>,
 
-    to_file_manager_tx: Sender<ToFileManagerMsg>,
-    to_file_manager_rx: Option<Receiver<ToFileManagerMsg>>, // optional bc we will move it to the file manager handler at start
-    file_manager_to_torrent_manager_tx: Sender<FileManagerToTorrentManagerMsg>,
-    file_manager_to_torrent_manager_rx: Receiver<FileManagerToTorrentManagerMsg>,
+    read_requests_tx: Sender<ReadPieceBlockRequest>,
+    read_requests_rx: Option<Receiver<ReadPieceBlockRequest>>, // optional bc we will move it to the file manager handler at start
+    read_responses_tx: Sender<ReadPieceBlockResponse>,
+    read_responses_rx: Receiver<ReadPieceBlockResponse>,
+
+    write_requests_tx: Sender<WritePieceBlockRequest>,
+    write_requests_rx: Option<Receiver<WritePieceBlockRequest>>, // optional bc we will move it to the file manager handler at start
+    write_responses_tx: Sender<WritePieceBlockResponse>,
+    write_responses_rx: Receiver<WritePieceBlockResponse>,
 
     download_rate_limiter: Option<Arc<tokio::sync::Mutex<RateLimiter>>>,
     upload_rate_limiter: Option<Arc<tokio::sync::Mutex<RateLimiter>>>,
@@ -398,10 +414,12 @@ impl TorrentManager {
             mpsc::channel(TO_NEW_INCOMING_PEERS_HANDLER_CHANNEL_CAPACITY);
         let (peers_to_torrent_manager_tx, peers_to_torrent_manager_rx) =
             mpsc::channel::<PeersToManagerMsg>(PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY);
-        let (to_file_manager_tx, to_file_manager_rx) =
-            mpsc::channel(TORRENT_MANAGER_TO_FILE_MANAGER_CHANNEL_CAPACITY);
-        let (file_manager_to_torrent_manager_tx, file_manager_to_torrent_manager_rx) =
-            mpsc::channel(FILE_MANAGER_TO_TORRENT_MANAGER_CHANNEL_CAPACITY);
+
+        let (read_requests_tx, read_requests_rx) = mpsc::channel(READ_REQUESTS_CHANNEL_CAPACITY);
+        let (read_responses_tx, read_responses_rx) = mpsc::channel(READ_RESPONSES_CHANNEL_CAPACITY);
+        let (write_requests_tx, write_requests_rx) = mpsc::channel(WRITE_REQUESTS_CHANNEL_CAPACITY);
+        let (write_responses_tx, write_responses_rx) =
+            mpsc::channel(WRITE_RESPONSES_CHANNEL_CAPACITY);
 
         let mut torrent_manager = TorrentManager {
             torrent_data_status: None,
@@ -440,10 +458,17 @@ impl TorrentManager {
             to_new_incoming_peers_handler_rx: Some(to_new_incoming_peers_handler_rx),
             peers_to_torrent_manager_tx,
             peers_to_torrent_manager_rx,
-            to_file_manager_tx,
-            to_file_manager_rx: Some(to_file_manager_rx),
-            file_manager_to_torrent_manager_tx,
-            file_manager_to_torrent_manager_rx,
+
+            read_requests_tx,
+            read_requests_rx: Some(read_requests_rx),
+            read_responses_tx,
+            read_responses_rx,
+
+            write_requests_tx,
+            write_requests_rx: Some(write_requests_rx),
+            write_responses_tx,
+            write_responses_rx,
+
             download_rate_limiter: max_download_bandwidth
                 .map(|b| Arc::new(tokio::sync::Mutex::new(RateLimiter::new(b as u128)))),
             upload_rate_limiter: max_upload_bandwidth
@@ -451,28 +476,26 @@ impl TorrentManager {
         };
 
         if let Some((file_list, piece_length, piece_hashes)) = files_data {
-            let total_pieces = piece_hashes.len();
-            let mut file_manager =
-                FileManager::new(base_path, file_list, piece_length, piece_hashes);
-            torrent_manager.torrent_data_status = Some(TorrentDataStatus::new(
-                file_manager.current_piece_completion_status(),
-                file_manager.piece_length(0),
-                file_manager.piece_length(total_pieces - 1),
-            ));
-            let to_file_manager_rx = torrent_manager
-                .to_file_manager_rx
+            let read_requests_rx = torrent_manager
+                .read_requests_rx
                 .take()
-                .expect("no to_file_manager_rx, has start been called twice?");
-            let file_manager_to_torrent_manager_tx =
-                torrent_manager.file_manager_to_torrent_manager_tx.clone();
-            let handle = Handle::current();
-            std::thread::spawn(move || {
-                handle.block_on(async move {
-                    file_manager
-                        .start(to_file_manager_rx, file_manager_to_torrent_manager_tx)
-                        .await;
-                })
-            });
+                .expect("no read_requests_rx, has start been called twice?");
+            let write_requests_rx = torrent_manager
+                .write_requests_rx
+                .take()
+                .expect("no write_requests_rx, has start been called twice?");
+            let read_responses_tx = torrent_manager.read_responses_tx.clone();
+            let write_responses_tx = torrent_manager.write_responses_tx.clone();
+            torrent_manager.torrent_data_status = Some(start_file_manager(
+                base_path,
+                file_list,
+                piece_length,
+                piece_hashes,
+                read_requests_rx,
+                read_responses_tx,
+                write_requests_rx,
+                write_responses_tx,
+            ));
         }
 
         torrent_manager
@@ -527,22 +550,34 @@ impl TorrentManager {
     ) {
         loop {
             // for disk operations, the flow is like this:
-            // torrent manager (ch to_file_manager) ->
-            //   file manager (ch file_manager_to_torrent_manager) ->
+            // torrent manager (ch write_requests) ->
+            //   file manager (ch write_responses) ->
             //     torrent manager
             //
-            // if file_manager_to_torrent_manager_tx is full and so file manager is blocked,
-            // also to_file_manager_tx can become soon after full (because file manager is not dequeuing)
+            // if write_responses_tx are full and so file manager is blocked,
+            // also write_requests_rx can become soon after full (because file manager is not dequeuing)
             // causing a deadlock on torrent manager in case it wants to send a new message to to_file_manager_tx
             //
-            // to avoid this, here we give precedence to dequeuing the file_manager_to_torrent_manager channel:
-            // this way the torrent manager frees space in file_manager_to_torrent_manager_tx before issuing more requests,
-            // ensuring the file manager can make progress and preventing the two bounded channels from deadlocking,
+            // to avoid this, here we give precedence to dequeuing the write_responses channel:
+            // this way the torrent manager frees space in write_responses_tx before issuing more requests,
+            // ensuring the file manager can make progress and preventing the bounded channels from deadlocking,
             // because torrent manager cannot have sent to to_file_manager in the meantime
-            // and to_file_manager_tx capacity > file_manager_to_torrent_manager capacity
-            if let Ok(msg) = self.file_manager_to_torrent_manager_rx.try_recv() {
-                self.handle_file_manager_to_torrent_manager_message(msg)
-                    .await;
+            // and write_requests_rx capacity > write_responses_tx capacity.
+            // A more elegant solution would have been one shot channels but we cannot 
+            if self.write_responses_tx.capacity() <= 0 {
+                if let Ok(write_piece_block_response) = self.write_responses_rx.try_recv() {
+                    self.handle_write_piece_block_response(write_piece_block_response)
+                        .await;
+                }
+            }
+
+            // same as above for read_requests_rx / read_responses_tx, but read responses can be concurrent,
+            // so we need to spare at least the number of concurrent reads
+            if self.read_responses_tx.capacity() <= MAX_CONCURRENT_READ_OPS {
+                if let Ok(read_piece_block_response) = self.read_responses_rx.try_recv() {
+                    self.handle_read_piece_block_response(read_piece_block_response)
+                        .await;
+                }
             }
 
             tokio::select! {
@@ -563,8 +598,12 @@ impl TorrentManager {
                         },
                     }
                 }
-                Some(msg) = self.file_manager_to_torrent_manager_rx.recv() => {
-                    self.handle_file_manager_to_torrent_manager_message(msg)
+                Some(write_piece_block_response) = self.write_responses_rx.recv() => {
+                    self.handle_write_piece_block_response(write_piece_block_response)
+                    .await;
+                }
+                Some(read_piece_block_response) = self.read_responses_rx.recv() => {
+                    self.handle_read_piece_block_response(read_piece_block_response)
                     .await;
                 }
                 Some(()) = tick_rx.recv() => {
@@ -577,22 +616,6 @@ impl TorrentManager {
                     drop(advertised_peers_mg);
                 }
                 else => break,
-            }
-        }
-    }
-
-    async fn handle_file_manager_to_torrent_manager_message(
-        &mut self,
-        msg: FileManagerToTorrentManagerMsg,
-    ) {
-        match msg {
-            FileManagerToTorrentManagerMsg::WritePieceBlockResponse(write_piece_block_response) => {
-                self.handle_write_piece_block_response(write_piece_block_response)
-                    .await;
-            }
-            FileManagerToTorrentManagerMsg::ReadPieceBlockResponse(read_piece_block_response) => {
-                self.handle_read_piece_block_response(read_piece_block_response)
-                    .await;
             }
         }
     }
@@ -664,8 +687,7 @@ impl TorrentManager {
                     peer.corruption_errors += 1;
                     if peer.corruption_errors > MAX_CORRUPTION_ERRORS {
                         log::warn!(
-                            "removing peer {} due to too many corrupted pieces received",
-                            peer_addr
+                            "removing peer {peer_addr} due to too many corrupted pieces received",
                         );
                         peer.send(ToPeerMsg::Disconnect()).await;
                         self.remove_peer(peer_addr).await;
@@ -901,10 +923,21 @@ impl TorrentManager {
             None => return,
         };
 
+        if block_request.data_len > MAX_ALLOWED_BLOCK_REQUEST_SIZE_B {
+            log::warn!(
+                "removing peer {peer_addr}: it requested a block of {} bytes, bigger than the allowed ({MAX_ALLOWED_BLOCK_REQUEST_SIZE_B})",
+                block_request.data_len
+            );
+            peer.send(ToPeerMsg::Disconnect()).await;
+            self.remove_peer(peer_addr).await;
+            return;
+        }
+
         if !peer.am_choking
             && should_choke(
                 // todo: choking algorithm is really naive, must improve it to avoid saturating upload
                 self.peers_to_torrent_manager_tx.capacity(),
+                self.read_requests_tx.capacity(),
                 peer.outstanding_incoming_piece_block_requests,
                 true,
             )
@@ -925,13 +958,13 @@ impl TorrentManager {
         // else, we are not choking, we can send the block, read the piece, once read, we will send it
         peer.outstanding_incoming_piece_block_requests += 1;
         let _ = self
-            .to_file_manager_tx
-            .send(ToFileManagerMsg::ReadPieceBlock(ReadPieceBlockRequest {
+            .read_requests_tx
+            .send(ReadPieceBlockRequest {
                 requestor_peer_addr: peer_addr,
                 piece_idx: block_request.piece_idx as usize,
                 block_begin: block_request.block_begin as u64,
                 block_length: block_request.data_len as u64,
-            }))
+            })
             .await;
         // once the block is read, we will send it on handle_read_piece_block_response
     }
@@ -1349,32 +1382,26 @@ impl TorrentManager {
                     "metadata download completed, we can now start downloading the actual torrent data..."
                 );
 
-                let total_pieces = piece_hashes.len();
-                let mut file_manager = FileManager::new(
+                let read_requests_rx = self
+                    .read_requests_rx
+                    .take()
+                    .expect("no read_requests_rx, has start been called twice?");
+                let write_requests_rx = self
+                    .write_requests_rx
+                    .take()
+                    .expect("no write_requests_rx, has start been called twice?");
+                let read_responses_tx = self.read_responses_tx.clone();
+                let write_responses_tx = self.write_responses_tx.clone();
+                self.torrent_data_status = Some(start_file_manager(
                     self.base_path.as_path(),
                     get_files(&m),
                     piece_length,
                     piece_hashes,
-                );
-                self.torrent_data_status = Some(TorrentDataStatus::new(
-                    file_manager.current_piece_completion_status(),
-                    file_manager.piece_length(0),
-                    file_manager.piece_length(total_pieces - 1),
+                    read_requests_rx,
+                    read_responses_tx,
+                    write_requests_rx,
+                    write_responses_tx,
                 ));
-                let to_file_manager_rx = self
-                    .to_file_manager_rx
-                    .take()
-                    .expect("no to_file_manager_rx, has start been called twice?");
-                let file_manager_to_torrent_manager_tx =
-                    self.file_manager_to_torrent_manager_tx.clone();
-                let handle = Handle::current();
-                std::thread::spawn(move || {
-                    handle.block_on(async move {
-                        file_manager
-                            .start(to_file_manager_rx, file_manager_to_torrent_manager_tx)
-                            .await;
-                    })
-                });
 
                 // update new incoming peers handler with new data info
                 self.to_new_incoming_peers_handler_tx
@@ -1448,13 +1475,13 @@ impl TorrentManager {
 
         // send data to file manager to persist it
         let _ = self
-            .to_file_manager_tx
-            .send(ToFileManagerMsg::WritePieceBlock(WritePieceBlockRequest {
+            .write_requests_tx
+            .send(WritePieceBlockRequest {
                 requestor_peer_addr: peer_addr,
                 piece_idx: piece_idx as usize,
                 data,
                 block_begin: begin as u64,
-            }))
+            })
             .await;
     }
 
@@ -1519,7 +1546,7 @@ impl TorrentManager {
 
     async fn handle_ticker(&mut self) {
         self.update_bandwidth_stats();
-        self.log_stats(self.peers_to_torrent_manager_tx.capacity());
+        self.log_stats();
         self.log_peers_stats();
         self.connect_to_new_peers().await;
         self.send_keep_alives().await;
@@ -1641,6 +1668,7 @@ impl TorrentManager {
                     > MIN_CHOKE_TIME
                 && !should_choke(
                     self.peers_to_torrent_manager_tx.capacity(),
+                    self.read_requests_tx.capacity(),
                     peer.outstanding_incoming_piece_block_requests,
                     self.torrent_data_status.is_some(),
                 )
@@ -1881,7 +1909,7 @@ impl TorrentManager {
         }
     }
 
-    fn log_stats(&self, peers_to_torrent_manager_channel_capacity: usize) {
+    fn log_stats(&self) {
         let advertised_peers_lock = self
             .advertised_peers
             .lock()
@@ -1889,7 +1917,7 @@ impl TorrentManager {
         let advertised_peers_len = advertised_peers_lock.len();
         drop(advertised_peers_lock);
         log::info!(
-            "left: {left}, pieces: {completed_pieces}/{total_pieces}{metadata_pieces} | {bandwidth_tracker}{wasted} | known peers: {known_peers} (bad: {bad_peers}), connected: {connected_peers}, unchoked: {unchoked_peers} | peers_to_torrent_manager pending msgs: {cur_ch_cap} | to_file_manager pending msgs: {to_file_m}",
+            "left: {left}, pieces: {completed_pieces}/{total_pieces}{metadata_pieces} | {bandwidth_tracker}{wasted} | known peers: {known_peers} (bad: {bad_peers}), connected: {connected_peers}, unchoked: {unchoked_peers} | pending msgs: peers_to_torrent_manager {cur_ch_cap}; read req/resp {read_reqs}/{read_resps}; write req/resp {write_reqs}/{write_resps}",
             left = self
                 .torrent_data_status
                 .as_ref()
@@ -1941,9 +1969,11 @@ impl TorrentManager {
                 acc
             }),
             cur_ch_cap = PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY
-                - peers_to_torrent_manager_channel_capacity,
-            to_file_m = TORRENT_MANAGER_TO_FILE_MANAGER_CHANNEL_CAPACITY
-                - self.to_file_manager_tx.capacity(),
+                - self.peers_to_torrent_manager_tx.capacity(),
+            read_reqs = READ_REQUESTS_CHANNEL_CAPACITY - self.read_requests_tx.capacity(),
+            read_resps = READ_RESPONSES_CHANNEL_CAPACITY - self.read_responses_tx.capacity(),
+            write_reqs = WRITE_REQUESTS_CHANNEL_CAPACITY - self.write_requests_tx.capacity(),
+            write_resps = WRITE_RESPONSES_CHANNEL_CAPACITY - self.write_responses_tx.capacity(),
         );
     }
 
@@ -2089,6 +2119,7 @@ fn update_tracker_client_and_advertised_peers(
 
 fn should_choke(
     peers_to_torrent_manager_channel_capacity: usize,
+    read_requests_channel_capacity: usize,
     outstanding_incoming_piece_block_requests_for_this_peer: usize,
     file_manager_initialized: bool,
 ) -> bool {
@@ -2096,6 +2127,7 @@ fn should_choke(
         || !file_manager_initialized
         || outstanding_incoming_piece_block_requests_for_this_peer
             > MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER as usize
+        || read_requests_channel_capacity == 0
 }
 
 fn ip_port_list_to_compact_format(addrs: Vec<String>) -> Vec<u8> {
