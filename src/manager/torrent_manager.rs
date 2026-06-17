@@ -1391,7 +1391,7 @@ impl TorrentManager {
 
     async fn handle_ticker(&mut self) {
         self.update_bandwidth_stats();
-        self.log_stats(self.peers_to_torrent_manager_tx.capacity());
+        self.log_stats();
         self.log_peers_stats();
         self.connect_to_new_peers().await;
         self.send_keep_alives().await;
@@ -1753,7 +1753,7 @@ impl TorrentManager {
         }
     }
 
-    fn log_stats(&self, peers_to_torrent_manager_channel_capacity: usize) {
+    fn log_stats(&self) {
         let advertised_peers_lock = self
             .advertised_peers
             .lock()
@@ -1813,7 +1813,7 @@ impl TorrentManager {
                 acc
             }),
             cur_ch_cap = PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY
-                - peers_to_torrent_manager_channel_capacity,
+                - self.peers_to_torrent_manager_tx.capacity(),
         );
     }
 
