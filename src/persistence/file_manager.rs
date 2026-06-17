@@ -11,13 +11,13 @@ use std::sync::{Arc, Mutex};
 use std::{cmp, fs};
 use thiserror::Error;
 use tokio::runtime::Handle;
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::{Receiver, UnboundedSender};
 
 use crate::persistence::piece::Piece;
 use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::util::pretty_info_hash;
 
-pub const MAX_CONCURRENT_READ_OPS: usize = 10; // todo: make this dynamic depending on the read speed (spinning disk should have this set to 1)
+const MAX_CONCURRENT_READ_OPS: usize = 10; // todo: make this dynamic depending on the read speed (spinning disk should have this set to 1)
 
 #[derive(Error, Debug)]
 #[error(
@@ -183,9 +183,9 @@ pub fn start_file_manager(
     normal_piece_length: u64,
     piece_hashes: PieceHashes,
     mut read_requests_rx: Receiver<ReadPieceBlockRequest>,
-    read_responses_tx: Sender<ReadPieceBlockResponse>,
+    read_responses_tx: UnboundedSender<ReadPieceBlockResponse>,
     mut write_requests_rx: Receiver<WritePieceBlockRequest>,
-    write_responses_tx: Sender<WritePieceBlockResponse>,
+    write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
 ) -> TorrentDataStatus {
     let mut total_file_size = 0;
     for (_, size) in file_list.iter() {
@@ -270,7 +270,7 @@ pub fn start_file_manager(
                         &mut file_handles,
                         &piece_hashes,
                         &mut incomplete_pieces
-                        ).await;
+                        );
                     }
                     else => break,
                 }
@@ -334,7 +334,7 @@ fn read_data(
 async fn handle_read_piece_block(
     read_piece_block_request: ReadPieceBlockRequest,
     fs_reads_semaphore: Arc<tokio::sync::Semaphore>,
-    reads_file_manager_to_torrent_manager_tx: &Sender<ReadPieceBlockResponse>,
+    reads_file_manager_to_torrent_manager_tx: &UnboundedSender<ReadPieceBlockResponse>,
 
     piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
     piece_sizer: &PieceSizer,
@@ -351,12 +351,10 @@ async fn handle_read_piece_block(
     ) {
         Ok(_) => {}
         Err(e) => {
-            let _ = reads_file_manager_to_torrent_manager_tx
-                .send(ReadPieceBlockResponse {
-                    request: read_piece_block_request,
-                    response: Result::Err(e),
-                })
-                .await;
+            let _ = reads_file_manager_to_torrent_manager_tx.send(ReadPieceBlockResponse {
+                request: read_piece_block_request,
+                response: Result::Err(e),
+            });
             return;
         }
     }
@@ -368,12 +366,10 @@ async fn handle_read_piece_block(
     ) {
         Ok(f) => f,
         Err(e) => {
-            let _ = reads_file_manager_to_torrent_manager_tx
-                .send(ReadPieceBlockResponse {
-                    request: read_piece_block_request,
-                    response: Result::Err(e),
-                })
-                .await;
+            let _ = reads_file_manager_to_torrent_manager_tx.send(ReadPieceBlockResponse {
+                request: read_piece_block_request,
+                response: Result::Err(e),
+            });
             return;
         }
     };
@@ -392,7 +388,7 @@ async fn handle_read_piece_block(
             read_piece_block_request.block_length,
         );
         drop(permit);
-        let _ = reads_file_manager_to_torrent_manager_tx.blocking_send(ReadPieceBlockResponse {
+        let _ = reads_file_manager_to_torrent_manager_tx.send(ReadPieceBlockResponse {
             request: read_piece_block_request,
             response: result,
         });
@@ -459,9 +455,9 @@ fn get_files_for_piece_for_w(
     Ok(files)
 }
 
-async fn handle_write_piece_block(
+fn handle_write_piece_block(
     write_piece_block_request: WritePieceBlockRequest,
-    writes_file_manager_to_torrent_manager_tx: &Sender<WritePieceBlockResponse>,
+    writes_file_manager_to_torrent_manager_tx: &UnboundedSender<WritePieceBlockResponse>,
 
     piece_sizer: &PieceSizer,
     piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
@@ -481,18 +477,13 @@ async fn handle_write_piece_block(
         piece_hashes,
         incomplete_pieces,
     );
-    writes_file_manager_to_torrent_manager_tx
-            .send(
-                WritePieceBlockResponse {
-                    request: WritePieceBlockRequestReference {
-                        requestor_peer_addr: write_piece_block_request.requestor_peer_addr,
-                        piece_idx: write_piece_block_request.piece_idx,
-                    },
-                    response: result,
-                },
-            )
-            .await
-            .expect("torrent manager closed the file_manager_to_torrent_manager_rx channel, this should never happen");
+    _ = writes_file_manager_to_torrent_manager_tx.send(WritePieceBlockResponse {
+        request: WritePieceBlockRequestReference {
+            requestor_peer_addr: write_piece_block_request.requestor_peer_addr,
+            piece_idx: write_piece_block_request.piece_idx,
+        },
+        response: result,
+    });
 }
 
 fn write_piece_block(

@@ -12,7 +12,7 @@ use rand::RngExt;
 use rand::seq::IndexedRandom;
 use size::{Size, Style};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::mpsc::{self, Receiver, Sender, UnboundedReceiver, UnboundedSender};
 
 use crate::dht::dht_manager::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMsg};
 use crate::manager::bandwidth_tracker::BandwidthTracker;
@@ -28,8 +28,8 @@ use crate::manager::rate_limiter::RateLimiter;
 use crate::metadata::infodict::{self};
 use crate::metadata::metainfo::get_files;
 use crate::persistence::file_manager::{
-    MAX_CONCURRENT_READ_OPS, ReadPieceBlockRequest, ReadPieceBlockResponse, ShaCorruptedError,
-    WritePieceBlockRequest, WritePieceBlockResponse, start_file_manager,
+    ReadPieceBlockRequest, ReadPieceBlockResponse, ShaCorruptedError, WritePieceBlockRequest,
+    WritePieceBlockResponse, start_file_manager,
 };
 use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::torrent_protocol::wire_protocol::{BlockRequest, Message};
@@ -90,19 +90,15 @@ const DHT_MANAGER_TO_TORRENT_MANAGER_CAPACITY: usize = 1000;
 // the number of enqueued disk read operations requests.
 // This should be > than MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER, otherwise a single peer that is righfully sending the max number of block requets we advertise will lead to it being chocked (when read reqs channel cap is 0)
 const READ_REQUESTS_CHANNEL_CAPACITY: usize = 2500;
-// the number of enqueued disk read operations respones.
-// It is important that this value is less than READ_REQUESTS_CHANNEL_CAPACITY, to avoid a deadlock.
-// The size of this is impacting used memory, each message can carry 16 KB of data.
-const READ_RESPONSES_CHANNEL_CAPACITY: usize = 1000;
-
 // the number of enqueued disk writes operations requests
 const WRITE_REQUESTS_CHANNEL_CAPACITY: usize = 200;
-// the number of enqueued disk write operations respones.
-// it is important that this value is less than WRITE_REQUESTS_CHANNEL_CAPACITY, to avoid a deadlock.
-// The size of this is impacting used memory, each message can carry 16 KB of data.
-const WRITE_RESPONSES_CHANNEL_CAPACITY: usize = 190;
 
 const MAX_ALLOWED_BLOCK_REQUEST_SIZE_B: u32 = 16384 * 4; // the max request size we allow from peers, in bytes. In theory none should ask for more than 16KB, here we are a bit lenient
+
+// maximum allowed number of read ops in flight, for all peers, i.e. read requests that have been send to the file manager and whouse reponse hsa not yet been handled by the torrent manager.
+// We use this to limit memory usage since read_responses channel is unbounded to avoid deadlock.
+// See also MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER that is a similar limit (but different: it includes the time to also send the data), per peer.
+const MAX_OUTSTANDING_READ_OPS: usize = 3000;
 
 pub struct Peer {
     peer_addr: String,
@@ -342,6 +338,7 @@ pub struct TorrentManager {
     // otherwise we are just spreading too much the download bandwidth on too many peers, each with a small bandwidth speed
     // risking to be choked by them because of this and generally being inefficient
     max_connected_peers: usize,
+    outstanding_read_ops: usize,
 
     // internal channels, we store them here to avoid passing them around in nested calls
     to_dht_manager_tx: Sender<ToDhtManagerMsg>,
@@ -353,13 +350,26 @@ pub struct TorrentManager {
 
     read_requests_tx: Sender<ReadPieceBlockRequest>,
     read_requests_rx: Option<Receiver<ReadPieceBlockRequest>>, // optional bc we will move it to the file manager handler at start
-    read_responses_tx: Sender<ReadPieceBlockResponse>,
-    read_responses_rx: Receiver<ReadPieceBlockResponse>,
+    // for read disk operations, the flow is like this:
+    // torrent manager (read_requests channel) ->
+    //   file manager (read_responses channel) ->
+    //     torrent manager
+    //
+    // if read_responses was bounded and is full, and therefore file manager is blocked,
+    // also read_requests can become soon after full (because file manager is not dequeuing)
+    // causing a deadlock on torrent manager in case it wants to send a new message to read_responses.
+    //
+    // To avoid this, we use unbounded channels.
+    // Outstanding read requests are globally bounded anyway by MAX_OUTSTANDING_READ_OPS
+    // so the memory is bound to 16KB x 3000 = ~46MB.
+    read_responses_tx: UnboundedSender<ReadPieceBlockResponse>,
+    read_responses_rx: UnboundedReceiver<ReadPieceBlockResponse>,
 
     write_requests_tx: Sender<WritePieceBlockRequest>,
     write_requests_rx: Option<Receiver<WritePieceBlockRequest>>, // optional bc we will move it to the file manager handler at start
-    write_responses_tx: Sender<WritePieceBlockResponse>,
-    write_responses_rx: Receiver<WritePieceBlockResponse>,
+    // unbounded for the same reason as read_responses, without global caps since the messages are really small for this channel
+    write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
+    write_responses_rx: UnboundedReceiver<WritePieceBlockResponse>,
 
     download_rate_limiter: Option<Arc<tokio::sync::Mutex<RateLimiter>>>,
     upload_rate_limiter: Option<Arc<tokio::sync::Mutex<RateLimiter>>>,
@@ -417,10 +427,9 @@ impl TorrentManager {
             mpsc::channel::<PeersToManagerMsg>(PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY);
 
         let (read_requests_tx, read_requests_rx) = mpsc::channel(READ_REQUESTS_CHANNEL_CAPACITY);
-        let (read_responses_tx, read_responses_rx) = mpsc::channel(READ_RESPONSES_CHANNEL_CAPACITY);
+        let (read_responses_tx, read_responses_rx) = mpsc::unbounded_channel();
         let (write_requests_tx, write_requests_rx) = mpsc::channel(WRITE_REQUESTS_CHANNEL_CAPACITY);
-        let (write_responses_tx, write_responses_rx) =
-            mpsc::channel(WRITE_RESPONSES_CHANNEL_CAPACITY);
+        let (write_responses_tx, write_responses_rx) = mpsc::unbounded_channel();
 
         let mut torrent_manager = TorrentManager {
             torrent_data_status: None,
@@ -452,6 +461,7 @@ impl TorrentManager {
             request_timeout: BASE_REQUEST_TIMEOUT,
             show_peers_stats: show_peers_details,
             max_connected_peers,
+            outstanding_read_ops: 0,
 
             to_dht_manager_tx,
             to_dht_manager_rx: Some(to_dht_manager_rx),
@@ -551,38 +561,6 @@ impl TorrentManager {
         mut dht_to_torrent_manager_rx: Receiver<DhtToTorrentManagerMsg>,
     ) {
         loop {
-            // for write disk operations, the flow is like this:
-            // torrent manager (write_requests channel) ->
-            //   file manager (write_responses channel) ->
-            //     torrent manager
-            //
-            // if write_responses_tx is full and therefore file manager is blocked,
-            // also write_requests_rx can become soon after full (because file manager is not dequeuing)
-            // causing a deadlock on torrent manager in case it wants to send a new message to write_responses
-            //
-            // to avoid this, here we give precedence to dequeuing the write_responses channel:
-            // this way the torrent manager frees space in write_responses before issuing more requests,
-            // ensuring the file manager can make progress and preventing the bounded channels from deadlocking,
-            // because torrent manager cannot have sent to write_responses in the meantime and
-            // write_requests capacity > write_responses capacity.
-            // A more elegant solution would have been one shot channels but we cannot use them because that
-            //  would have meant having a concurrent TorrentManager and we don't have right now.
-            if self.write_responses_tx.capacity() <= 0 {
-                if let Ok(write_piece_block_response) = self.write_responses_rx.try_recv() {
-                    self.handle_write_piece_block_response(write_piece_block_response)
-                        .await;
-                }
-            }
-
-            // same as above for read_requests / read_responses, but read responses can be concurrent,
-            // so, to be sound we need to have always capacity at least for the number of possible concurrent reads
-            if self.read_responses_tx.capacity() <= MAX_CONCURRENT_READ_OPS {
-                if let Ok(read_piece_block_response) = self.read_responses_rx.try_recv() {
-                    self.handle_read_piece_block_response(read_piece_block_response)
-                        .await;
-                }
-            }
-
             tokio::select! {
                 Some(msg) = self.peers_to_torrent_manager_rx.recv() => {
                     match msg {
@@ -704,6 +682,8 @@ impl TorrentManager {
         &mut self,
         read_piece_block_response: ReadPieceBlockResponse,
     ) {
+        self.outstanding_read_ops = self.outstanding_read_ops.saturating_sub(1);
+
         let peer = match self
             .peers
             .get_mut(&read_piece_block_response.request.requestor_peer_addr)
@@ -942,6 +922,7 @@ impl TorrentManager {
                 self.peers_to_torrent_manager_tx.capacity(),
                 self.read_requests_tx.capacity(),
                 peer.outstanding_incoming_piece_block_requests,
+                self.outstanding_read_ops,
                 true,
             )
         {
@@ -960,6 +941,7 @@ impl TorrentManager {
 
         // else, we are not choking, we can send the block, read the piece, once read, we will send it
         peer.outstanding_incoming_piece_block_requests += 1;
+        self.outstanding_read_ops += 1;
         let _ = self
             .read_requests_tx
             .send(ReadPieceBlockRequest {
@@ -1673,6 +1655,7 @@ impl TorrentManager {
                     self.peers_to_torrent_manager_tx.capacity(),
                     self.read_requests_tx.capacity(),
                     peer.outstanding_incoming_piece_block_requests,
+                    self.outstanding_read_ops,
                     self.torrent_data_status.is_some(),
                 )
             {
@@ -1920,7 +1903,7 @@ impl TorrentManager {
         let advertised_peers_len = advertised_peers_lock.len();
         drop(advertised_peers_lock);
         log::info!(
-            "left: {left}, pieces: {completed_pieces}/{total_pieces}{metadata_pieces} | {bandwidth_tracker}{wasted} | known peers: {known_peers} (bad: {bad_peers}), connected: {connected_peers}, unchoked: {unchoked_peers} | pending msgs: peers_to_torrent_manager {cur_ch_cap}; read req/resp {read_reqs}/{read_resps}; write req/resp {write_reqs}/{write_resps}",
+            "left: {left}, pieces: {completed_pieces}/{total_pieces}{metadata_pieces} | {bandwidth_tracker}{wasted} | known peers: {known_peers} (bad: {bad_peers}), connected: {connected_peers}, unchoked: {unchoked_peers} | pending msgs: peers_to_torrent_manager {cur_ch_cap}; read_reqs {read_reqs} (inflight read ops: {inflight_read_ops}); write_reqs {write_reqs}",
             left = self
                 .torrent_data_status
                 .as_ref()
@@ -1974,9 +1957,8 @@ impl TorrentManager {
             cur_ch_cap = PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY
                 - self.peers_to_torrent_manager_tx.capacity(),
             read_reqs = READ_REQUESTS_CHANNEL_CAPACITY - self.read_requests_tx.capacity(),
-            read_resps = READ_RESPONSES_CHANNEL_CAPACITY - self.read_responses_tx.capacity(),
+            inflight_read_ops = self.outstanding_read_ops,
             write_reqs = WRITE_REQUESTS_CHANNEL_CAPACITY - self.write_requests_tx.capacity(),
-            write_resps = WRITE_RESPONSES_CHANNEL_CAPACITY - self.write_responses_tx.capacity(),
         );
     }
 
@@ -2124,6 +2106,7 @@ fn should_choke(
     peers_to_torrent_manager_channel_capacity: usize,
     read_requests_channel_capacity: usize,
     outstanding_incoming_piece_block_requests_for_this_peer: usize,
+    outstanding_read_ops: usize,
     file_manager_initialized: bool,
 ) -> bool {
     peers_to_torrent_manager_channel_capacity < PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY / 2
@@ -2131,6 +2114,7 @@ fn should_choke(
         || outstanding_incoming_piece_block_requests_for_this_peer
             > MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER as usize
         || read_requests_channel_capacity == 0
+        || outstanding_read_ops > MAX_OUTSTANDING_READ_OPS
 }
 
 fn ip_port_list_to_compact_format(addrs: Vec<String>) -> Vec<u8> {
