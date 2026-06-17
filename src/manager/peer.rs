@@ -136,50 +136,63 @@ pub async fn connect_to_new_peer(
     }
 }
 
+pub enum ToNewIncomingPeersHandlerMsg {
+    OkToAcceptConnection(bool),
+    PieceCompleted(usize),
+    TorrentDataInitialized((i64, Vec<bool>)), // metadata size, piece completion status
+}
+
 pub async fn run_new_incoming_peers_handler(
     info_hash: [u8; 20],
     own_peer_id: String,
     tcp_wire_protocol_listening_port: u16,
     piece_completion_status: Option<Vec<bool>>,
-    mut ok_to_accept_connection_rx: Receiver<bool>,
-    mut metadata_size_rx: Receiver<i64>,
-    mut piece_completion_status_rx: Receiver<Vec<bool>>,
+    mut to_new_incoming_peers_handler_rx: Receiver<ToNewIncomingPeersHandlerMsg>,
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
     raw_metadata_size: Option<i64>,
 ) {
     let ok_to_accept_connection_for_rcv: Arc<Mutex<bool>> = Arc::new(Mutex::new(true)); // accept new connections at start
     let ok_to_accept_connection = ok_to_accept_connection_for_rcv.clone();
-    tokio::spawn(async move {
-        while let Some(msg) = ok_to_accept_connection_rx.recv().await {
-            log::trace!("got message to accept/refuse new incoming connections: {msg}");
-            let mut ok_to_accept_connection_for_rcv_lock =
-                ok_to_accept_connection_for_rcv.lock().await;
-            *ok_to_accept_connection_for_rcv_lock = msg;
-            drop(ok_to_accept_connection_for_rcv_lock);
-        }
-    });
 
     let metadata_size_for_rcv: Arc<Mutex<Option<i64>>> = Arc::new(Mutex::new(raw_metadata_size));
     let metadata_size = metadata_size_for_rcv.clone();
-    tokio::spawn(async move {
-        while let Some(msg) = metadata_size_rx.recv().await {
-            log::trace!("got message for newly known metadata size: {msg}");
-            let mut metadata_size_for_rcv_lock = metadata_size_for_rcv.lock().await;
-            *metadata_size_for_rcv_lock = Some(msg);
-            drop(metadata_size_for_rcv_lock);
-        }
-    });
 
     let piece_completion_status_for_rcv: Arc<Mutex<Option<Vec<bool>>>> =
         Arc::new(Mutex::new(piece_completion_status));
     let piece_completion_status = piece_completion_status_for_rcv.clone();
+
     tokio::spawn(async move {
-        while let Some(msg) = piece_completion_status_rx.recv().await {
-            log::trace!("got message to update piece_completion_status");
-            let mut piece_completion_status_for_rcv_lock =
-                piece_completion_status_for_rcv.lock().await;
-            *piece_completion_status_for_rcv_lock = Some(msg);
-            drop(piece_completion_status_for_rcv_lock);
+        loop {
+            tokio::select! {
+                Some(msg) = to_new_incoming_peers_handler_rx.recv() => {
+                    match msg  {
+                        ToNewIncomingPeersHandlerMsg::OkToAcceptConnection(ok_to_accept) => {
+                            log::trace!("got message to accept/refuse new incoming connections: {ok_to_accept}");
+                            let mut ok_to_accept_connection_for_rcv_lock = ok_to_accept_connection_for_rcv.lock().await;
+                            *ok_to_accept_connection_for_rcv_lock = ok_to_accept;
+                            drop(ok_to_accept_connection_for_rcv_lock);
+                        },
+                        ToNewIncomingPeersHandlerMsg::PieceCompleted(piece_idx) => {
+                            log::trace!("got message for newly completed piece: {piece_idx}");
+                            let mut piece_completion_status_for_rcv_lock = piece_completion_status_for_rcv.lock().await;
+                            if let Some(pcs) = piece_completion_status_for_rcv_lock.as_mut() {
+                                pcs[piece_idx] = true
+                            }
+                            drop(piece_completion_status_for_rcv_lock);
+                        },
+                        ToNewIncomingPeersHandlerMsg::TorrentDataInitialized((new_metadata_size, new_piece_completion_status)) => {
+                            log::trace!("got message to update piece_completion_status, new metadata size: {new_metadata_size}, new piece completion status len: {}", new_piece_completion_status.len());
+                            let mut metadata_size_for_rcv_lock = metadata_size_for_rcv.lock().await;
+                            *metadata_size_for_rcv_lock = Some(new_metadata_size);
+                            drop(metadata_size_for_rcv_lock);
+                            let mut piece_completion_status_for_rcv_lock = piece_completion_status_for_rcv.lock().await;
+                            *piece_completion_status_for_rcv_lock = Some(new_piece_completion_status);
+                            drop(piece_completion_status_for_rcv_lock);
+                        },
+                    }
+                }
+                else => break,
+            }
         }
     });
 
