@@ -76,6 +76,7 @@ const NEW_CONNECTION_COOL_OFF_PERIOD: Duration = Duration::from_secs(180); // ti
 const ADDED_DROPPED_PEER_EVENTS_RETENTION: Duration = Duration::from_secs(90);
 const PEX_MESSAGE_COOL_OFF_PERIOD: Duration = Duration::from_secs(60);
 const MAX_CORRUPTION_ERRORS: u32 = 20; // max sha1 corruption errors on blocks a peer can have before marking it as bad
+const TO_DHT_MANAGER_CHANNEL_CAPACITY: usize = 1000;
 
 pub struct Peer {
     peer_addr: String,
@@ -377,7 +378,7 @@ impl TorrentManager {
             initial_advertised_peers.insert(peer_addr, (p, SystemTime::UNIX_EPOCH));
         }
         let advertised_peers = Arc::new(Mutex::new(initial_advertised_peers));
-        let (to_dht_manager_tx, to_dht_manager_rx) = mpsc::channel(1000);
+        let (to_dht_manager_tx, to_dht_manager_rx) = mpsc::channel(TO_DHT_MANAGER_CHANNEL_CAPACITY);
         let (ok_to_accept_connection_tx, ok_to_accept_connection_rx) = mpsc::channel(10);
         let (metadata_size_tx, metadata_size_rx) = mpsc::channel(1);
         let (piece_completion_status_tx, piece_completion_status_rx) = mpsc::channel(100);
