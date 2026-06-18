@@ -3,7 +3,6 @@ use sha1::{Digest, Sha1};
 use size::Size;
 use std::collections::HashMap;
 use std::fs::File;
-#[cfg(unix)]
 use std::io;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -163,18 +162,19 @@ fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-fn read_at(file: &File, buf: &mut [u8], mut offset: u64) -> io::Result<()> {
+fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    use std::io::ErrorKind;
     use std::os::windows::fs::FileExt;
-    while !buf.is_empty() {
-        let n = file.seek_read(buf, offset)?;
+    let mut read = 0;
+    while read < buf.len() {
+        let n = file.seek_read(&mut buf[read..], offset + read as u64)?;
         if n == 0 {
             return Err(io::Error::new(
                 ErrorKind::UnexpectedEof,
                 "failed to fill whole buffer",
             ));
         }
-        offset += n as u64;
-        buf = &mut buf[n..];
+        read += n;
     }
     Ok(())
 }
