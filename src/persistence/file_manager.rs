@@ -15,7 +15,6 @@ use tokio::sync::mpsc::{Receiver, UnboundedSender};
 
 use crate::persistence::piece::Piece;
 use crate::persistence::torrent_data_status::TorrentDataStatus;
-use crate::util::pretty_info_hash;
 
 const MAX_CONCURRENT_READ_OPS: usize = 10; // todo: make this dynamic depending on the read speed (spinning disk should have this set to 1)
 
@@ -113,8 +112,11 @@ impl WriteFileHandles {
     }
 }
 
-type PieceToFiles = Vec<(PathBuf, u64, u64)>; // list of files a piece belong to, with start byte and end byte within that file. A piece can span many files
-type PiecesToFiles = Vec<PieceToFiles>; // piece identified by position in array
+// A piece can span many files.
+// The following is the list of files (file handles, start byte as offset of the piece, end byte as offset of the piece) a piece belong to, ordered.
+type FileHandlesForPiece = Vec<(Arc<File>, u64, u64)>;
+type FilePathsForPiece = Vec<(PathBuf, u64, u64)>; // same as FileHandlesForPiece but with file paths
+type FilePathsForPieces = Vec<FilePathsForPiece>; // piece identified by position in the array -> FilePathsForPiece
 
 type PieceCompletionStatus = Vec<bool>; // piece identified by position in array -> download completed / incomplete
 type PieceHashes = Vec<[u8; 20]>; // piece identified by position in array -> hash
@@ -161,7 +163,7 @@ fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+fn read_at(file: &File, buf: &mut [u8], mut offset: u64) -> io::Result<()> {
     use std::os::windows::fs::FileExt;
     while !buf.is_empty() {
         let n = file.seek_read(buf, offset)?;
@@ -179,7 +181,7 @@ fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
 
 pub fn start_file_manager(
     base_path: &Path,
-    file_list: Vec<(String, u64)>, // list of files and their sizes
+    file_list: Vec<(String, u64)>, // list of files (path string) and their sizes
     normal_piece_length: u64,
     piece_hashes: PieceHashes,
     mut read_requests_rx: Receiver<ReadPieceBlockRequest>,
@@ -191,36 +193,33 @@ pub fn start_file_manager(
     for (_, size) in file_list.iter() {
         total_file_size += size;
     }
-    if total_file_size > normal_piece_length * piece_hashes.len() as u64 {
+    let total_pieces = piece_hashes.len();
+    if total_file_size > normal_piece_length * total_pieces as u64 {
         log::warn!(
             "the total file size of all files exceed the #pieces * piece_length we have, the .torrent file could be malformed, the exceeding files will not be downloaded"
         );
     }
 
-    let pieces_to_files = generate_pieces_to_files(
-        base_path,
-        piece_hashes.len(),
-        normal_piece_length,
-        &file_list,
-    );
+    let file_paths_for_pieces =
+        generate_file_paths_for_pieces(base_path, total_pieces, normal_piece_length, &file_list);
 
     let mut last_piece_length = 0;
-    for (_, start, end) in pieces_to_files[piece_hashes.len() - 1].iter() {
+    for (_, start, end) in file_paths_for_pieces[total_pieces - 1].iter() {
         last_piece_length += end - start;
     }
     let piece_sizer = PieceSizer {
-        total_pieces: piece_hashes.len(),
+        total_pieces,
         normal_piece_length,
         last_piece_length,
     };
 
     let piece_completion_status =
-        refresh_completed_pieces(&piece_hashes, &piece_sizer, &pieces_to_files);
+        refresh_completed_pieces(&piece_hashes, &piece_sizer, &file_paths_for_pieces);
 
     log_file_completion_stats(
         base_path,
         &file_list,
-        &pieces_to_files,
+        &file_paths_for_pieces,
         &piece_completion_status,
     );
 
@@ -230,7 +229,7 @@ pub fn start_file_manager(
     // read request loop
     let piece_completion_status_for_reads = shared_piece_completion_status.clone();
     let piece_sizer_for_reads = piece_sizer.clone();
-    let pieces_to_files_for_reads = pieces_to_files.clone();
+    let file_paths_for_pieces_for_reads = file_paths_for_pieces.clone();
     tokio::spawn(async move {
         let mut file_handles = ReadFileHandles::new();
         let fs_reads_semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_READ_OPS));
@@ -244,7 +243,7 @@ pub fn start_file_manager(
                         piece_completion_status_for_reads.clone(),
                         &piece_sizer_for_reads,
                         &mut file_handles,
-                        &pieces_to_files_for_reads
+                        &file_paths_for_pieces_for_reads
                     ).await;
                 }
                 else => break,
@@ -266,7 +265,7 @@ pub fn start_file_manager(
                         &write_responses_tx,
                         &piece_sizer,
                         shared_piece_completion_status.clone(),
-                        &pieces_to_files,
+                        &file_paths_for_pieces,
                         &mut file_handles,
                         &piece_hashes,
                         &mut incomplete_pieces
@@ -286,15 +285,14 @@ pub fn start_file_manager(
 }
 
 fn read_data(
-    files: HashMap<PathBuf, Arc<File>>,
-    pieces_to_files: PieceToFiles,
+    file_handles_for_piece: FileHandlesForPiece,
     block_begin: u64,
     block_length: u64,
 ) -> Result<Vec<u8>> {
     let mut block_buf = Vec::<u8>::new();
     let mut current_piece_offset = 0;
     let mut block_bytes_still_to_read = block_length;
-    for (file_path, start, end) in pieces_to_files.iter() {
+    for (file, start, end) in file_handles_for_piece.iter() {
         let mut file_offset = *start;
         if current_piece_offset != block_begin {
             let piece_fragment_size_in_file = end - start;
@@ -320,11 +318,8 @@ fn read_data(
             block_bytes_still_to_read -= end - file_offset;
         }
 
-        let opened_file = files
-            .get(file_path)
-            .expect("we know we got all the required files");
         let mut file_buf: Vec<u8> = vec![0; bytes_to_read as usize];
-        read_at(opened_file, &mut file_buf, file_offset)?;
+        read_at(file, &mut file_buf, file_offset)?;
         block_buf.append(&mut file_buf); // todo: optimize this more: avoid appending, create a buf large enough from the start
     }
 
@@ -339,7 +334,7 @@ async fn handle_read_piece_block(
     piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
     piece_sizer: &PieceSizer,
     read_file_handles: &mut ReadFileHandles,
-    pieces_to_files: &PiecesToFiles,
+    file_paths_for_pieces: &FilePathsForPieces,
 ) {
     match read_piece_block_pre_checks(
         piece_completion_status,
@@ -359,8 +354,8 @@ async fn handle_read_piece_block(
         }
     }
 
-    let files = match get_files_for_piece_for_r(
-        pieces_to_files,
+    let file_handles_for_piece = match get_files_for_piece_for_r(
+        file_paths_for_pieces,
         read_file_handles,
         read_piece_block_request.piece_idx,
     ) {
@@ -373,7 +368,6 @@ async fn handle_read_piece_block(
             return;
         }
     };
-    let files_data = pieces_to_files[read_piece_block_request.piece_idx].clone();
 
     let reads_file_manager_to_torrent_manager_tx = reads_file_manager_to_torrent_manager_tx.clone();
     let permit = fs_reads_semaphore
@@ -382,8 +376,7 @@ async fn handle_read_piece_block(
         .expect("semaphore cannot be closed");
     tokio::task::spawn_blocking(move || {
         let result = read_data(
-            files,
-            files_data,
+            file_handles_for_piece,
             read_piece_block_request.block_begin,
             read_piece_block_request.block_length,
         );
@@ -430,29 +423,29 @@ fn read_piece_block_pre_checks(
 }
 
 fn get_files_for_piece_for_r(
-    pieces_to_files: &PiecesToFiles,
+    file_paths_for_pieces: &FilePathsForPieces,
     read_file_handles: &mut ReadFileHandles,
     piece_idx: usize,
-) -> Result<HashMap<PathBuf, Arc<File>>> {
-    let mut files = HashMap::new();
-    for (file_path, _, _) in pieces_to_files[piece_idx].iter() {
+) -> Result<FileHandlesForPiece> {
+    let mut file_handles_for_piece = Vec::new();
+    for (file_path, start, end) in file_paths_for_pieces[piece_idx].iter() {
         let f = read_file_handles.get_file(file_path)?;
-        files.insert(file_path.clone(), f);
+        file_handles_for_piece.push((f, *start, *end));
     }
-    Ok(files)
+    Ok(file_handles_for_piece)
 }
 
 fn get_files_for_piece_for_w(
-    pieces_to_files: &PiecesToFiles,
-    read_file_handles: &mut WriteFileHandles,
+    file_paths_for_pieces: &FilePathsForPieces,
+    write_file_handles: &mut WriteFileHandles,
     piece_idx: usize,
-) -> Result<HashMap<PathBuf, Arc<File>>> {
-    let mut files = HashMap::new();
-    for (file_path, _, _) in pieces_to_files[piece_idx].iter() {
-        let f = read_file_handles.get_file(file_path)?;
-        files.insert(file_path.clone(), f);
+) -> Result<FileHandlesForPiece> {
+    let mut file_handles_for_piece = Vec::new();
+    for (file_path, start, end) in file_paths_for_pieces[piece_idx].iter() {
+        let f = write_file_handles.get_file(file_path)?;
+        file_handles_for_piece.push((f, *start, *end));
     }
-    Ok(files)
+    Ok(file_handles_for_piece)
 }
 
 fn handle_write_piece_block(
@@ -461,7 +454,7 @@ fn handle_write_piece_block(
 
     piece_sizer: &PieceSizer,
     piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
-    pieces_to_files: &PiecesToFiles,
+    file_paths_for_pieces: &FilePathsForPieces,
     write_file_handles: &mut WriteFileHandles,
     piece_hashes: &PieceHashes,
     incomplete_pieces: &mut HashMap<usize, Piece>,
@@ -472,7 +465,7 @@ fn handle_write_piece_block(
         write_piece_block_request.block_begin,
         piece_sizer,
         piece_completion_status,
-        pieces_to_files,
+        file_paths_for_pieces,
         write_file_handles,
         piece_hashes,
         incomplete_pieces,
@@ -493,7 +486,7 @@ fn write_piece_block(
 
     piece_sizer: &PieceSizer,
     piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
-    pieces_to_files: &PiecesToFiles,
+    file_paths_for_pieces: &FilePathsForPieces,
     write_file_handles: &mut WriteFileHandles,
     piece_hashes: &PieceHashes,
     incomplete_pieces: &mut HashMap<usize, Piece>,
@@ -545,7 +538,7 @@ fn write_piece_block(
     let mut data_cursor: u64 = 0;
     let mut data_still_to_be_written = data_len;
     let mut piece_cursor_to_begin = 0;
-    for (file_path, file_start, file_end) in pieces_to_files[piece_idx].iter() {
+    for (file_path, file_start, file_end) in file_paths_for_pieces[piece_idx].iter() {
         if data_still_to_be_written == 0 {
             break;
         }
@@ -559,10 +552,9 @@ fn write_piece_block(
             continue;
         }
         let data_to_write = cmp::min(file_end - file_start, data_still_to_be_written);
-        let mut opened_file = write_file_handles.get_file(file_path)?;
-        opened_file.seek(SeekFrom::Start(file_start))?;
-        opened_file
-            .write_all(&data[data_cursor as usize..(data_cursor + data_to_write) as usize])?;
+        let mut file = write_file_handles.get_file(file_path)?;
+        file.seek(SeekFrom::Start(file_start))?;
+        file.write_all(&data[data_cursor as usize..(data_cursor + data_to_write) as usize])?;
         data_cursor += data_to_write;
         data_still_to_be_written -= data_to_write;
     }
@@ -581,21 +573,16 @@ fn write_piece_block(
             piece_len,
             false,
         )?;
-        let files_data = pieces_to_files[piece_idx].clone();
 
-        let files = get_files_for_piece_for_w(pieces_to_files, write_file_handles, piece_idx)?;
-        let read_piece_data = match read_data(files, files_data, 0, piece_len) {
+        let file_handles_for_piece =
+            get_files_for_piece_for_w(file_paths_for_pieces, write_file_handles, piece_idx)?;
+        let read_piece_data = match read_data(file_handles_for_piece, 0, piece_len) {
             Ok(data) => data,
             Err(error) => bail!(ShaCheckReadError { piece_idx, error }),
         };
 
         let piece_sha: [u8; 20] = Sha1::digest(read_piece_data).into();
         if piece_sha != piece_hashes[piece_idx] {
-            log::warn!(
-                "{}, {}",
-                pretty_info_hash(piece_sha),
-                pretty_info_hash(piece_hashes[piece_idx]),
-            );
             bail!(ShaCorruptedError { piece_idx });
         } else {
             let mut piece_completion_status_mg = piece_completion_status
@@ -618,23 +605,23 @@ fn write_piece_block(
     }
 }
 
-fn generate_pieces_to_files(
+fn generate_file_paths_for_pieces(
     base_path: &Path,
-    piece_count: usize,
+    total_pieces: usize,
     piece_length: u64,
     file_list: &Vec<(String, u64)>,
-) -> PiecesToFiles {
-    let mut pieces_to_files = Vec::new();
+) -> FilePathsForPieces {
+    let mut file_paths_for_pieces = Vec::new();
     let mut current_file_index = 0;
     let mut current_position_in_file = 0;
-    for piece_index in 0..piece_count {
+    for piece_index in 0..total_pieces {
         let mut remaining_piece_bytes_to_allocate = piece_length;
         let mut files_spanning_piece = Vec::new();
 
         while remaining_piece_bytes_to_allocate > 0 {
             if current_file_index >= file_list.len() {
                 // there are no more files in the list
-                if piece_index >= piece_count - 1 {
+                if piece_index >= total_pieces - 1 {
                     // this was the last piece, it is normal that the piece does not span the full piece_length size for the last file
                     break;
                 } else {
@@ -655,6 +642,7 @@ fn generate_pieces_to_files(
                 panic!(
                     "the torrent file contained a file with absolute path, this is not acceptable"
                 )
+                // todo we must reject also files that escape the root, e.g. ../xxx, to avoid security issues
             }
             let path = Path::new(base_path).join(file_name_path);
 
@@ -671,16 +659,16 @@ fn generate_pieces_to_files(
             }
         }
 
-        pieces_to_files.push(files_spanning_piece);
+        file_paths_for_pieces.push(files_spanning_piece);
     }
 
-    pieces_to_files
+    file_paths_for_pieces
 }
 
 fn refresh_completed_pieces(
     piece_hashes: &PieceHashes,
     piece_sizer: &PieceSizer,
-    pieces_to_files: &PiecesToFiles,
+    file_paths_for_pieces: &FilePathsForPieces,
 ) -> PieceCompletionStatus {
     log::info!("checking pieces already downloaded...");
 
@@ -696,13 +684,12 @@ fn refresh_completed_pieces(
             );
         }
 
-        match get_files_for_piece_for_r(pieces_to_files, &mut file_handles, idx) {
+        match get_files_for_piece_for_r(file_paths_for_pieces, &mut file_handles, idx) {
             Err(_) => {
                 piece_completion_status[idx] = false;
             }
-            Ok(files) => {
-                let files_data: PieceToFiles = pieces_to_files[idx].clone();
-                match read_data(files, files_data, 0, piece_sizer.piece_length(idx)) {
+            Ok(file_handles_for_piece) => {
+                match read_data(file_handles_for_piece, 0, piece_sizer.piece_length(idx)) {
                     Err(_) => {
                         piece_completion_status[idx] = false;
                     }
@@ -731,7 +718,7 @@ fn refresh_completed_pieces(
 fn get_file_list_with_completion_status(
     base_path: &Path,
     file_list: &Vec<(String, u64)>,
-    pieces_to_files: &PiecesToFiles,
+    file_paths_for_pieces: &FilePathsForPieces,
     piece_completion_status: &PieceCompletionStatus,
 ) -> Vec<(PathBuf, u64, bool)> {
     let mut file_list_with_completion_status: Vec<(PathBuf, u64, bool)> = file_list
@@ -746,8 +733,8 @@ fn get_file_list_with_completion_status(
         .collect();
 
     let mut cur_file_idx = 0;
-    for (idx, piece_to_files) in pieces_to_files.iter().enumerate() {
-        for (piece_fragment_file_path, _, _) in piece_to_files.iter() {
+    for (idx, file_paths_for_piece) in file_paths_for_pieces.iter().enumerate() {
+        for (piece_fragment_file_path, _, _) in file_paths_for_piece.iter() {
             if file_list_with_completion_status[cur_file_idx].0 != *piece_fragment_file_path {
                 cur_file_idx += 1;
             }
@@ -762,13 +749,13 @@ fn get_file_list_with_completion_status(
 fn log_file_completion_stats(
     base_path: &Path,
     file_list: &Vec<(String, u64)>,
-    pieces_to_files: &PiecesToFiles,
+    file_paths_for_pieces: &FilePathsForPieces,
     piece_completion_status: &PieceCompletionStatus,
 ) {
     let file_list_with_completion_status = get_file_list_with_completion_status(
         base_path,
         file_list,
-        pieces_to_files,
+        file_paths_for_pieces,
         piece_completion_status,
     );
 
@@ -795,11 +782,11 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use crate::persistence::file_manager::{
-        generate_pieces_to_files, get_file_list_with_completion_status,
+        generate_file_paths_for_pieces, get_file_list_with_completion_status,
     };
 
     #[test]
-    fn test_pieces_to_files_1() {
+    fn generate_file_paths_for_pieces_1() {
         let file_list = vec![
             ("f1".to_string(), 5),
             ("f2".to_string(), 20),
@@ -812,14 +799,14 @@ mod tests {
         ];
         let piece_length = 10;
 
-        let pieces_to_files = generate_pieces_to_files(
+        let file_paths_for_pieces = generate_file_paths_for_pieces(
             Path::new("relative/"),
             pieces.len(),
             piece_length,
             &file_list,
         );
         assert_eq!(
-            pieces_to_files,
+            file_paths_for_pieces,
             vec![
                 vec![
                     (PathBuf::from("relative/f1"), 0, 5),
@@ -835,30 +822,30 @@ mod tests {
     }
 
     #[test]
-    fn test_pieces_to_files_2() {
+    fn generate_file_paths_for_pieces_2() {
         let file_list = vec![("f1".to_string(), 5)];
         let pieces = vec![b"aaaaaaaaaaaaaaaaaaaa".to_owned()];
         let piece_length = 5;
 
-        let pieces_to_files = generate_pieces_to_files(
+        let file_paths_for_pieces = generate_file_paths_for_pieces(
             Path::new("/absolute/"),
             pieces.len(),
             piece_length,
             &file_list,
         );
         assert_eq!(
-            pieces_to_files,
+            file_paths_for_pieces,
             vec![vec![(PathBuf::from("/absolute/f1"), 0, 5)]]
         );
     }
 
     #[test]
-    fn test_pieces_to_files_3() {
+    fn generate_file_paths_for_pieces_3() {
         let file_list = vec![("f1".to_string(), 5)];
         let pieces = vec![b"aaaaaaaaaaaaaaaaaaaa".to_owned()];
         let piece_length = 6;
 
-        let pieces_to_files = generate_pieces_to_files(
+        let file_paths_for_pieces = generate_file_paths_for_pieces(
             Path::new("hello/moto"),
             pieces.len(),
             piece_length,
@@ -866,13 +853,13 @@ mod tests {
         );
 
         assert_eq!(
-            pieces_to_files,
+            file_paths_for_pieces,
             vec![vec![(PathBuf::from("hello/moto/f1"), 0, 5)]]
         );
     }
 
     #[test]
-    fn test_pieces_to_files_4() {
+    fn generate_file_paths_for_pieces_4() {
         let file_list = vec![
             ("f1".to_string(), 10),
             ("f2".to_string(), 10),
@@ -887,10 +874,10 @@ mod tests {
         ];
         let piece_length = 10;
 
-        let pieces_to_files =
-            generate_pieces_to_files(Path::new("./"), pieces.len(), piece_length, &file_list);
+        let file_paths_for_pieces =
+            generate_file_paths_for_pieces(Path::new("./"), pieces.len(), piece_length, &file_list);
         assert_eq!(
-            pieces_to_files,
+            file_paths_for_pieces,
             vec![
                 vec![(PathBuf::from("./f1"), 0, 10)],
                 vec![(PathBuf::from("./f2"), 0, 10)],
@@ -912,13 +899,14 @@ mod tests {
             ("f4".to_string(), 3),
             ("f5".to_string(), 3),
         ];
-        let pieces_to_files = generate_pieces_to_files(Path::new("./"), 3, 10, &file_list);
+        let file_paths_for_pieces =
+            generate_file_paths_for_pieces(Path::new("./"), 3, 10, &file_list);
         let piece_completion_status = vec![false, true, false];
 
         let res = get_file_list_with_completion_status(
             Path::new("./"),
             &file_list,
-            &pieces_to_files,
+            &file_paths_for_pieces,
             &piece_completion_status,
         );
         assert_eq!(
@@ -943,13 +931,14 @@ mod tests {
             ("f5".to_string(), 3),
         ];
 
-        let pieces_to_files = generate_pieces_to_files(Path::new("./"), 3, 10, &file_list);
+        let file_paths_for_pieces =
+            generate_file_paths_for_pieces(Path::new("./"), 3, 10, &file_list);
         let piece_completion_status = vec![true, false, true];
 
         let res = get_file_list_with_completion_status(
             Path::new("./"),
             &file_list,
-            &pieces_to_files,
+            &file_paths_for_pieces,
             &piece_completion_status,
         );
         assert_eq!(
@@ -972,13 +961,14 @@ mod tests {
             ("f3".to_string(), 5),
         ];
 
-        let pieces_to_files = generate_pieces_to_files(Path::new("relative/"), 3, 10, &file_list);
+        let file_paths_for_pieces =
+            generate_file_paths_for_pieces(Path::new("relative/"), 3, 10, &file_list);
         let piece_completion_status = vec![true, true, true];
 
         let res = get_file_list_with_completion_status(
             Path::new("relative/"),
             &file_list,
-            &pieces_to_files,
+            &file_paths_for_pieces,
             &piece_completion_status,
         );
         assert_eq!(
