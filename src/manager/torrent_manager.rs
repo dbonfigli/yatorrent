@@ -8,6 +8,7 @@ use std::process;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use std::{iter, path::Path};
+use tokio::sync::mpsc::error::TrySendError::{Closed, Full};
 
 use rand::RngExt;
 use rand::seq::IndexedRandom;
@@ -52,7 +53,7 @@ const KEEP_ALIVE_FREQ: Duration = Duration::from_secs(90);
 // other kind of messages are really low on volume
 const TO_PEER_CHANNEL_CAPACITY: usize = MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT
     + MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER as usize
-    + 700;
+    + 3000;
 
 const TO_PEER_CANCEL_CHANNEL_CAPACITY: usize =
     MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT + 200;
@@ -230,6 +231,24 @@ impl Peer {
         let _ = self.to_peer_tx.send(msg).await;
         // ignore errors: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors,
         // and the peer is still lingering in self.peers because the control message about the error is not yet handled
+    }
+
+    fn try_send(&mut self, msg: ToPeerMsg) {
+        self.last_sent = SystemTime::now();
+        match self.to_peer_tx.try_send(msg) {
+            Ok(_) => {}
+            Err(Full(o)) => {
+                log::warn!(
+                    "no to_peer_tx capacity to {} on try_send, discarding {}",
+                    self.peer_addr,
+                    o
+                );
+            }
+            Err(Closed(_)) => {
+                // ignore errors: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors,
+                // and the peer is still lingering in self.peers because the control message about the error is not yet handled
+            }
+        }
     }
 
     fn support_pex_extension(&self) -> bool {
@@ -646,9 +665,10 @@ impl TorrentManager {
                         .await;
 
                     for (_, peer) in self.peers.iter_mut() {
-                        // send "have" to all peers
-                        peer.send(ToPeerMsg::Send(Message::Have(piece_idx as u32)))
-                            .await;
+                        // send "have" to all peers.
+                        // it can happen on very fast downloads that "have" messages overwhelm the channel,
+                        // discard the message in those cases to not block the loop
+                        peer.try_send(ToPeerMsg::Send(Message::Have(piece_idx as u32)));
 
                         // send "not interested" if needed
                         if peer.am_interested

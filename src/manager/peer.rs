@@ -1,3 +1,4 @@
+use core::fmt;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -27,6 +28,15 @@ const UT_METADATA_EXTENSION_ID: i64 = 2;
 pub enum ToPeerMsg {
     Send(Message),
     Disconnect(),
+}
+
+impl fmt::Display for ToPeerMsg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ToPeerMsg::Send(msg) => write!(f, "Send({})", msg),
+            ToPeerMsg::Disconnect() => write!(f, "Disconnect"),
+        }
+    }
 }
 
 pub type PeerAddr = String;
