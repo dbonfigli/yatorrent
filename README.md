@@ -51,6 +51,8 @@ Options:
           Max allowerd total download bandwidth, with associated unit, e.g 10MiB (MiB is different from MB, the value is always bytes regardless of the case of "b", optional, no limit if not provided) [env: MAX_DOWNLOAD_BANDWIDTH=]
   -u, --max-upload-bandwidth <MAX_UPLOAD_BANDWIDTH>
           Max allowerd total upload bandwidth, with associated unit, e.g 10MiB (MiB is different from MB, the value is always bytes regardless of the case of "b", optional, no limit if not provided) [env: MAX_UPLOAD_BANDWIDTH=]
+  -e, --terminate-when-complete
+          Terminate the client when the download is complete [env: TERMINATE_WHEN_COMPLETE=]
   -h, --help
           Print help
   -V, --version
@@ -60,7 +62,6 @@ Options:
 Things yet to be implemented / todos:
 
 - cache writes
-- better choking algorithm
 - check for stalled downloads / try new peers if no current one has a piece we want
 - better algorithm to exclude bad peers for new connections
 - remove not interested peers if we are also not interested if connection count is high
