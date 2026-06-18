@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use std::{iter, path::Path};
 use tokio::sync::mpsc::error::TrySendError::{Closed, Full};
+use tokio::time::MissedTickBehavior;
 
 use rand::RngExt;
 use rand::seq::IndexedRandom;
@@ -37,7 +38,7 @@ use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::torrent_protocol::wire_protocol::{BlockRequest, Message};
 use crate::tracker;
 use crate::tracker::{Event, NoTrackerError, Response, TrackerClient};
-use crate::util::{force_string, start_tick};
+use crate::util::force_string;
 
 use crate::bencoding::Value::{self, Dict, Int, Str};
 
@@ -572,19 +573,17 @@ impl TorrentManager {
         )
         .await;
 
-        // start ticker
-        let (tick_tx, tick_rx) = mpsc::channel(1);
-        start_tick(tick_tx, TICK_INTERVAL).await;
-
         // start control loop to handle channel messages - will block forever
-        self.control_loop(tick_rx, dht_to_torrent_manager_rx).await;
+        self.control_loop(dht_to_torrent_manager_rx).await;
     }
 
     async fn control_loop(
         &mut self,
-        mut tick_rx: Receiver<()>,
         mut dht_to_torrent_manager_rx: Receiver<DhtToTorrentManagerMsg>,
     ) {
+        let mut ticker = tokio::time::interval(TICK_INTERVAL);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
         loop {
             tokio::select! {
                 Some(msg) = self.peers_to_torrent_manager_rx.recv() => {
@@ -612,7 +611,7 @@ impl TorrentManager {
                     self.handle_read_piece_block_response(msg)
                     .await;
                 }
-                Some(()) = tick_rx.recv() => {
+                _ = ticker.tick() => {
                     self.handle_ticker().await;
                 }
                 Some(DhtToTorrentManagerMsg::NewPeer(ip, port)) = dht_to_torrent_manager_rx.recv() => {

@@ -9,7 +9,8 @@ use num_bigint::BigUint;
 use sha1::{Digest, Sha1};
 use tokio::{
     net::UdpSocket,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::mpsc::{Receiver, Sender},
+    time::MissedTickBehavior,
 };
 
 use rand::RngExt;
@@ -21,7 +22,7 @@ use crate::{
         },
         routing_table::{K_FACTOR, Node, biguint_to_u8_20, distance},
     },
-    util::{force_string, pretty_info_hash, start_tick},
+    util::{force_string, pretty_info_hash},
 };
 
 use super::{messages::KRPCMessage, routing_table::Bucket};
@@ -199,9 +200,8 @@ impl DhtManager {
         mut to_dht_manager_rx: Receiver<ToDhtManagerMsg>,
         dht_to_torrent_manager_tx: Sender<DhtToTorrentManagerMsg>,
     ) {
-        // start ticker
-        let (tick_tx, mut tick_rx) = mpsc::channel(1);
-        start_tick(tick_tx, TICK_INTERVAL).await;
+        let mut ticker = tokio::time::interval(TICK_INTERVAL);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         // open ipv4 socket
         let socket = UdpSocket::bind(format!("0.0.0.0:{}", self.listening_dht_port))
@@ -227,7 +227,7 @@ impl DhtManager {
                         }
                     }
                 }
-                Some(()) = tick_rx.recv() => {
+                _ = ticker.tick() => {
                     log::debug!("routing table size: {}, inflight requests: {}, inflight get_peers requests: {}, inflight find_nodes_requests: {}",
                     self.routing_table.as_mut_vec().len(), // todo: optimize this
                     self.msg_sender.inflight_requests.len(), self.inflight_get_peers_requests.len(), self.inflight_find_node_requests.len());
