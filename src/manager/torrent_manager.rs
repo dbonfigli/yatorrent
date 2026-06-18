@@ -4,6 +4,7 @@ use sha1::{Digest, Sha1};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
+use std::process;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use std::{iter, path::Path};
@@ -373,6 +374,8 @@ pub struct TorrentManager {
 
     download_rate_limiter: Option<Arc<tokio::sync::Mutex<RateLimiter>>>,
     upload_rate_limiter: Option<Arc<tokio::sync::Mutex<RateLimiter>>>,
+
+    exit_when_complete: bool,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -401,6 +404,7 @@ impl TorrentManager {
         max_connected_peers: usize,
         max_download_bandwidth: Option<i64>,
         max_upload_bandwidth: Option<i64>,
+        exit_when_complete: bool,
     ) -> Self {
         let own_peer_id = generate_peer_id();
         let mut initial_advertised_peers = HashMap::new();
@@ -484,6 +488,8 @@ impl TorrentManager {
                 .map(|b| Arc::new(tokio::sync::Mutex::new(RateLimiter::new(b as u128)))),
             upload_rate_limiter: max_upload_bandwidth
                 .map(|b| Arc::new(tokio::sync::Mutex::new(RateLimiter::new(b as u128)))),
+
+            exit_when_complete,
         };
 
         if let Some((file_list, piece_length, piece_hashes)) = files_data {
@@ -628,6 +634,10 @@ impl TorrentManager {
                         log::warn!("torrent download completed");
                         self.completed_sent_to_tracker = true;
                         self.async_request_to_tracker(Event::Completed).await;
+                        if self.exit_when_complete {
+                            log::warn!("Exiting...");
+                            process::exit(0);
+                        }
                     }
 
                     let _ = self

@@ -71,6 +71,10 @@ struct Args {
     /// Max allowerd total upload bandwidth, with associated unit, e.g 10MiB (MiB is different from MB, the value is always bytes regardless of the case of "b", optional, no limit if not provided)
     #[arg(short = 'u', long, env)]
     max_upload_bandwidth: Option<String>,
+
+    /// Exit the client when the download is complete
+    #[arg(short = 'e', long, env, default_value_t = false)]
+    exit_when_complete: bool,
 }
 
 #[derive(clap::ValueEnum, Debug, Clone)]
@@ -170,6 +174,7 @@ async fn main() -> Result<()> {
                     args.max_connected_peers,
                     max_download_bandwidth,
                     max_upload_bandwidth,
+                    args.exit_when_complete,
                 )
                 .start()
                 .await;
@@ -198,6 +203,7 @@ async fn main() -> Result<()> {
                     args.max_connected_peers,
                     max_download_bandwidth,
                     max_upload_bandwidth,
+                    args.exit_when_complete,
                 )
                 .start()
                 .await;
