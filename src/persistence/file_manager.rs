@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::io::{Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::{cmp, fs};
 use thiserror::Error;
@@ -640,10 +640,25 @@ fn generate_file_paths_for_pieces(
             let file_name_path = Path::new(file_name);
             if file_name_path.is_absolute() {
                 panic!(
-                    "the torrent file contained a file with absolute path, this is not acceptable"
+                    "the torrent file {} contained a file with absolute path, this is not acceptable",
+                    file_name
                 )
-                // todo we must reject also files that escape the root, e.g. ../xxx, to avoid security issues
             }
+            for c in file_name_path.components() {
+                if matches!(c, Component::ParentDir) {
+                    panic!(
+                        "the torrent file {} contained a reference to a parent directory, this is not acceptable",
+                        file_name
+                    )
+                }
+                if matches!(c, Component::Prefix(_)) {
+                    panic!(
+                        "the torrent file {} contained a Windows prefix, this is not acceptable",
+                        file_name
+                    )
+                }
+            }
+
             let path = Path::new(base_path).join(file_name_path);
 
             files_spanning_piece.push((
