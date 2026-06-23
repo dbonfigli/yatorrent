@@ -724,7 +724,9 @@ impl TorrentManager {
         match read_piece_block_response.response {
             Err(e) => {
                 log::error!("error reading block: {e}");
-                peer.outstanding_incoming_piece_block_requests -= 1;
+                if peer.outstanding_incoming_piece_block_requests > 0 {
+                    peer.outstanding_incoming_piece_block_requests -= 1;
+                }
             }
 
             Ok(data) => {

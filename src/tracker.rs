@@ -173,8 +173,10 @@ impl TrackerClient {
                             self.trackers_url[tier_idx].insert(0, good_tracker);
                         }
                         // update tracker request interval
-                        self.tracker_request_interval =
-                            Duration::from_secs(response.interval as u64);
+                        if response.interval > 0 {
+                            self.tracker_request_interval =
+                                Duration::from_secs(response.interval as u64);
+                        }
                         return Ok(Response::Ok(response));
                     }
                     Err(e) => {
@@ -479,8 +481,8 @@ impl TrackerClient {
             Err(_elapsed) => bail!("timed out receiving announce response from udp tracker"),
             Ok(Err(e)) => bail!(e),
             Ok(Ok(bytes_recv)) => {
-                if bytes_recv < 16 {
-                    bail!("received less than 16 bytes on recv announce from udp tracker");
+                if bytes_recv < 20 {
+                    bail!("received less than 20 bytes on recv announce from udp tracker");
                 }
 
                 let mut action_buf = [0u8; 4];

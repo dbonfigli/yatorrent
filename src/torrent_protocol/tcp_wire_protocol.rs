@@ -14,6 +14,8 @@ use crate::{
     },
 };
 
+const MAX_MESSAGE_SIZE_B: u32 = 128 * 1024; // 128KB
+
 impl Protocol for TcpStream {
     async fn handshake(
         &mut self,
@@ -361,6 +363,9 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                 if let Err(e) = self.read_exact(&mut begin_buf).await {
                     return Err(e.into());
                 }
+                if size_message - 9 <= 0 || size_message > MAX_MESSAGE_SIZE_B {
+                    bail!("malformed size_message ({size_message}) on piece");
+                }
                 let block_size: usize = (size_message - 9).try_into()?;
                 let mut block_buf = vec![0; block_size];
                 if let Err(e) = self.read_exact(&mut block_buf).await {
@@ -447,6 +452,9 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                     return Err(e.into());
                 }
                 let extended_message_id = buf[0]; // i.e. id of the extension. 0 means this message is an extension handshake
+                if size_message - 2 <= 0 || size_message > MAX_MESSAGE_SIZE_B {
+                    bail!("malformed size_message ({size_message}) on extension message");
+                }
                 let payload_extended_message_size: usize = (size_message - 2).try_into()?;
                 let mut buf = vec![0; payload_extended_message_size];
                 if let Err(e) = self.read_exact(&mut buf).await {

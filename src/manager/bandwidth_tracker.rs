@@ -54,6 +54,9 @@ impl BandwidthTracker {
             .duration_since(latest_bandwith_poll.poll_time)
             .unwrap_or_default()
             .as_secs_f64();
+        if elapsed_s == 0. {
+            return;
+        }
 
         let bandwidth_up =
             (self.uploaded_bytes - latest_bandwith_poll.uploaded_bytes) as f64 / elapsed_s;

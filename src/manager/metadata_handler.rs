@@ -5,6 +5,7 @@ use std::{
 };
 
 use rand::seq::SliceRandom;
+use size::{Size, Style};
 
 use crate::manager::{peer::PeerAddr, torrent_manager::Peer};
 
@@ -12,6 +13,7 @@ const METADATA_PIECE_SIZE_B: usize = 16384;
 const PEER_METADATA_REQUEST_REJECTION_COOL_OFF_PERIOD: Duration = Duration::from_secs(30);
 const METADATA_PIECE_REQUEST_TIMEOUT: Duration = Duration::from_secs(15); // timeout for waiting a requested metadata piece
 const MAX_OUTSTANDING_METADATA_PIECE_REQUESTS_PER_PEER: i64 = 100;
+const METADATA_BIG_WARN_THRESHOLD: i64 = 200 * 1024 * 1024;
 
 pub struct MetadataHandler {
     metadata_piece_download_status: Vec<(bool, PeerAddr, SystemTime)>, // downloaded, peer addr we requested piece to, request time
@@ -20,6 +22,14 @@ pub struct MetadataHandler {
 }
 
 fn metadata_pieces_from_size(size: i64, default_value: bool) -> Vec<(bool, PeerAddr, SystemTime)> {
+    if size > METADATA_BIG_WARN_THRESHOLD {
+        log::warn!(
+            "the metadata size is abnormally big: {} (metadata is fully kept in memory)",
+            Size::from_bytes(size)
+                .format()
+                .with_style(Style::Abbreviated)
+        );
+    }
     vec![
         (
             default_value,

@@ -45,8 +45,8 @@ pub fn get_infodict(
         Some(Value::Int(a)) => a,
         _ => bail!("The .torrent file does not contain a valid \"info.piece length\""),
     };
-    if *piece_length_i64_value < 0 {
-        bail!("The .torrent file \"info.piece length\" kv cannot be < 0");
+    if *piece_length_i64_value <= 0 {
+        bail!("The .torrent file \"info.piece length\" kv cannot be <= 0");
     }
 
     // pieces
