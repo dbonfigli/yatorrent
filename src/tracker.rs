@@ -223,7 +223,7 @@ impl TrackerClient {
                 {
                     Ok(r) => return Ok(r),
                     Err(e) => {
-                        if attempts > UDP_MAX_RETRIES {
+                        if attempts >= UDP_MAX_RETRIES - 1 {
                             return Err(e);
                         } else {
                             sleep(Duration::from_secs(
