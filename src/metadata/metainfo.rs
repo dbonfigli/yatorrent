@@ -174,8 +174,12 @@ impl Metainfo {
         }
 
         // info dict
-        let (info_dict, info_hash) = match torrent_map.get(&b"info".to_vec()) {
-            Some(Value::Dict(a, s, e)) => (a, Sha1::digest(&source[*s..*e]).into()),
+        let (info_dict, info_hash, raw_metadata) = match torrent_map.get(&b"info".to_vec()) {
+            Some(Value::Dict(a, s, e)) => (
+                a,
+                Sha1::digest(&source[*s..*e]).into(),
+                source[*s..*e].to_vec(),
+            ),
             _ => bail!("The .torrent file does not contain a valid \"info\""),
         };
 
@@ -189,7 +193,7 @@ impl Metainfo {
             pieces,
             info_hash,
             file,
-            raw_metadata: Value::encode(&(Value::Dict((*info_dict).clone(), 0, 0))),
+            raw_metadata,
         })
     }
 
