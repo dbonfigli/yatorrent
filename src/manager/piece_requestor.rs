@@ -32,7 +32,7 @@ const CHOKED_PEER_ASSIGMENTS_GRACE_PERIOD: Duration = Duration::from_secs(15);
 pub struct PieceRequestor {
     outstanding_piece_assignments: HashMap<usize, PeerAddr>, // piece idx -> peer_addr
     outstanding_piece_block_requests: HashMap<PeerAddr, HashMap<BlockRequest, SystemTime>>, // peer_addr -> BlockRequest -> request time
-    requested_pieces: HashMap<PeerAddr, HashMap<usize, Piece>>, // peer_addr -> piece idx -> piece status with all the requested fragments
+    requested_pieces: HashMap<PeerAddr, HashMap<usize, (Piece, bool)>>, // peer_addr -> piece idx -> (piece status with all the requested fragments, all possible block requests already perfomed)
 }
 
 impl PieceRequestor {
@@ -184,11 +184,14 @@ impl PieceRequestor {
             .map(|(i, p)| (*i, p.clone()))
             .collect::<Vec<(usize, PeerAddr)>>()
         {
-            if let Some(incomplete_piece) = self
+            if let Some((incomplete_piece, requests_completed)) = self
                 .requested_pieces
                 .get(&peer_addr)
                 .and_then(|requested_pieces_for_peer| requested_pieces_for_peer.get(&piece_idx))
             {
+                if *requests_completed {
+                    continue;
+                }
                 let peer = match peers.get(&peer_addr) {
                     None => continue,
                     Some(p) => p,
@@ -363,7 +366,10 @@ impl PieceRequestor {
             self.requested_pieces
                 .entry(peer_addr.clone())
                 .or_insert(HashMap::new())
-                .insert(piece_idx, incomplete_piece.clone());
+                .insert(
+                    piece_idx,
+                    (incomplete_piece.clone(), incomplete_piece.complete()),
+                );
             self.outstanding_piece_assignments
                 .insert(piece_idx, peer_addr.clone());
         }
@@ -389,7 +395,8 @@ impl PieceRequestor {
             Some(requested_pieces_for_peer) => {
                 for (piece_idx, incomplete_piece) in requested_pieces_for_peer
                     .iter()
-                    .map(|(i, p)| (*i, p.clone()))
+                    .filter(|(_, (_, requests_completed))| !requests_completed)
+                    .map(|(i, (p, _))| (*i, p.clone()))
                     .collect::<Vec<(usize, Piece)>>()
                 {
                     if !torrent_data_status.piece_is_completed(piece_idx) {
