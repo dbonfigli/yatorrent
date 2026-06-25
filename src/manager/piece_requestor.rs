@@ -6,7 +6,7 @@ use crate::{
 use rand::seq::SliceRandom;
 use std::{
     cmp::{Ordering, max, min},
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     time::{Duration, SystemTime},
 };
 
@@ -29,10 +29,38 @@ const BLOCK_DELAYED_ARRIVAL_LOG_THRESHOLD: Duration = Duration::from_secs(60);
 // here we wait a bit before considering the request lost and reassign pieces assigned to a choked peer to another peer
 const CHOKED_PEER_ASSIGMENTS_GRACE_PERIOD: Duration = Duration::from_secs(15);
 
+struct RequestedPiecesForPeer {
+    incomplete_pieces: HashSet<usize>, // list of pieces (by index) for which we did not yet perform all possible block requests to fill up the piece
+    piece_statuses: HashMap<usize, Piece>, // piece idx -> piece status with all the requested fragments
+}
+
+impl RequestedPiecesForPeer {
+    fn new() -> Self {
+        RequestedPiecesForPeer {
+            incomplete_pieces: HashSet::new(),
+            piece_statuses: HashMap::new(),
+        }
+    }
+
+    fn insert(&mut self, piece_idx: usize, piece: Piece) {
+        if piece.complete() {
+            self.incomplete_pieces.remove(&piece_idx);
+        } else {
+            self.incomplete_pieces.insert(piece_idx);
+        }
+        self.piece_statuses.insert(piece_idx, piece);
+    }
+
+    fn remove(&mut self, piece_idx: &usize) {
+        self.incomplete_pieces.remove(piece_idx);
+        self.piece_statuses.remove(piece_idx);
+    }
+}
+
 pub struct PieceRequestor {
     outstanding_piece_assignments: HashMap<usize, PeerAddr>, // piece idx -> peer_addr
     outstanding_piece_block_requests: HashMap<PeerAddr, HashMap<BlockRequest, SystemTime>>, // peer_addr -> BlockRequest -> request time
-    requested_pieces: HashMap<PeerAddr, HashMap<usize, Piece>>, // peer_addr -> piece idx -> piece status with all the requested fragments
+    requested_pieces: HashMap<PeerAddr, RequestedPiecesForPeer>,
 }
 
 impl PieceRequestor {
@@ -54,7 +82,7 @@ impl PieceRequestor {
     pub fn remove_assigments_to_peer(&mut self, peer_addr: &PeerAddr) {
         self.outstanding_piece_block_requests.remove(peer_addr);
         if let Some(requests) = self.requested_pieces.remove(peer_addr) {
-            for (piece_idx, _) in requests {
+            for (piece_idx, _) in requests.piece_statuses {
                 self.outstanding_piece_assignments.remove(&piece_idx);
             }
         }
@@ -67,7 +95,9 @@ impl PieceRequestor {
     }
 
     pub fn get_assigned_pieces_for_peer(&self, peer_addr: &PeerAddr) -> usize {
-        self.requested_pieces.get(peer_addr).map_or(0, |r| r.len())
+        self.requested_pieces
+            .get(peer_addr)
+            .map_or(0, |r| r.piece_statuses.len())
     }
 
     pub fn block_request_completed(
@@ -184,10 +214,12 @@ impl PieceRequestor {
             .map(|(i, p)| (*i, p.clone()))
             .collect::<Vec<(usize, PeerAddr)>>()
         {
-            if let Some(incomplete_piece) = self
-                .requested_pieces
-                .get(&peer_addr)
-                .and_then(|requested_pieces_for_peer| requested_pieces_for_peer.get(&piece_idx))
+            if let Some(incomplete_piece) =
+                self.requested_pieces
+                    .get(&peer_addr)
+                    .and_then(|requested_pieces_for_peer| {
+                        requested_pieces_for_peer.piece_statuses.get(&piece_idx)
+                    })
             {
                 let peer = match peers.get(&peer_addr) {
                     None => continue,
@@ -272,7 +304,7 @@ impl PieceRequestor {
                 let concurrent_requested_pieces_count = self
                     .requested_pieces
                     .get(peer_addr)
-                    .map(|o| o.len())
+                    .map(|o| o.piece_statuses.len())
                     .unwrap_or(0);
                 (
                     peer_addr,
@@ -362,7 +394,7 @@ impl PieceRequestor {
         if !requests_to_send.is_empty() {
             self.requested_pieces
                 .entry(peer_addr.clone())
-                .or_insert(HashMap::new())
+                .or_insert(RequestedPiecesForPeer::new())
                 .insert(piece_idx, incomplete_piece.clone());
             self.outstanding_piece_assignments
                 .insert(piece_idx, peer_addr.clone());
@@ -384,23 +416,28 @@ impl PieceRequestor {
         let request_count = max_outstanding_reqs(peer);
 
         // 1. send requests for new blocks for pieces currently downloading
-        match self.requested_pieces.get(peer_addr) {
-            None => {} // the peer has no current piece assigned
-            Some(requested_pieces_for_peer) => {
-                for (piece_idx, incomplete_piece) in requested_pieces_for_peer
-                    .iter()
-                    .map(|(i, p)| (*i, p.clone()))
-                    .collect::<Vec<(usize, Piece)>>()
-                {
-                    if !torrent_data_status.piece_is_completed(piece_idx) {
-                        let reqs = &mut self.generate_requests_to_send_for_piece(
-                            peer_addr,
-                            piece_idx,
-                            incomplete_piece,
-                            request_count,
-                        );
-                        requests_to_send.append(reqs);
-                    }
+        if let Some(incomplete_pieces) = self
+            .requested_pieces
+            .get(peer_addr)
+            .map(|r| r.incomplete_pieces.clone())
+        {
+            for piece_idx in incomplete_pieces {
+                let incomplete_piece = self
+                    .requested_pieces
+                    .get(peer_addr)
+                    .expect("already checked above")
+                    .piece_statuses
+                    .get(&piece_idx)
+                    .map(|p| p.clone())
+                    .expect("if piece is incomplete it must exist here");
+                if !torrent_data_status.piece_is_completed(piece_idx) {
+                    let reqs = &mut self.generate_requests_to_send_for_piece(
+                        peer_addr,
+                        piece_idx,
+                        incomplete_piece,
+                        request_count,
+                    );
+                    requests_to_send.append(reqs);
                 }
             }
         }
