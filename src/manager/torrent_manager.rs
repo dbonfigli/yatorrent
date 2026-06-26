@@ -18,6 +18,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Receiver, Sender, UnboundedReceiver, UnboundedSender};
 
 use crate::dht::dht_manager::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMsg};
+use crate::manager::BLOCK_SIZE_B;
 use crate::manager::bandwidth_tracker::BandwidthTracker;
 use crate::manager::metadata_handler::MetadataHandler;
 use crate::manager::peer::{
@@ -96,7 +97,9 @@ const READ_REQUESTS_CHANNEL_CAPACITY: usize = 2500;
 // the number of enqueued disk writes operations requests
 const WRITE_REQUESTS_CHANNEL_CAPACITY: usize = 200;
 
-const MAX_ALLOWED_BLOCK_REQUEST_SIZE_B: u32 = 16384 * 4; // the max request size we allow from peers, in bytes. In theory none should ask for more than 16KB, here we are a bit lenient
+// the max request size we allow from peers, in bytes. In theory none should ask for more than 16KB, here we are a bit lenient.
+// Se also MAX_MESSAGE_SIZE_B
+const MAX_ALLOWED_BLOCK_REQUEST_SIZE_B: u32 = BLOCK_SIZE_B as u32 * 4; 
 
 // maximum allowed number of read ops in flight, for all peers, i.e. read requests that have been send to the file manager and whouse reponse hsa not yet been handled by the torrent manager.
 // We use this to limit memory usage since read_responses channel is unbounded to avoid deadlock.

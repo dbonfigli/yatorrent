@@ -14,7 +14,9 @@ use crate::{
     },
 };
 
-const MAX_MESSAGE_SIZE_B: u32 = 128 * 1024; // 128KB
+// maximum message size in variable length messages (recv piece, recv extension message) that we allow,
+// to prevent allocating an abnormal buffer and avoid denial of service
+const MAX_MESSAGE_SIZE_B: u32 = 16384 * 8; // 128KB, i.e. the size of 8 blocks
 
 impl Protocol for TcpStream {
     async fn handshake(
