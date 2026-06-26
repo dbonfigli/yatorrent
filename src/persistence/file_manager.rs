@@ -4,7 +4,6 @@ use size::Size;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;
-use std::io::{Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::{cmp, fs};
@@ -175,6 +174,30 @@ fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
             ));
         }
         read += n;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.write_all_at(buf, offset)
+}
+
+#[cfg(windows)]
+fn write_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+    use std::io::ErrorKind;
+    use std::os::windows::fs::FileExt;
+    let mut written = 0;
+    while written < buf.len() {
+        let n = file.seek_write(&buf[written..], offset + written as u64)?;
+        if n == 0 {
+            return Err(io::Error::new(
+                ErrorKind::WriteZero,
+                "failed to write whole buffer",
+            ));
+        }
+        written += n;
     }
     Ok(())
 }
@@ -552,9 +575,12 @@ fn write_piece_block(
             continue;
         }
         let data_to_write = cmp::min(file_end - file_start, data_still_to_be_written);
-        let mut file = write_file_handles.get_file(file_path)?;
-        file.seek(SeekFrom::Start(file_start))?;
-        file.write_all(&data[data_cursor as usize..(data_cursor + data_to_write) as usize])?;
+        let file = write_file_handles.get_file(file_path)?;
+        write_at(
+            &file,
+            &data[data_cursor as usize..(data_cursor + data_to_write) as usize],
+            file_start,
+        )?;
         data_cursor += data_to_write;
         data_still_to_be_written -= data_to_write;
     }
