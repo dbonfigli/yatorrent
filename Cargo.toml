@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 description = "Yet Another Torrent Client"
 
+[profile.profiling]
+inherits = "release"
+debug = true
+
 [dependencies]
 sha1 = "0.10.6"
 reqwest = "0.13.3"
