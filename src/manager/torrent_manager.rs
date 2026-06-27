@@ -19,19 +19,18 @@ use tokio::sync::mpsc::{self, Receiver, Sender, UnboundedReceiver, UnboundedSend
 use crate::dht::dht_manager::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMsg};
 use crate::manager::bandwidth_tracker::BandwidthTracker;
 use crate::manager::metadata_handler::MetadataHandler;
-use crate::manager::peer::PeerAddr;
 use crate::manager::peer::{
-    FastExtensionSupport, MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER, PeerError,
-    PeersToManagerMsg, ToNewIncomingPeersHandlerMsg, ToPeerMsg,
-};
-use crate::manager::peer_rep::{
     METADATA_MESSAGE_DATA, METADATA_MESSAGE_REJECT, METADATA_MESSAGE_REQUEST, MetadataMessage, Peer,
+};
+use crate::manager::peer_handler::{
+    FastExtensionSupport, MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER, PeerAddr,
+    PeerError, PeersToManagerMsg, ToNewIncomingPeersHandlerMsg, ToPeerMsg,
 };
 use crate::manager::piece_requestor::{
     MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT, PieceRequestor,
 };
 use crate::manager::rate_limiter::RateLimiter;
-use crate::manager::{BLOCK_SIZE_B, peer};
+use crate::manager::{BLOCK_SIZE_B, peer_handler};
 use crate::metadata::infodict::{self};
 use crate::metadata::metainfo::get_files;
 use crate::persistence::file_manager::{
@@ -321,7 +320,7 @@ impl TorrentManager {
         });
 
         // start incoming peer connections handler
-        peer::run_new_incoming_peers_handler(
+        peer_handler::run_new_incoming_peers_handler(
             self.torrent_manager_config.info_hash.clone(),
             self.torrent_manager_config.own_peer_id.clone(),
             self.torrent_manager_config
@@ -1366,7 +1365,7 @@ impl TorrentManager {
                 .collect();
             // todo: better algorithm to select new peers
             for (_, (peer, _)) in candidates_for_new_connections.iter() {
-                tokio::spawn(peer::connect_to_new_peer(
+                tokio::spawn(peer_handler::connect_to_new_peer(
                     peer.ip.clone(),
                     peer.port,
                     self.torrent_manager_config.info_hash,
@@ -1624,7 +1623,7 @@ impl TorrentManager {
         };
         let (to_peer_tx, to_peer_rx) = mpsc::channel(TO_PEER_CHANNEL_CAPACITY);
         let (to_peer_cancel_tx, to_peer_cancel_rx) = mpsc::channel(TO_PEER_CANCEL_CHANNEL_CAPACITY);
-        peer::start_peer_msg_handlers(
+        peer_handler::start_peer_msg_handlers(
             peer_addr.clone(),
             tcp_stream,
             self.peers_to_torrent_manager_tx.clone(),

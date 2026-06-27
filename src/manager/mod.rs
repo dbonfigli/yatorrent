@@ -1,7 +1,7 @@
 mod bandwidth_tracker;
 mod metadata_handler;
 mod peer;
-mod peer_rep;
+mod peer_handler;
 mod piece_requestor;
 mod rate_limiter;
 pub mod torrent_manager;

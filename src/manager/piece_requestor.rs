@@ -1,6 +1,6 @@
 use crate::{
-    manager::peer::PeerAddr,
-    manager::peer_rep::Peer,
+    manager::peer_handler::PeerAddr,
+    manager::peer::Peer,
     persistence::{piece::Piece, torrent_data_status::TorrentDataStatus},
     torrent_protocol::wire_protocol::BlockRequest,
 };

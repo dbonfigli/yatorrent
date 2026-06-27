@@ -1,600 +1,446 @@
-use core::fmt;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::{Duration, SystemTime};
-
-use anyhow::{Result, bail};
-use tokio::io::AsyncWriteExt;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
-use tokio::sync::mpsc::Receiver;
-use tokio::sync::mpsc::Sender;
-use tokio::time::{sleep, timeout};
-
-use crate::bencoding::Value;
-use crate::manager::rate_limiter::RateLimiter;
-use crate::torrent_protocol::wire_protocol::{
-    BlockRequest, Message, Protocol, ProtocolReadHalf, ProtocolWriteHalf,
+use std::{
+    collections::{HashMap, VecDeque},
+    net::Ipv4Addr,
+    time::{Duration, SystemTime},
 };
-use crate::util::{force_string, pretty_info_hash, version_string};
 
-pub const MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER: i64 = 500;
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
-const CANCELLATION_DURATION: Duration = Duration::from_secs(120);
-const PEER_NO_INBOUND_TRAFFIC_FAILURE_TIMEOUT: Duration = Duration::from_secs(180);
+use crate::{
+    bencoding::Value::{Dict, Int, Str},
+    manager::{
+        bandwidth_tracker::BandwidthTracker,
+        peer_handler::{FastExtensionSupport, ToPeerCancelMsg, ToPeerMsg},
+        torrent_manager::PexEvent,
+    },
+    torrent_protocol::wire_protocol::{BlockRequest, Message},
+};
+use tokio::sync::mpsc::{
+    Sender,
+    error::TrySendError::{Closed, Full},
+};
 
-const UT_PEX_EXTENSION_ID: i64 = 1;
-const UT_METADATA_EXTENSION_ID: i64 = 2;
-pub enum ToPeerMsg {
-    Send(Message),
-    Disconnect(),
+pub const METADATA_MESSAGE_REQUEST: i64 = 0;
+pub const METADATA_MESSAGE_DATA: i64 = 1;
+pub const METADATA_MESSAGE_REJECT: i64 = 2;
+
+// can be retrieved per peer if it supports extensions, dict key "reqq",
+// seen: deluge: 2000, qbittorrent: 500, transmission: 500, utorrent: 255, freebox bittorrent 2: 768, maybe variable.
+// This parameter is extremelly important: a too low value will waste bandwidth in case a peer is really fast,
+// a too high value will make the peer choke the connection and also saturate the channel capacity (see TO_PEER_CHANNEL_CAPACITY)
+// 250 is the default in libtorrent as per https://bittorrent.org/beps/bep_0010.html
+const DEFAULT_MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER: usize = 2000;
+const RTT_SAMPLES_COUNT: usize = 20;
+const KEEP_ALIVE_FREQ: Duration = Duration::from_secs(90);
+const PEX_MESSAGE_COOL_OFF_PERIOD: Duration = Duration::from_secs(60);
+
+pub enum MetadataMessage {
+    Request(u64),            // piece
+    Data(u64, u64, Vec<u8>), // piece, total_size, data (16 kb or less if last piece)
+    Reject(u64),             // piece
 }
 
-impl fmt::Display for ToPeerMsg {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ToPeerMsg::Send(msg) => write!(f, "Send({})", msg),
-            ToPeerMsg::Disconnect() => write!(f, "Disconnect"),
+pub struct Peer {
+    peer_addr: String,
+    am_choking: bool,
+    am_choking_since: SystemTime,
+    am_interested: bool,
+    peer_choking: bool,
+    peer_choking_since: SystemTime,
+    peer_interested: bool, // we are not really considering this now, should we use this as pre filter for incoming requests?
+    haves: Option<Vec<bool>>, // this will be initialized after we have the metadata
+    to_peer_tx: Sender<ToPeerMsg>,
+    last_sent: SystemTime, // to understand when to send keepalived messages
+    to_peer_cancel_tx: Sender<ToPeerCancelMsg>,
+    outstanding_incoming_piece_block_requests: usize,
+    ut_pex_id: u8,
+    last_pex_message_sent: SystemTime,
+    ut_metadata_id: u8,
+    last_metadata_request_rejection: SystemTime,
+    corruption_errors: u32,
+    reqq: usize, // reqq received from peer
+    bandwidth_tracker: BandwidthTracker,
+    client_version: Option<String>,
+    rtt: Option<Duration>,
+    rtt_samples: VecDeque<Duration>,
+    supports_fast_extension: bool,
+}
+
+impl Peer {
+    pub fn new(
+        peer_addr: String,
+        num_pieces: Option<usize>,
+        to_peer_tx: Sender<ToPeerMsg>,
+        to_peer_cancel_tx: Sender<ToPeerCancelMsg>,
+        supports_fast_extension: FastExtensionSupport,
+    ) -> Self {
+        Peer {
+            peer_addr,
+            am_choking: true,
+            am_choking_since: SystemTime::UNIX_EPOCH,
+            am_interested: false,
+            peer_choking: true,
+            peer_choking_since: SystemTime::UNIX_EPOCH,
+            peer_interested: false,
+            haves: num_pieces.map(|n| vec![false; n]),
+            to_peer_tx,
+            last_sent: SystemTime::now(), // initally set it to now as there is no need to send them after the handshake
+            to_peer_cancel_tx,
+            outstanding_incoming_piece_block_requests: 0,
+            ut_pex_id: 0, // i.e. no support for pex on this peer, initially
+            last_pex_message_sent: SystemTime::UNIX_EPOCH,
+            ut_metadata_id: 0, // i.e. no support for metadata on this peer, initially
+            last_metadata_request_rejection: SystemTime::UNIX_EPOCH,
+            corruption_errors: 0, // number of corrupted block received by this peer
+            reqq: DEFAULT_MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER, // the number of outstanding request messages this client supports without dropping any
+            bandwidth_tracker: BandwidthTracker::new(),
+            client_version: Option::None,
+            supports_fast_extension,
+            rtt: None,
+            rtt_samples: VecDeque::new(),
         }
     }
-}
 
-pub type PeerAddr = String;
-pub type FastExtensionSupport = bool;
+    pub fn get_peer_addr(&self) -> String {
+        self.peer_addr.clone()
+    }
 
-pub enum PeersToManagerMsg {
-    Error(PeerAddr, PeerError),
-    Receive(PeerAddr, Message),
-    NewPeer(TcpStream, FastExtensionSupport),
-    PieceBlockRequestFulfilled(PeerAddr),
-}
+    pub fn get_am_choking(&self) -> bool {
+        self.am_choking
+    }
 
-#[derive(PartialEq)]
-pub enum PeerError {
-    HandshakeError,
-    Timeout,
-    Others,
-}
-
-pub type ToPeerCancelMsg = (BlockRequest, SystemTime); // block request, cancel time
-
-pub async fn connect_to_new_peer(
-    host: String,
-    port: u16,
-    info_hash: [u8; 20],
-    own_peer_id: String,
-    tcp_wire_protocol_listening_port: u16,
-    piece_completion_status: Option<Vec<bool>>,
-    metadata_size: Option<i64>,
-    peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
-) {
-    let dest = format!("{host}:{port}");
-    log::trace!("initiating connection to peer: {dest}");
-    match timeout(DEFAULT_TIMEOUT, TcpStream::connect(dest.clone())).await {
-        Err(_elapsed) => {
-            log::trace!("timed out connecting to peer {dest}");
-            send_to_torrent_manager(
-                &peers_to_torrent_manager_tx,
-                PeersToManagerMsg::Error(format!("{host}:{port}"), PeerError::HandshakeError),
-            )
-            .await;
+    pub fn set_am_choking(&mut self, chocking: bool) {
+        self.am_choking = chocking;
+        if chocking {
+            self.am_choking_since = SystemTime::now();
         }
-        Ok(Err(e)) => {
-            log::trace!("error initiating connection to peer {dest}: {e}");
-            send_to_torrent_manager(
-                &peers_to_torrent_manager_tx,
-                PeersToManagerMsg::Error(format!("{host}:{port}"), PeerError::HandshakeError),
-            )
-            .await;
-        }
-        Ok(Ok(tcp_stream)) => {
-            let peer_addr = match tcp_stream.peer_addr() {
-                Ok(s) => s.to_string(),
-                Err(e) => {
-                    log::trace!(
-                        "connecting to new peer failed because we could not get peer addr: {e}"
-                    );
-                    send_to_torrent_manager(
-                        &peers_to_torrent_manager_tx,
-                        PeersToManagerMsg::Error(
-                            format!("{host}:{port}"),
-                            PeerError::HandshakeError,
-                        ),
-                    )
-                    .await;
-                    return;
-                }
-            };
-            match timeout(
-                DEFAULT_TIMEOUT,
-                handshake(
-                    tcp_stream,
-                    info_hash.clone(),
-                    own_peer_id.clone(),
-                    tcp_wire_protocol_listening_port,
-                    piece_completion_status,
-                    metadata_size,
-                ),
-            )
-            .await
-            {
-                Err(_elapsed) => {
-                    log::trace!("timed out completing handshake with peer {dest}");
-                    send_to_torrent_manager(
-                        &peers_to_torrent_manager_tx,
-                        PeersToManagerMsg::Error(peer_addr, PeerError::HandshakeError),
-                    )
-                    .await;
-                }
-                Ok(Err(e)) => {
-                    log::trace!("error completing handshake with peer {peer_addr}: {e}");
-                    send_to_torrent_manager(
-                        &peers_to_torrent_manager_tx,
-                        PeersToManagerMsg::Error(peer_addr, PeerError::HandshakeError),
-                    )
-                    .await;
-                }
-                Ok(Ok((tcp_stream, supports_fast_extension))) => {
-                    send_to_torrent_manager(
-                        &peers_to_torrent_manager_tx,
-                        PeersToManagerMsg::NewPeer(tcp_stream, supports_fast_extension),
-                    )
-                    .await;
-                }
+    }
+
+    pub fn get_am_choking_since(&self) -> SystemTime {
+        self.am_choking_since
+    }
+
+    pub fn get_am_interested(&self) -> bool {
+        self.am_interested
+    }
+
+    pub fn set_am_interested(&mut self, interested: bool) {
+        self.am_interested = interested;
+    }
+
+    pub fn is_peer_choking(&self) -> bool {
+        self.peer_choking
+    }
+
+    pub fn set_peer_choking(&mut self, choking: bool) {
+        self.peer_choking = choking;
+        self.peer_choking_since = SystemTime::now();
+    }
+
+    pub fn peer_choking_since(&self) -> SystemTime {
+        self.peer_choking_since
+    }
+
+    pub fn set_peer_interested(&mut self, interested: bool) {
+        self.peer_interested = interested;
+    }
+
+    pub fn get_haves(&self) -> Option<&Vec<bool>> {
+        self.haves.as_ref()
+    }
+
+    pub fn have_piece(&self, piece_idx: usize) -> bool {
+        self.haves.as_ref().map_or(false, |haves| haves[piece_idx])
+    }
+
+    pub fn set_haves(&mut self, haves: Option<Vec<bool>>) {
+        self.haves = haves
+    }
+
+    pub fn set_have(&mut self, piece_idx: usize) {
+        if let Some(haves) = &mut self.haves {
+            if piece_idx < haves.len() {
+                haves[piece_idx] = true;
             }
         }
     }
-}
 
-pub enum ToNewIncomingPeersHandlerMsg {
-    OkToAcceptConnection(bool),
-    PieceCompleted(usize),
-    TorrentDataInitialized((i64, Vec<bool>)), // metadata size, piece completion status
-}
+    pub fn have_count(&self) -> usize {
+        self.haves
+            .as_ref()
+            .map_or(0, |v| v.iter().filter(|x| **x).count())
+    }
 
-pub async fn run_new_incoming_peers_handler(
-    info_hash: [u8; 20],
-    own_peer_id: String,
-    tcp_wire_protocol_listening_port: u16,
-    piece_completion_status: Option<Vec<bool>>,
-    mut to_new_incoming_peers_handler_rx: Receiver<ToNewIncomingPeersHandlerMsg>,
-    peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
-    raw_metadata_size: Option<i64>,
-) {
-    let ok_to_accept_connection_for_rcv: Arc<Mutex<bool>> = Arc::new(Mutex::new(true)); // accept new connections at start
-    let ok_to_accept_connection = ok_to_accept_connection_for_rcv.clone();
-
-    let metadata_size_for_rcv: Arc<Mutex<Option<i64>>> = Arc::new(Mutex::new(raw_metadata_size));
-    let metadata_size = metadata_size_for_rcv.clone();
-
-    let piece_completion_status_for_rcv: Arc<Mutex<Option<Vec<bool>>>> =
-        Arc::new(Mutex::new(piece_completion_status));
-    let piece_completion_status = piece_completion_status_for_rcv.clone();
-
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                Some(msg) = to_new_incoming_peers_handler_rx.recv() => {
-                    match msg  {
-                        ToNewIncomingPeersHandlerMsg::OkToAcceptConnection(ok_to_accept) => {
-                            log::trace!("got message to accept/refuse new incoming connections: {ok_to_accept}");
-                            let mut ok_to_accept_connection_for_rcv_lock = ok_to_accept_connection_for_rcv.lock().await;
-                            *ok_to_accept_connection_for_rcv_lock = ok_to_accept;
-                            drop(ok_to_accept_connection_for_rcv_lock);
-                        },
-                        ToNewIncomingPeersHandlerMsg::PieceCompleted(piece_idx) => {
-                            log::trace!("got message for newly completed piece: {piece_idx}");
-                            let mut piece_completion_status_for_rcv_lock = piece_completion_status_for_rcv.lock().await;
-                            if let Some(pcs) = piece_completion_status_for_rcv_lock.as_mut() {
-                                pcs[piece_idx] = true
-                            }
-                            drop(piece_completion_status_for_rcv_lock);
-                        },
-                        ToNewIncomingPeersHandlerMsg::TorrentDataInitialized((new_metadata_size, new_piece_completion_status)) => {
-                            log::trace!("got message to update piece_completion_status, new metadata size: {new_metadata_size}, new piece completion status len: {}", new_piece_completion_status.len());
-                            let mut metadata_size_for_rcv_lock = metadata_size_for_rcv.lock().await;
-                            *metadata_size_for_rcv_lock = Some(new_metadata_size);
-                            drop(metadata_size_for_rcv_lock);
-                            let mut piece_completion_status_for_rcv_lock = piece_completion_status_for_rcv.lock().await;
-                            *piece_completion_status_for_rcv_lock = Some(new_piece_completion_status);
-                            drop(piece_completion_status_for_rcv_lock);
-                        },
-                    }
-                }
-                else => break,
-            }
+    pub async fn send(&mut self, msg: ToPeerMsg) {
+        if self.to_peer_tx.capacity() <= 5 {
+            log::warn!(
+                "low to_peer_tx capacity to {}: {}",
+                self.peer_addr,
+                self.to_peer_tx.capacity()
+            );
         }
-    });
+        self.last_sent = SystemTime::now();
+        let _ = self.to_peer_tx.send(msg).await;
+        // ignore errors: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors,
+        // and the peer is still lingering in self.peers because the control message about the error is not yet handled
+    }
 
-    let incoming_connection_listener =
-        TcpListener::bind(format!("0.0.0.0:{tcp_wire_protocol_listening_port}"))
-            .await
-            .expect("failed binding to torrent protocol tcp port");
-
-    tokio::spawn(async move {
-        loop {
-            log::debug!("waiting for incoming peer connections...");
-            // never timeout on accept, wait forever if needed
-            let mut stream = match incoming_connection_listener.accept().await {
-                Ok((stream, _)) => stream,
-                Err(e) => {
-                    log::warn!("accept failed: {e}");
-                    continue;
-                }
-            };
-            let ok_to_accept_connection_lock = ok_to_accept_connection.lock().await;
-            let ok_to_accept_connection = ok_to_accept_connection_lock.clone();
-            drop(ok_to_accept_connection_lock);
-            if !ok_to_accept_connection {
-                log::trace!(
-                    "reached limit of incoming connections, shutting down new connection from: {}",
-                    addr_or_unknown(&stream)
+    pub fn try_send(&mut self, msg: ToPeerMsg) {
+        self.last_sent = SystemTime::now();
+        match self.to_peer_tx.try_send(msg) {
+            Ok(_) => {}
+            Err(Full(o)) => {
+                log::warn!(
+                    "no to_peer_tx capacity to {} on try_send, discarding {}",
+                    self.peer_addr,
+                    o
                 );
-                _ = stream.shutdown().await;
-                continue;
             }
-
-            let piece_completion_status_for_spawn = piece_completion_status.clone();
-            let metadata_size_for_spawn = metadata_size.clone();
-            let own_peer_id_for_spawn = own_peer_id.clone();
-            let peers_to_torrent_manager_tx_for_spawn = peers_to_torrent_manager_tx.clone();
-            tokio::spawn(async move {
-                let pcs_lock = piece_completion_status_for_spawn.lock().await;
-                let pcs = pcs_lock.clone();
-                drop(pcs_lock);
-                let metadata_size_lock = metadata_size_for_spawn.lock().await;
-                let metadata_size = metadata_size_lock.clone();
-                drop(metadata_size_lock);
-                let remote_addr = addr_or_unknown(&stream);
-                match timeout(
-                    DEFAULT_TIMEOUT,
-                    handshake(
-                        stream,
-                        info_hash,
-                        own_peer_id_for_spawn,
-                        tcp_wire_protocol_listening_port,
-                        pcs,
-                        metadata_size,
-                    ),
-                )
-                .await
-                {
-                    Err(_elapsed) => {
-                        log::trace!("handshake timeout with peer {remote_addr}");
-                    }
-                    Ok(Err(e)) => {
-                        log::trace!("handshake failed with peer {remote_addr}: {e}");
-                    }
-                    Ok(Ok((tcp_stream, supports_fast_extension))) => {
-                        send_to_torrent_manager(
-                            &peers_to_torrent_manager_tx_for_spawn,
-                            PeersToManagerMsg::NewPeer(tcp_stream, supports_fast_extension),
-                        )
-                        .await;
-                    }
-                }
-            });
+            Err(Closed(_)) => {
+                // ignore errors: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors,
+                // and the peer is still lingering in self.peers because the control message about the error is not yet handled
+            }
         }
-    });
-}
-
-fn addr_or_unknown(stream: &TcpStream) -> String {
-    match stream.peer_addr() {
-        Ok(s) => s.to_string(),
-        Err(_) => "<unknown>".to_string(),
     }
-}
 
-pub fn start_peer_msg_handlers(
-    peer_addr: String,
-    tcp_stream: TcpStream,
-    peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
-    to_peer_rx: Receiver<ToPeerMsg>,
-    to_peer_cancel_rx: Receiver<ToPeerCancelMsg>,
-    download_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
-    upload_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
-) {
-    let peers_to_torrent_manager_tx_for_snd_message_handler = peers_to_torrent_manager_tx.clone();
-    let (read, write) = tokio::io::split(tcp_stream);
-    let mut rcv = tokio::spawn(rcv_message_handler(
-        peer_addr.clone(),
-        peers_to_torrent_manager_tx,
-        read,
-        download_rate_limiter,
-    ));
-    let mut snd = tokio::spawn(snd_message_handler(
-        peer_addr.clone(),
-        to_peer_rx,
-        peers_to_torrent_manager_tx_for_snd_message_handler,
-        write,
-        to_peer_cancel_rx,
-        upload_rate_limiter,
-    ));
-    tokio::spawn(async move {
-        tokio::select! {
-            _ = &mut rcv => snd.abort(), // we dropped the read half, let's drop the write half, avoiding connection leaks
-            _ = &mut snd => rcv.abort(), // vice-versa
+    pub async fn send_keepalive(&mut self) {
+        if let Ok(elapsed) = SystemTime::now().duration_since(self.last_sent) {
+            if elapsed > KEEP_ALIVE_FREQ {
+                self.send(ToPeerMsg::Send(Message::KeepAlive)).await;
+            }
         }
-    });
-}
-
-async fn handshake(
-    mut stream: TcpStream,
-    info_hash: [u8; 20],
-    own_peer_id: String,
-    tcp_wire_protocol_listening_port: u16,
-    piece_completion_status: Option<Vec<bool>>,
-    metadata_size: Option<i64>,
-) -> Result<(TcpStream, FastExtensionSupport)> {
-    let (peer_protocol, reserved, peer_info_hash, peer_id) = stream
-        .handshake(info_hash, own_peer_id.as_bytes().try_into()?)
-        .await?;
-    log::trace!(
-        "received handshake info from {}: peer protocol: {peer_protocol}, info_hash: {}, peer_id: {}, reserved: {reserved:?}",
-        addr_or_unknown(&stream),
-        pretty_info_hash(peer_info_hash),
-        force_string(&peer_id.to_vec()),
-    );
-    if peer_info_hash != info_hash {
-        log::debug!(
-            "handshake errored: info hash received during handshake does not match to the one we want (own: {}, theirs: {})",
-            pretty_info_hash(info_hash),
-            pretty_info_hash(peer_info_hash)
-        );
-        bail!("own and their infohash did not match");
     }
 
-    let peer_addr = addr_or_unknown(&stream);
-    let (read, mut write) = tokio::io::split(stream);
+    pub fn send_cancel(&mut self, block_request: BlockRequest) {
+        // we try to let the peer message handler know about the cancellation,
+        // but if the buffer is full, we don't care, it means there were no outstanding messages to be sent
+        // and so the cancellation would have no effect
+        let _ = self
+            .to_peer_cancel_tx
+            .try_send((block_request, SystemTime::now()));
+    }
 
-    let supports_fast_extension = if reserved[7] & 4u8 != 0 { true } else { false };
+    pub fn get_outstanding_incoming_piece_block_requests(&self) -> usize {
+        self.outstanding_incoming_piece_block_requests
+    }
+    pub fn decrease_outstanding_incoming_piece_block_requests(&mut self) {
+        self.outstanding_incoming_piece_block_requests = self
+            .outstanding_incoming_piece_block_requests
+            .saturating_sub(1);
+    }
+    pub fn increase_outstanding_incoming_piece_block_requests(&mut self) {
+        self.outstanding_incoming_piece_block_requests += 1;
+    }
 
-    if let Some(pcs) = piece_completion_status {
-        let have_count = pcs.iter().filter(|status| **status).count();
-        if supports_fast_extension && have_count == pcs.len() {
-            write.send(Message::HaveAll).await?;
-            log::trace!("have all sent to peer {peer_addr}");
-        } else if supports_fast_extension && have_count == 0 {
-            write.send(Message::HaveNone).await?;
-            log::trace!("have none sent to peer {peer_addr}");
-        } else {
-            write.send(Message::Bitfield(pcs)).await?;
-            log::trace!("bitfield sent to peer {peer_addr}");
+    pub fn support_pex_extension(&self) -> bool {
+        self.ut_pex_id != 0
+    }
+
+    pub fn get_ut_pex_id(&self) -> u8 {
+        self.ut_pex_id
+    }
+
+    pub fn set_ut_pex_id(&mut self, ut_pex_id: u8) {
+        self.ut_pex_id = ut_pex_id;
+    }
+
+    pub fn get_last_pex_message_sent(&self) -> SystemTime {
+        self.last_pex_message_sent
+    }
+
+    pub async fn send_pex_extension_message(&mut self, added: Vec<String>, dropped: Vec<String>) {
+        let mut h = HashMap::new();
+        if added.len() > 0 {
+            h.insert(
+                b"added".to_vec(),
+                Str(ip_port_list_to_compact_format(added)),
+            );
         }
-    } else {
-        write.send(Message::HaveNone).await?;
-        log::trace!("have none sent to peer {peer_addr}");
-    }
-
-    // if peer supports DHT, send port
-    if reserved[7] & 1u8 != 0 {
-        write
-            .send(Message::Port(tcp_wire_protocol_listening_port))
-            .await?;
-        log::trace!("port sent to peer {peer_addr}");
-    }
-
-    // if peer supports extensions, send PEX and metadata extension support
-    if reserved[5] & 0x10 != 0 {
-        let mut handshake_dict = HashMap::from([
-            (
-                b"m".to_vec(),
-                Value::Dict(
-                    HashMap::from([
-                        (b"ut_pex".to_vec(), Value::Int(UT_PEX_EXTENSION_ID)),
-                        (
-                            b"ut_metadata".to_vec(),
-                            Value::Int(UT_METADATA_EXTENSION_ID),
-                        ),
-                    ]),
-                    0,
-                    0,
-                ),
-            ),
-            (
-                b"reqq".to_vec(),
-                Value::Int(MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER),
-            ),
-            (b"v".to_vec(), Value::Str(version_string().into_bytes())),
-        ]);
-        if let Some(metadata_size) = metadata_size {
-            handshake_dict.insert(b"metadata_size".to_vec(), Value::Int(metadata_size));
+        if dropped.len() > 0 {
+            h.insert(
+                b"dropped".to_vec(),
+                Str(ip_port_list_to_compact_format(dropped)),
+            );
         }
-        let extension_handshake = Value::Dict(handshake_dict, 0, 0);
-        write
-            .send(Message::Extended(0, extension_handshake, Vec::new()))
-            .await?;
-        log::trace!("extension handshake sent to peer {peer_addr}");
+        self.last_pex_message_sent = SystemTime::now();
+        if h.len() > 0 {
+            let pex_msg = Message::Extended(self.ut_pex_id, Dict(h, 0, 0), Vec::new());
+            log::trace!("sending pex message to peer {}: {pex_msg}", self.peer_addr);
+            self.send(ToPeerMsg::Send(pex_msg)).await;
+        }
     }
 
-    let stream = read.unsplit(write);
+    pub fn get_ut_metadata_id(&self) -> u8 {
+        self.ut_metadata_id
+    }
+    pub fn set_ut_metadata_id(&mut self, ut_metadata_id: u8) {
+        self.ut_metadata_id = ut_metadata_id;
+    }
 
-    // handshake completed successfully
-    Ok((stream, supports_fast_extension))
-}
+    pub fn support_metadata_extension(&self) -> bool {
+        self.ut_metadata_id != 0
+    }
 
-async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
-    peer_addr: String,
-    peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
-    mut wire_proto: T,
-    download_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
-) {
-    loop {
-        match timeout(
-            PEER_NO_INBOUND_TRAFFIC_FAILURE_TIMEOUT,
-            wire_proto.receive(),
-        )
-        .await
+    pub fn get_last_metadata_request_rejection(&self) -> SystemTime {
+        self.last_metadata_request_rejection
+    }
+
+    pub fn set_last_metadata_request_rejection(&mut self, last_rejection_tike: SystemTime) {
+        self.last_metadata_request_rejection = last_rejection_tike
+    }
+
+    pub async fn send_metadata_extension_message(&mut self, metadata_message: MetadataMessage) {
+        match metadata_message {
+            MetadataMessage::Request(piece) => {
+                let h = HashMap::from([
+                    (b"msg_type".to_vec(), Int(METADATA_MESSAGE_REQUEST)),
+                    (b"piece".to_vec(), Int(piece as i64)),
+                ]);
+                let metadata_msg =
+                    Message::Extended(self.ut_metadata_id, Dict(h, 0, 0), Vec::new());
+                log::trace!(
+                    "sending metadata request message to peer {}: {metadata_msg}",
+                    self.peer_addr
+                );
+                self.send(ToPeerMsg::Send(metadata_msg)).await;
+            }
+            MetadataMessage::Data(piece, metadata_size, data) => {
+                let h = HashMap::from([
+                    (b"msg_type".to_vec(), Int(METADATA_MESSAGE_DATA)),
+                    (b"piece".to_vec(), Int(piece as i64)),
+                    (b"total_size".to_vec(), Int(metadata_size as i64)),
+                ]);
+                let metadata_msg = Message::Extended(self.ut_metadata_id, Dict(h, 0, 0), data);
+                log::trace!(
+                    "sending metadata data message to peer {}: {metadata_msg}",
+                    self.peer_addr
+                );
+                self.send(ToPeerMsg::Send(metadata_msg)).await;
+            }
+            MetadataMessage::Reject(piece) => {
+                let h = HashMap::from([
+                    (b"msg_type".to_vec(), Int(METADATA_MESSAGE_REJECT)),
+                    (b"piece".to_vec(), Int(piece as i64)),
+                ]);
+                let metadata_msg =
+                    Message::Extended(self.ut_metadata_id, Dict(h, 0, 0), Vec::new());
+                log::trace!(
+                    "sending metadata reject message to peer {}: {metadata_msg}",
+                    self.peer_addr
+                );
+                self.send(ToPeerMsg::Send(metadata_msg)).await;
+            }
+        }
+    }
+
+    pub fn increase_corruption_errors(&mut self) {
+        self.corruption_errors += 1
+    }
+
+    pub fn get_corruption_errors(&self) -> u32 {
+        self.corruption_errors
+    }
+
+    pub fn set_reqq(&mut self, reqq: usize) {
+        self.reqq = reqq
+    }
+
+    pub fn get_reqq(&self) -> usize {
+        self.reqq
+    }
+
+    pub fn get_bandwidth_tracker(&self) -> &BandwidthTracker {
+        &self.bandwidth_tracker
+    }
+
+    pub fn get_bandwidth_tracker_mut(&mut self) -> &mut BandwidthTracker {
+        &mut self.bandwidth_tracker
+    }
+
+    pub fn get_client_version(&self) -> String {
+        self.client_version
+            .as_deref()
+            .unwrap_or("unknown")
+            .to_string()
+    }
+
+    pub fn set_client_version(&mut self, client_version: String) {
+        if self.client_version.is_none() {
+            self.client_version = Some(client_version);
+        }
+    }
+
+    pub fn supports_fast_extension(&self) -> bool {
+        self.supports_fast_extension
+    }
+
+    pub fn get_rtt(&self) -> Option<Duration> {
+        self.rtt
+    }
+
+    pub fn update_rtt(&mut self, rtt_sample: Duration) {
+        self.rtt_samples.push_front(rtt_sample);
+        if self.rtt_samples.len() > RTT_SAMPLES_COUNT {
+            // todo: should we remove old samples only based on number or also based on oldness?
+            // i.e. if we get 20 messages al at the same time now, we lose the "history",
+            // should we keep data up to some 3s instead for example?
+            self.rtt_samples.pop_back();
+        }
+        let mut latencies = Duration::ZERO;
+        for s in self.rtt_samples.iter() {
+            latencies += s.clone();
+        }
+        let rtt = latencies.div_f64(self.rtt_samples.len() as f64);
+        self.rtt = Some(rtt);
+    }
+
+    pub async fn send_pex_extension_message_for_latest_peer_events(
+        &mut self,
+        latest_pex_update: SystemTime,
+        added_dropped_peer_events: &Vec<(SystemTime, String, PexEvent)>,
+    ) {
+        if !self.support_pex_extension() {
+            return;
+        }
+        if latest_pex_update
+            .duration_since(self.get_last_pex_message_sent())
+            .unwrap_or_default()
+            <= PEX_MESSAGE_COOL_OFF_PERIOD
         {
-            Err(_elapsed) => {
-                log::trace!(
-                    "did not receive anything (not even keep-alive messages) from peer {peer_addr} in {PEER_NO_INBOUND_TRAFFIC_FAILURE_TIMEOUT:#?}"
-                );
-                send_to_torrent_manager(
-                    &peers_to_torrent_manager_tx,
-                    PeersToManagerMsg::Error(peer_addr, PeerError::Timeout),
-                )
-                .await;
-                break;
-            }
-            Ok(Err(e)) => {
-                log::trace!("receive failed with peer {peer_addr}: {e}");
-                send_to_torrent_manager(
-                    &peers_to_torrent_manager_tx,
-                    PeersToManagerMsg::Error(peer_addr, PeerError::Others),
-                )
-                .await;
-                break;
-            }
-            Ok(Ok(proto_msg)) => {
-                // the download rate limiter needs to read a message before deciding if it needs to rate limit,
-                // so here, if we are rate limited, we cannot do anything else other than block everything else until we are unblocked
-                // (also next messages that could be non-piece messages and so not affected by rate limiting)
-                // otherwise, if the next message is also a piece, we fail to enforce the rate limit
-                rate_limit(&proto_msg, &download_rate_limiter).await;
-
-                log::trace!("received from {peer_addr}: {proto_msg}");
-                send_to_torrent_manager(
-                    &peers_to_torrent_manager_tx,
-                    PeersToManagerMsg::Receive(peer_addr.clone(), proto_msg),
-                )
-                .await;
-            }
+            return;
         }
+
+        // only send events we have not yet sent
+        let elided_events = added_dropped_peer_events
+            .iter()
+            .filter(|(event_timestamp, _, _)| *event_timestamp > self.get_last_pex_message_sent())
+            .fold(HashMap::new(), |mut map, (_, addr, event_type)| {
+                map.insert(addr.clone(), *event_type);
+                map
+            });
+        let added = elided_events
+            .iter()
+            .filter(|(_, event_type)| **event_type == PexEvent::Added)
+            .map(|(p, _)| (*p).clone())
+            .collect();
+        let dropped = elided_events
+            .iter()
+            .filter(|(_, event_type)| **event_type == PexEvent::Dropped)
+            .map(|(p, _)| (*p).clone())
+            .collect();
+        self.send_pex_extension_message(added, dropped).await;
     }
 }
 
-async fn rate_limit(proto_msg: &Message, rate_limiter: &Option<Arc<Mutex<RateLimiter>>>) {
-    if let Some(r) = rate_limiter {
-        // at the moment the rate limiter just counts on the actual data downloaded from blocks,
-        // ignoring the message headers other type of messages, dht messages, transport protocol headers...
-        // for now this is acceptable
-        if let Message::Piece(_, _, data) = proto_msg {
-            loop {
-                // many small data requests could starve large ones, but in practice the probability
-                // is really low since most of the time we ask / get requests for a max size block
-                let mut r_mg = r.lock().await;
-                let acquire_result = r_mg.try_acquire(data.len() as u128);
-                drop(r_mg);
-                match acquire_result {
-                    Ok(_) => break,
-                    Err(wait_time) => sleep(wait_time).await,
-                }
-            }
+fn ip_port_list_to_compact_format(addrs: Vec<String>) -> Vec<u8> {
+    let mut compact_format: Vec<u8> = Vec::new();
+    for addr in addrs {
+        let ip_port: Vec<_> = addr.split(':').collect();
+        if ip_port.len() != 2 {
+            panic!("addr string was not of the format ip:port");
         }
+        let ipv4_addr: Ipv4Addr = ip_port[0].parse().expect("addr was not an ipv4");
+        compact_format.append(&mut ipv4_addr.octets().to_vec());
+        let port: u16 = ip_port[1].parse().expect("port was not a u16");
+        compact_format.append(&mut port.to_be_bytes().to_vec());
     }
-}
-
-async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
-    peer_addr: String,
-    mut to_peer_rx: Receiver<ToPeerMsg>,
-    peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
-    mut wire_proto: T,
-    mut to_peer_cancel_rx: Receiver<ToPeerCancelMsg>,
-    upload_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
-) {
-    let mut cancellations = HashMap::<BlockRequest, SystemTime>::new();
-    while let Some(manager_msg) = to_peer_rx.recv().await {
-        match manager_msg {
-            ToPeerMsg::Send(proto_msg) => {
-                // here, if we are waiting due to the rate limit, then _all_ message types (also non-piece messages)
-                // for the same peer are affected and needs to wait for the limit to pass.
-                // In theory we can decide to apply the limit only on sending piece messages and, even if we are
-                // rate limited, we can decide to send other kinds of messages without any delays, but, for now,
-                // it is fine as is because the wait time is usually very small for normal max bandwidth values.
-                //
-                // todo: split handling of send messages for piece and non-piece in 2 different
-                // queues in the future so that non-piece messages are not blocked
-                rate_limit(&proto_msg, &upload_rate_limiter).await;
-
-                let mut is_sending_piece = false;
-
-                // avoid sending data if the request has already been canceled by the peer
-                if let Message::Piece(piece_idx, begin, data) = &proto_msg {
-                    is_sending_piece = true;
-
-                    // receive pending cancellations
-                    while let Ok((block_request, cancel_time)) = to_peer_cancel_rx.try_recv() {
-                        cancellations.insert(block_request, cancel_time);
-                    }
-                    // remove cancellations requested more than CANCELLATION_DURATION in the past
-                    cancellations.retain(|_, cancel_time| {
-                        SystemTime::now()
-                            .duration_since(*cancel_time)
-                            .unwrap_or_default()
-                            < CANCELLATION_DURATION
-                    });
-                    // avoid sending if there is a cancellation
-                    let block_request = BlockRequest {
-                        piece_idx: *piece_idx,
-                        block_begin: *begin,
-                        data_len: data.len() as u32,
-                    };
-                    if cancellations.contains_key(&block_request) {
-                        cancellations.remove(&block_request);
-                        log::trace!(
-                            "avoided sending canceled request to peer {peer_addr} (block_idx: {piece_idx} begin: {begin}, end: {})",
-                            data.len()
-                        );
-                        send_to_torrent_manager(
-                            &peers_to_torrent_manager_tx,
-                            PeersToManagerMsg::PieceBlockRequestFulfilled(peer_addr.clone()),
-                        )
-                        .await;
-
-                        continue;
-                    }
-                }
-
-                log::trace!("sending message {proto_msg} to peer {peer_addr}");
-                match timeout(DEFAULT_TIMEOUT, wire_proto.send(proto_msg)).await {
-                    Err(_elapsed) => {
-                        log::trace!("timeout sending message to peer {peer_addr}");
-                        send_to_torrent_manager(
-                            &peers_to_torrent_manager_tx,
-                            PeersToManagerMsg::Error(peer_addr.clone(), PeerError::Others),
-                        )
-                        .await;
-                        break;
-                    }
-                    Ok(Err(e)) => {
-                        log::trace!("sending failed to peer {peer_addr}: {e}");
-                        send_to_torrent_manager(
-                            &peers_to_torrent_manager_tx,
-                            PeersToManagerMsg::Error(peer_addr.clone(), PeerError::Others),
-                        )
-                        .await;
-                        break;
-                    }
-                    Ok(Ok(_)) => {
-                        if is_sending_piece {
-                            send_to_torrent_manager(
-                                &peers_to_torrent_manager_tx,
-                                PeersToManagerMsg::PieceBlockRequestFulfilled(peer_addr.clone()),
-                            )
-                            .await;
-                        }
-                    }
-                }
-            }
-            ToPeerMsg::Disconnect() => {
-                break;
-            }
-        }
-    }
-}
-
-async fn send_to_torrent_manager(
-    peers_to_torrent_manager_tx: &Sender<PeersToManagerMsg>,
-    msg: PeersToManagerMsg,
-) {
-    if peers_to_torrent_manager_tx.capacity() <= 5 {
-        log::warn!(
-            "low peers_to_torrent_manager_tx capacity: {}",
-            peers_to_torrent_manager_tx.capacity()
-        );
-    }
-    // ignore error here: torrent manger can drop this peer due to errors in rcv_message_handler
-    // while snd_message_handler is about to send messages to manager or vice versa
-    _ = peers_to_torrent_manager_tx.send(msg).await;
+    compact_format
 }

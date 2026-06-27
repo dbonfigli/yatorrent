@@ -7,8 +7,8 @@ use std::{
 use rand::seq::SliceRandom;
 use size::{Size, Style};
 
-use crate::manager::peer::PeerAddr;
-use crate::manager::peer_rep::Peer;
+use crate::manager::peer_handler::PeerAddr;
+use crate::manager::peer::Peer;
 
 const METADATA_PIECE_SIZE_B: usize = 16384;
 const PEER_METADATA_REQUEST_REJECTION_COOL_OFF_PERIOD: Duration = Duration::from_secs(30);
