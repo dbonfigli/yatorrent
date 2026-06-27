@@ -1,5 +1,6 @@
 use crate::{
-    manager::{peer::PeerAddr, torrent_manager::Peer},
+    manager::peer::PeerAddr,
+    manager::peer_rep::Peer,
     persistence::{piece::Piece, torrent_data_status::TorrentDataStatus},
     torrent_protocol::wire_protocol::BlockRequest,
 };
@@ -458,7 +459,7 @@ impl PieceRequestor {
 }
 
 fn max_outstanding_reqs(peer: &Peer) -> usize {
-    let bandwidth_down = peer.bandwidth_tracker().avg_bandwidth_down();
+    let bandwidth_down = peer.get_bandwidth_tracker().avg_bandwidth_down();
 
     let rtt = peer
         .get_rtt()

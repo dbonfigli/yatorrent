@@ -83,7 +83,9 @@ impl BandwidthTracker {
 
     pub fn add_downloaded_bytes(&mut self, bytes: u64) {
         self.downloaded_bytes += bytes;
-        self.last_download_increase_time = SystemTime::now();
+        if bytes > 0 {
+            self.last_download_increase_time = SystemTime::now();
+        }
     }
 
     pub fn last_download_increase_time(&self) -> SystemTime {

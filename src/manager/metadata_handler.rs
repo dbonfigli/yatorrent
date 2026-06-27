@@ -7,7 +7,8 @@ use std::{
 use rand::seq::SliceRandom;
 use size::{Size, Style};
 
-use crate::manager::{peer::PeerAddr, torrent_manager::Peer};
+use crate::manager::peer::PeerAddr;
+use crate::manager::peer_rep::Peer;
 
 const METADATA_PIECE_SIZE_B: usize = 16384;
 const PEER_METADATA_REQUEST_REJECTION_COOL_OFF_PERIOD: Duration = Duration::from_secs(30);
