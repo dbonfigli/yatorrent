@@ -9,7 +9,7 @@ use crate::{
     manager::{
         bandwidth_tracker::BandwidthTracker,
         peer_handler::{FastExtensionSupport, ToPeerCancelMsg, ToPeerMsg},
-        torrent_manager::PexEvent,
+        torrent_manager::pex::PexEvent,
     },
     torrent_protocol::wire_protocol::{BlockRequest, Message},
 };
