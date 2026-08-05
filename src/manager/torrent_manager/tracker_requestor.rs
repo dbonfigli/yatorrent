@@ -17,10 +17,10 @@ pub(super) struct TrackerState {
     info_hash: [u8; 20],
 }
 
-pub(super) struct TrackeRequestContext<'a> {
+pub(super) struct TrackeRequestContext<'a, 'b, 'c> {
     pub(super) torrent_data_status: &'a Option<TorrentDataStatus>,
-    pub(super) peers_state: &'a PeersState,
-    pub(super) bandwidth_tracker: &'a BandwidthTracker,
+    pub(super) peers_state: &'b PeersState,
+    pub(super) bandwidth_tracker: &'c BandwidthTracker,
 }
 
 impl TrackerState {
@@ -43,7 +43,10 @@ impl TrackerState {
     }
 
     // used to send recurring updates to tracker
-    pub(super) async fn async_update_to_tracker<'a>(&mut self, context: TrackeRequestContext<'a>) {
+    pub(super) async fn async_update_to_tracker<'a, 'b, 'c>(
+        &mut self,
+        context: TrackeRequestContext<'a, 'b, 'c>,
+    ) {
         let tracker_client_mg = self
             .tracker_client
             .lock()
@@ -63,10 +66,10 @@ impl TrackerState {
     }
 
     // used for specific events
-    pub(super) async fn async_request_to_tracker<'a>(
+    pub(super) async fn async_request_to_tracker<'a, 'b, 'c>(
         &mut self,
         event: Event,
-        context: TrackeRequestContext<'a>,
+        context: TrackeRequestContext<'a, 'b, 'c>,
     ) {
         if event == Event::Completed {
             if self.completed_sent_to_tracker {
