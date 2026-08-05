@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::bencoding::Value;
+use crate::{bencoding::Value, util::FileEntry};
 use anyhow::{Result, bail};
 use std::str;
 
@@ -28,9 +28,13 @@ pub struct MultifileFile {
     pub path: Vec<String>, // a list containing one or more string elements that together represent the path and filename. Each element in the list corresponds to either a directory name or (in the case of the final element) the filename. For example, the file "dir1/dir2/file.ext" would consist of three string elements: "dir1", "dir2", and "file.ext". This is encoded as a bencoded list of strings such as l4:dir14:dir28:file.exte
 }
 
-pub fn get_infodict(
-    info_dict: &HashMap<Vec<u8>, Value>,
-) -> Result<(u64, Vec<[u8; 20]>, MetainfoFile)> {
+pub struct ParsedInfodict {
+    pub piece_length: u64,
+    pub piece_hashes: Vec<[u8; 20]>,
+    pub metainfo_file: MetainfoFile,
+}
+
+pub fn parse_infodict(info_dict: &HashMap<Vec<u8>, Value>) -> Result<ParsedInfodict> {
     // file / dir name
     let name_string = match info_dict.get(&b"name".to_vec()) {
         Some(Value::Str(name_vec)) => match str::from_utf8(name_vec) {
@@ -50,20 +54,20 @@ pub fn get_infodict(
     }
 
     // pieces
-    let pieces_vec = match info_dict.get(&b"pieces".to_vec()) {
-        Some(Value::Str(pieces_byte_vec)) => {
-            if pieces_byte_vec.len() % 20 != 0 {
+    let piece_hashes = match info_dict.get(&b"pieces".to_vec()) {
+        Some(Value::Str(piece_hashes_byte_vec)) => {
+            if piece_hashes_byte_vec.len() % 20 != 0 {
                 bail!(
                     "The .torrent file contains \"info.pieces\" that is not a string of length divisible by 20"
                 );
             }
-            let mut pieces_vec = Vec::new();
-            for p in (0..pieces_byte_vec.len()).step_by(20) {
-                let mut piece: [u8; 20] = [0; 20];
-                piece.clone_from_slice(&pieces_byte_vec[p..p + 20]);
-                pieces_vec.push(piece);
+            let mut piece_hashes = Vec::new();
+            for p in (0..piece_hashes_byte_vec.len()).step_by(20) {
+                let mut piece_hash: [u8; 20] = [0; 20];
+                piece_hash.clone_from_slice(&piece_hashes_byte_vec[p..p + 20]);
+                piece_hashes.push(piece_hash);
             }
-            pieces_vec
+            piece_hashes
         }
         _ => bail!("The .torrent file does not contain a valid \"info.pieces\""),
     };
@@ -139,5 +143,24 @@ pub fn get_infodict(
         );
     }
 
-    Ok((*piece_length_i64_value as u64, pieces_vec, metainfo_file))
+    Ok(ParsedInfodict {
+        piece_length: *piece_length_i64_value as u64,
+        piece_hashes,
+        metainfo_file,
+    })
+}
+
+pub fn get_files(metainfo_file: &MetainfoFile) -> Vec<FileEntry> {
+    match metainfo_file {
+        MetainfoFile::SingleFile(m) => {
+            vec![FileEntry::new(m.name.clone(), m.length)]
+        }
+        MetainfoFile::MultiFile(m) => {
+            let mut files = Vec::new();
+            for file in &m.files {
+                files.push(FileEntry::new(file.path.join("/"), file.length))
+            }
+            files
+        }
+    }
 }

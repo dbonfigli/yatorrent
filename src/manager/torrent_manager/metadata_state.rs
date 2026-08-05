@@ -4,23 +4,21 @@ use std::time::SystemTime;
 use anyhow::Error;
 use sha1::{Digest, Sha1};
 
+use crate::bencoding::Value::{self, Dict, Int};
 use crate::manager::metadata_handler::MetadataHandler;
 use crate::manager::peer::{
     METADATA_MESSAGE_DATA, METADATA_MESSAGE_REJECT, METADATA_MESSAGE_REQUEST, MetadataMessage, Peer,
 };
 use crate::manager::peer_handler::{PeerAddr, ToNewIncomingPeersHandlerMsg};
 use crate::manager::torrent_manager::TorrentManager;
-use crate::metadata::infodict;
-use crate::{
-    bencoding::Value::{self, Dict, Int},
-    metadata::metainfo,
-};
+use crate::metadata::infodict::{self, ParsedInfodict};
+use crate::util::FileEntry;
 
 enum MetadataMessageHandlingOutcome {
     MetadataComplete {
         piece_length: u64,
         piece_hashes: Vec<[u8; 20]>,
-        file_list: Vec<(String, u64)>,
+        file_list: Vec<FileEntry>,
     },
     Other,
 }
@@ -223,12 +221,16 @@ impl MetadataState {
             }
         };
 
-        match infodict::get_infodict(&info_dict) {
-            Ok((piece_length, piece_hashes, metainfo_file)) => {
+        match infodict::parse_infodict(&info_dict) {
+            Ok(ParsedInfodict {
+                piece_length,
+                piece_hashes,
+                metainfo_file,
+            }) => {
                 return MetadataMessageHandlingOutcome::MetadataComplete {
                     piece_length,
                     piece_hashes,
-                    file_list: metainfo::get_files(&metainfo_file),
+                    file_list: infodict::get_files(&metainfo_file),
                 };
             }
             Err(e) => {

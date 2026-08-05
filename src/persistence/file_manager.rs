@@ -13,6 +13,7 @@ use tokio::sync::mpsc::{Receiver, UnboundedSender};
 
 use crate::persistence::piece::Piece;
 use crate::persistence::torrent_data_status::TorrentDataStatus;
+use crate::util::FileEntry;
 
 const MAX_CONCURRENT_READ_OPS: usize = 10; // todo: make this dynamic depending on the read speed (spinning disk should have this set to 1)
 
@@ -204,7 +205,7 @@ fn write_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
 
 pub fn start_file_manager(
     base_path: &Path,
-    file_list: Vec<(String, u64)>, // list of files (path string) and their sizes
+    file_list: Vec<FileEntry>,
     normal_piece_length: u64,
     piece_hashes: PieceHashes,
     mut read_requests_rx: Receiver<ReadPieceBlockRequest>,
@@ -213,7 +214,7 @@ pub fn start_file_manager(
     write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
 ) -> TorrentDataStatus {
     let mut total_file_size = 0;
-    for (_, size) in file_list.iter() {
+    for FileEntry { size, .. } in file_list.iter() {
         total_file_size += size;
     }
     let total_pieces = piece_hashes.len();
@@ -635,7 +636,7 @@ fn generate_file_paths_for_pieces(
     base_path: &Path,
     total_pieces: usize,
     piece_length: u64,
-    file_list: &Vec<(String, u64)>,
+    file_list: &Vec<FileEntry>,
 ) -> FilePathsForPieces {
     let mut file_paths_for_pieces = Vec::new();
     let mut current_file_index = 0;
@@ -657,7 +658,10 @@ fn generate_file_paths_for_pieces(
                 }
             }
 
-            let (file_name, file_size) = &file_list[current_file_index];
+            let FileEntry {
+                path: file_name,
+                size: file_size,
+            } = &file_list[current_file_index];
             let remaining_bytes_in_file = file_size - current_position_in_file;
 
             let piece_bytes_fitting_in_file =
@@ -758,16 +762,16 @@ fn refresh_completed_pieces(
 
 fn get_file_list_with_completion_status(
     base_path: &Path,
-    file_list: &Vec<(String, u64)>,
+    file_list: &Vec<FileEntry>,
     file_paths_for_pieces: &FilePathsForPieces,
     piece_completion_status: &PieceCompletionStatus,
 ) -> Vec<(PathBuf, u64, bool)> {
     let mut file_list_with_completion_status: Vec<(PathBuf, u64, bool)> = file_list
         .iter()
-        .map(|(file_name_path, s)| {
+        .map(|file_entry| {
             (
-                Path::new(base_path).join(file_name_path).to_owned(),
-                *s,
+                Path::new(base_path).join(file_entry.path.clone()),
+                file_entry.size,
                 true,
             )
         })
@@ -789,7 +793,7 @@ fn get_file_list_with_completion_status(
 
 fn log_file_completion_stats(
     base_path: &Path,
-    file_list: &Vec<(String, u64)>,
+    file_list: &Vec<FileEntry>,
     file_paths_for_pieces: &FilePathsForPieces,
     piece_completion_status: &PieceCompletionStatus,
 ) {
@@ -820,18 +824,18 @@ fn log_file_completion_stats(
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
-
+    use crate::persistence::file_manager::FileEntry;
     use crate::persistence::file_manager::{
         generate_file_paths_for_pieces, get_file_list_with_completion_status,
     };
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn generate_file_paths_for_pieces_1() {
         let file_list = vec![
-            ("f1".to_string(), 5),
-            ("f2".to_string(), 20),
-            ("f3".to_string(), 5),
+            FileEntry::new("f1".to_string(), 5),
+            FileEntry::new("f2".to_string(), 20),
+            FileEntry::new("f3".to_string(), 5),
         ];
         let pieces = vec![
             b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
@@ -864,7 +868,7 @@ mod tests {
 
     #[test]
     fn generate_file_paths_for_pieces_2() {
-        let file_list = vec![("f1".to_string(), 5)];
+        let file_list = vec![FileEntry::new("f1".to_string(), 5)];
         let pieces = vec![b"aaaaaaaaaaaaaaaaaaaa".to_owned()];
         let piece_length = 5;
 
@@ -882,7 +886,7 @@ mod tests {
 
     #[test]
     fn generate_file_paths_for_pieces_3() {
-        let file_list = vec![("f1".to_string(), 5)];
+        let file_list = vec![FileEntry::new("f1".to_string(), 5)];
         let pieces = vec![b"aaaaaaaaaaaaaaaaaaaa".to_owned()];
         let piece_length = 6;
 
@@ -902,11 +906,11 @@ mod tests {
     #[test]
     fn generate_file_paths_for_pieces_4() {
         let file_list = vec![
-            ("f1".to_string(), 10),
-            ("f2".to_string(), 10),
-            ("f3".to_string(), 5),
-            ("f4".to_string(), 3),
-            ("f5".to_string(), 3),
+            FileEntry::new("f1".to_string(), 10),
+            FileEntry::new("f2".to_string(), 10),
+            FileEntry::new("f3".to_string(), 5),
+            FileEntry::new("f4".to_string(), 3),
+            FileEntry::new("f5".to_string(), 3),
         ];
         let pieces = vec![
             b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
@@ -934,11 +938,11 @@ mod tests {
     #[test]
     fn test_refresh_completed_files_1() {
         let file_list = vec![
-            ("f1".to_string(), 10),
-            ("f2".to_string(), 10),
-            ("f3".to_string(), 5),
-            ("f4".to_string(), 3),
-            ("f5".to_string(), 3),
+            FileEntry::new("f1".to_string(), 10),
+            FileEntry::new("f2".to_string(), 10),
+            FileEntry::new("f3".to_string(), 5),
+            FileEntry::new("f4".to_string(), 3),
+            FileEntry::new("f5".to_string(), 3),
         ];
         let file_paths_for_pieces =
             generate_file_paths_for_pieces(Path::new("./"), 3, 10, &file_list);
@@ -965,11 +969,11 @@ mod tests {
     #[test]
     fn test_refresh_completed_files_2() {
         let file_list = vec![
-            ("f1".to_string(), 10),
-            ("f2".to_string(), 10),
-            ("f3".to_string(), 5),
-            ("f4".to_string(), 3),
-            ("f5".to_string(), 3),
+            FileEntry::new("f1".to_string(), 10),
+            FileEntry::new("f2".to_string(), 10),
+            FileEntry::new("f3".to_string(), 5),
+            FileEntry::new("f4".to_string(), 3),
+            FileEntry::new("f5".to_string(), 3),
         ];
 
         let file_paths_for_pieces =
@@ -997,9 +1001,9 @@ mod tests {
     #[test]
     fn test_refresh_completed_files_3() {
         let file_list = vec![
-            ("f1".to_string(), 5),
-            ("f2".to_string(), 20),
-            ("f3".to_string(), 5),
+            FileEntry::new("f1".to_string(), 5),
+            FileEntry::new("f2".to_string(), 20),
+            FileEntry::new("f3".to_string(), 5),
         ];
 
         let file_paths_for_pieces =

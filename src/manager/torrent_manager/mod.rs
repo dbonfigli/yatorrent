@@ -21,6 +21,7 @@ use crate::manager::torrent_manager::pex::PexHandler;
 use crate::manager::torrent_manager::tracker_state::TrackerState;
 use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::tracker;
+use crate::util::FileEntry;
 
 mod control_loop;
 mod dht_state;
@@ -98,9 +99,9 @@ impl TorrentManager {
         listening_torrent_wire_protocol_port: u16,
         announce_list: Vec<Vec<String>>,
         files_data: Option<(
-            Vec<(String, u64)>, // files_list
-            u64,                // piece_length
-            Vec<[u8; 20]>,      // piece_hashes
+            Vec<FileEntry>, // files_list
+            u64,            // piece_length
+            Vec<[u8; 20]>,  // piece_hashes
         )>,
         raw_metadata: Option<Vec<u8>>,
         listening_dht_port: u16,

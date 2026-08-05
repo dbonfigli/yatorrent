@@ -164,7 +164,7 @@ async fn main() -> Result<()> {
                     base_path,
                     args.port,
                     m.announce_list.clone(),
-                    Some((m.get_files(), m.piece_length, m.pieces)),
+                    Some((m.get_files(), m.piece_length, m.piece_hashes)),
                     Some(m.raw_metadata),
                     // dht data
                     args.dht_port,

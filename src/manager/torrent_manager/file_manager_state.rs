@@ -19,6 +19,7 @@ use crate::{
     },
     torrent_protocol::wire_protocol::Message,
     tracker::Event,
+    util::FileEntry,
 };
 
 const MAX_CORRUPTION_ERRORS: u32 = 20; // max sha1 corruption errors on blocks a peer can have before marking it as bad
@@ -88,7 +89,7 @@ impl FileManagerState {
     pub(super) fn start(
         &mut self,
         base_path: &std::path::Path,
-        file_list: Vec<(String, u64)>,
+        file_list: Vec<FileEntry>,
         piece_length: u64,
         piece_hashes: Vec<[u8; 20]>,
     ) -> TorrentDataStatus {

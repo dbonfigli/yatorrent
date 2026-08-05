@@ -37,3 +37,14 @@ pub fn version_string() -> String {
         format!("{NAME} {VERSION} ({GIT_COMMIT})")
     }
 }
+
+pub struct FileEntry {
+    pub path: String,
+    pub size: u64,
+}
+
+impl FileEntry {
+    pub fn new(path: String, size: u64) -> Self {
+        FileEntry { path, size }
+    }
+}

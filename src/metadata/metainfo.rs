@@ -1,4 +1,8 @@
-use crate::{bencoding::Value, util::pretty_info_hash};
+use crate::{
+    bencoding::Value,
+    metadata::infodict::ParsedInfodict,
+    util::{FileEntry, pretty_info_hash},
+};
 use anyhow::{Result, bail};
 use sha1::{Digest, Sha1};
 use size::{Size, Style};
@@ -11,10 +15,10 @@ pub struct Metainfo {
     pub announce_list: Vec<Vec<String>>,
     pub url_list: Vec<String>,
     pub nodes: Vec<String>,
-    pub piece_length: u64,     // number of bytes in each piece (integer)
-    pub pieces: Vec<[u8; 20]>, // 20-byte SHA1 of each piece
+    pub piece_length: u64,           // number of bytes in each piece (integer)
+    pub piece_hashes: Vec<[u8; 20]>, // 20-byte SHA1 of each piece
     pub info_hash: [u8; 20], // 20-byte SHA1 hash of the value of the info key from the Metainfo file
-    pub file: MetainfoFile,
+    pub metainfo_file: MetainfoFile,
     pub raw_metadata: Vec<u8>, // metadata, i.e. the info dict, in bytes
 }
 
@@ -23,7 +27,7 @@ impl fmt::Display for Metainfo {
         let files = self
             .get_files()
             .iter()
-            .map(|f| format!("    - {} ({})", f.0, Size::from_bytes(f.1)))
+            .map(|f| format!("    - {} ({})", f.path, Size::from_bytes(f.size)))
             .collect::<Vec<String>>()
             .join("\n");
         write!(
@@ -35,7 +39,7 @@ impl fmt::Display for Metainfo {
             Size::from_bytes(self.piece_length)
                 .format()
                 .with_style(Style::Abbreviated),
-            self.pieces.len(),
+            self.piece_hashes.len(),
             pretty_info_hash(self.info_hash),
             files
         )
@@ -183,36 +187,25 @@ impl Metainfo {
             _ => bail!("The .torrent file does not contain a valid \"info\""),
         };
 
-        let (piece_length, pieces, file) = infodict::get_infodict(info_dict)?;
+        let ParsedInfodict {
+            piece_length,
+            piece_hashes,
+            metainfo_file,
+        } = infodict::parse_infodict(info_dict)?;
 
         Ok(Metainfo {
             announce_list: announces,
             url_list,
             nodes: node_list,
             piece_length,
-            pieces,
+            piece_hashes,
             info_hash,
-            file,
+            metainfo_file,
             raw_metadata,
         })
     }
 
-    pub fn get_files(&self) -> Vec<(String, u64)> {
-        get_files(&self.file)
-    }
-}
-
-pub fn get_files(metainfo_file: &MetainfoFile) -> Vec<(String, u64)> {
-    match metainfo_file {
-        MetainfoFile::SingleFile(m) => {
-            vec![(m.name.clone(), m.length)]
-        }
-        MetainfoFile::MultiFile(m) => {
-            let mut files = Vec::new();
-            for file in &m.files {
-                files.push((file.path.join("/"), file.length))
-            }
-            files
-        }
+    pub fn get_files(&self) -> Vec<FileEntry> {
+        infodict::get_files(&self.metainfo_file)
     }
 }
