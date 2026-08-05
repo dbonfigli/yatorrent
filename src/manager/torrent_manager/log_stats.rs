@@ -39,13 +39,13 @@ impl TorrentManager {
                 .as_ref()
                 .map(|f| f.num_pieces().to_string())
                 .unwrap_or("?".to_string()),
-            metadata_pieces = match self.metadata_handler.total_metadata_pieces() {
+            metadata_pieces = match self.metadata_state.total_metadata_pieces() {
                 0 => format!(
                     ", metadata pieces: {}/?",
-                    self.metadata_handler.total_metadata_pieces_downloaded()
+                    self.metadata_state.total_metadata_pieces_downloaded()
                 ),
                 total_metadata_pieces => {
-                    let total_downloaded = self.metadata_handler.total_metadata_pieces_downloaded();
+                    let total_downloaded = self.metadata_state.total_metadata_pieces_downloaded();
                     if total_metadata_pieces == total_downloaded {
                         "".to_string()
                     } else {

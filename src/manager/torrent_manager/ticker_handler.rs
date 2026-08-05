@@ -33,7 +33,10 @@ impl TorrentManager {
         self.pex_handler
             .send_pex_messages(&mut self.peers_state.peers)
             .await;
-        self.send_metadata_reqs().await;
+        self.metadata_state
+            .send_metadata_reqs(&mut self.peers_state.peers)
+            .await;
+
         self.send_pieces_reqs().await;
     }
 
@@ -91,7 +94,7 @@ impl TorrentManager {
                     self.torrent_data_status
                         .as_ref()
                         .map(|f| f.current_piece_completion_status()),
-                    self.metadata_handler.raw_metadata_size(),
+                    self.metadata_state.raw_metadata_size(),
                     self.peers_state.peers_to_torrent_manager_tx.clone(),
                 ));
             }

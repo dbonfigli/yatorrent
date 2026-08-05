@@ -3,9 +3,10 @@ use crate::{
     dht::dht_manager::ToDhtManagerMsg,
     manager::{
         BLOCK_SIZE_B,
-        metadata_handler::MetadataHandler,
         peer_handler::ToPeerMsg,
-        torrent_manager::{TorrentManager, pex, util::should_choke},
+        torrent_manager::{
+            TorrentManager, metadata::ExtendedMetadataMessageContext, pex, util::should_choke,
+        },
     },
     persistence::file_manager::{ReadPieceBlockRequest, WritePieceBlockRequest},
     torrent_protocol::wire_protocol::{BlockRequest, Message},
@@ -390,12 +391,19 @@ impl TorrentManager {
             }
             _ if extension_id == peer.get_ut_metadata_id() => {
                 // this is an ut_metadata extended message
-                self.handle_receive_extended_message_ut_metadata(
-                    extended_message,
-                    peer_addr,
-                    additional_data,
-                )
-                .await;
+                self.metadata_state
+                    .handle_receive_extended_message_ut_metadata(
+                        extended_message,
+                        peer_addr,
+                        additional_data,
+                        ExtendedMetadataMessageContext {
+                            torrent_manager_config: &self.torrent_manager_config,
+                            peers_state: &mut self.peers_state,
+                            file_manager_state: &mut self.file_manager_state,
+                            torrent_data_status: &mut self.torrent_data_status,
+                        },
+                    )
+                    .await;
             }
             _ => {
                 log::debug!(
@@ -457,9 +465,8 @@ impl TorrentManager {
                     log::debug!(
                         "got an ut_metadata extension handshake where \"metadata_size\" was <= 0, ignoring this message"
                     );
-                } else if self.metadata_handler.raw_metadata_size().is_none() {
-                    // we do not know the metadata size yet, take notes
-                    self.metadata_handler = MetadataHandler::new(Some(*metadata_size), None);
+                } else {
+                    self.metadata_state.update_raw_metadata_size(*metadata_size);
                 }
             }
         }

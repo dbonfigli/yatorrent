@@ -9,13 +9,13 @@ use tokio::sync::mpsc::{self, Receiver, Sender, UnboundedReceiver, UnboundedSend
 
 use crate::dht::dht_manager::{DhtManager, ToDhtManagerMsg};
 use crate::manager::bandwidth_tracker::BandwidthTracker;
-use crate::manager::metadata_handler::MetadataHandler;
 
 use crate::manager::peer::Peer;
 use crate::manager::peer_handler;
 use crate::manager::peer_handler::{PeerAddr, PeersToManagerMsg, ToNewIncomingPeersHandlerMsg};
 use crate::manager::piece_requestor::PieceRequestor;
 use crate::manager::rate_limiter::RateLimiter;
+use crate::manager::torrent_manager::metadata::MetadataState;
 use crate::manager::torrent_manager::pex::PexHandler;
 use crate::manager::torrent_manager::tracker_requestor::TrackerState;
 use crate::persistence::file_manager::{
@@ -128,7 +128,7 @@ pub struct TorrentManager {
     dht_state: DhtState,
     rate_limiter_state: RateLimiterState,
     file_manager_state: FileManagerState,
-    metadata_handler: MetadataHandler,
+    metadata_state: MetadataState,
     tracker_state: TrackerState,
     bandwidth_tracker: BandwidthTracker,
     piece_requestor: PieceRequestor,
@@ -215,7 +215,7 @@ impl TorrentManager {
                 last_get_peers_requested_time: SystemTime::now() - DHT_NEW_PEER_COOL_OFF_PERIOD
                     + DHT_BOOTSTRAP_TIME, // try to wait a bit before the first request, in hope that the dht has been bootstrapped, so that we don't waste time for the first request with an empty routing table
             },
-            metadata_handler: MetadataHandler::new(
+            metadata_state: MetadataState::new(
                 raw_metadata.as_ref().map(|m| m.len() as i64).or(None),
                 raw_metadata,
             ),
@@ -315,7 +315,7 @@ impl TorrentManager {
                 .take()
                 .expect("no to_new_incoming_peers_handler_rx, has start been called twice?"),
             self.peers_state.peers_to_torrent_manager_tx.clone(),
-            self.metadata_handler.raw_metadata_size(),
+            self.metadata_state.raw_metadata_size(),
         )
         .await;
 
