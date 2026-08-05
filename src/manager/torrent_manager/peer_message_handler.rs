@@ -124,6 +124,7 @@ impl TorrentManager {
                 torrent_data_status.num_pieces()
             );
             self.peers_state.bad_peers.insert(peer_addr.clone());
+            peer.send(ToPeerMsg::Disconnect()).await;
             self.remove_peer(peer_addr).await;
         }
     }
@@ -141,6 +142,9 @@ impl TorrentManager {
                 torrent_data_status.num_pieces()
             );
             self.peers_state.bad_peers.insert(peer_addr.clone());
+            if let Some(peer) = self.peers_state.peers.get_mut(&peer_addr) {
+                peer.send(ToPeerMsg::Disconnect()).await;
+            }
             self.remove_peer(peer_addr).await;
         } else if let Some(peer) = self.peers_state.peers.get_mut(&peer_addr) {
             // ignore bitfield if we don't have the torrent file yet, we cannot trust the bitfield from the peer
