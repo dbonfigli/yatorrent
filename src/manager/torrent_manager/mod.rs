@@ -18,7 +18,7 @@ use crate::manager::torrent_manager::dht_state::DhtState;
 use crate::manager::torrent_manager::file_manager_state::FileManagerState;
 use crate::manager::torrent_manager::metadata::MetadataState;
 use crate::manager::torrent_manager::pex::PexHandler;
-use crate::manager::torrent_manager::tracker_requestor::TrackerState;
+use crate::manager::torrent_manager::tracker_state::TrackerState;
 use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::tracker;
 
@@ -30,7 +30,7 @@ mod metadata;
 mod peer_message_handler;
 pub(super) mod pex;
 mod ticker_handler;
-mod tracker_requestor;
+mod tracker_state;
 mod util;
 
 // this is mostly the number of inflight (i.e. not fulfilled) requests from peers
