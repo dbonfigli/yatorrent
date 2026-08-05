@@ -4,10 +4,12 @@ use crate::{
     dht::dht_manager::ToDhtManagerMsg,
     manager::{
         peer_handler::{self, ToPeerMsg},
-        torrent_manager::{DHT_NEW_PEER_COOL_OFF_PERIOD, TorrentManager, util::should_choke},
+        torrent_manager::{
+            DHT_NEW_PEER_COOL_OFF_PERIOD, TorrentManager, tracker_requestor::TrackeRequestContext,
+            util::should_choke,
+        },
     },
     torrent_protocol::wire_protocol::Message,
-    tracker::Event,
 };
 use rand::seq::IndexedRandom;
 
@@ -216,24 +218,12 @@ impl TorrentManager {
     }
 
     async fn send_status_to_tracker(&mut self) {
-        let now = SystemTime::now();
-        let tracker_client_mg = self
-            .tracker_state
-            .tracker_client
-            .lock()
-            .expect("another user panicked while holding the lock");
-        let tracker_request_interval = tracker_client_mg.tracker_request_interval;
-        drop(tracker_client_mg);
-        if let Ok(elapsed) = now.duration_since(self.tracker_state.last_tracker_request_time) {
-            if elapsed > tracker_request_interval {
-                let event =
-                    if self.tracker_state.last_tracker_request_time == SystemTime::UNIX_EPOCH {
-                        Event::Started
-                    } else {
-                        Event::None
-                    };
-                self.async_request_to_tracker(event).await;
-            }
-        }
+        self.tracker_state
+            .async_update_to_tracker(TrackeRequestContext {
+                torrent_data_status: &self.torrent_data_status,
+                peers_state: &self.peers_state,
+                bandwidth_tracker: &self.bandwidth_tracker,
+            })
+            .await;
     }
 }

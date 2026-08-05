@@ -4,7 +4,7 @@ use crate::{
     manager::{
         peer::Peer,
         peer_handler::{ToNewIncomingPeersHandlerMsg, ToPeerMsg},
-        torrent_manager::TorrentManager,
+        torrent_manager::{TorrentManager, tracker_requestor::TrackeRequestContext},
     },
     persistence::{
         file_manager::{ReadPieceBlockResponse, ShaCorruptedError, WritePieceBlockResponse},
@@ -39,11 +39,18 @@ impl TorrentManager {
                         .as_mut()
                         .expect("invariant checked above")
                         .completed()
-                        && !self.tracker_state.completed_sent_to_tracker
                     {
                         log::warn!("torrent download completed");
-                        self.tracker_state.completed_sent_to_tracker = true;
-                        self.async_request_to_tracker(Event::Completed).await;
+                        self.tracker_state
+                            .async_request_to_tracker(
+                                Event::Completed,
+                                TrackeRequestContext {
+                                    torrent_data_status: &self.torrent_data_status,
+                                    peers_state: &self.peers_state,
+                                    bandwidth_tracker: &self.bandwidth_tracker,
+                                },
+                            )
+                            .await;
                         if self.torrent_manager_config.exit_when_complete {
                             log::warn!("Exiting...");
                             process::exit(0);

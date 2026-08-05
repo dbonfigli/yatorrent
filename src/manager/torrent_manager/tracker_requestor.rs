@@ -3,27 +3,92 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use crate::manager::bandwidth_tracker::BandwidthTracker;
 use crate::manager::peer_handler::PeerAddr;
-use crate::manager::torrent_manager::TorrentManager;
+use crate::manager::torrent_manager::PeersState;
+use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::tracker;
 use crate::tracker::{Event, NoTrackerError, Response, TrackerClient};
 
-impl TorrentManager {
-    pub(super) async fn async_request_to_tracker(&mut self, event: Event) {
-        self.tracker_state.last_tracker_request_time = SystemTime::now();
-        let bytes_left = self.torrent_data_status.as_ref().map(|f| f.bytes_left());
-        let info_hash = self.torrent_manager_config.info_hash;
-        let uploaded_bytes = self.bandwidth_tracker.uploaded_bytes();
-        let downloaded_bytes = self.bandwidth_tracker.downloaded_bytes();
-        let advertised_peers = self.peers_state.advertised_peers.clone();
+pub(super) struct TrackerState {
+    tracker_client: Arc<Mutex<TrackerClient>>,
+    last_tracker_request_time: SystemTime,
+    completed_sent_to_tracker: bool,
+    info_hash: [u8; 20],
+}
+
+pub(super) struct TrackeRequestContext<'a> {
+    pub(super) torrent_data_status: &'a Option<TorrentDataStatus>,
+    pub(super) peers_state: &'a PeersState,
+    pub(super) bandwidth_tracker: &'a BandwidthTracker,
+}
+
+impl TrackerState {
+    pub(super) fn new(
+        peer_id: String,
+        trackers_url: Vec<Vec<String>>,
+        listening_torrent_wire_protocol_port: u16,
+        info_hash: [u8; 20],
+    ) -> Self {
+        TrackerState {
+            tracker_client: Arc::new(Mutex::new(TrackerClient::new(
+                peer_id,
+                trackers_url,
+                listening_torrent_wire_protocol_port,
+            ))),
+            last_tracker_request_time: SystemTime::UNIX_EPOCH,
+            completed_sent_to_tracker: false,
+            info_hash,
+        }
+    }
+
+    // used to send recurring updates to tracker
+    pub(super) async fn async_update_to_tracker<'a>(&mut self, context: TrackeRequestContext<'a>) {
         let tracker_client_mg = self
-            .tracker_state
+            .tracker_client
+            .lock()
+            .expect("another user panicked while holding the lock");
+        let tracker_request_interval = tracker_client_mg.tracker_request_interval;
+        drop(tracker_client_mg);
+        if let Ok(elapsed) = SystemTime::now().duration_since(self.last_tracker_request_time) {
+            if elapsed > tracker_request_interval {
+                let event = if self.last_tracker_request_time == SystemTime::UNIX_EPOCH {
+                    Event::Started
+                } else {
+                    Event::None
+                };
+                self.async_request_to_tracker(event, context).await;
+            }
+        }
+    }
+
+    // used for specific events
+    pub(super) async fn async_request_to_tracker<'a>(
+        &mut self,
+        event: Event,
+        context: TrackeRequestContext<'a>,
+    ) {
+        if event == Event::Completed {
+            if self.completed_sent_to_tracker {
+                return;
+            }
+            self.completed_sent_to_tracker = true;
+        }
+
+        self.last_tracker_request_time = SystemTime::now();
+        let bytes_left = context.torrent_data_status.as_ref().map(|f| f.bytes_left());
+        let uploaded_bytes = context.bandwidth_tracker.uploaded_bytes();
+        let downloaded_bytes = context.bandwidth_tracker.downloaded_bytes();
+        let advertised_peers: Arc<Mutex<HashMap<String, (tracker::Peer, SystemTime)>>> =
+            context.peers_state.advertised_peers.clone();
+        let tracker_client_mg = self
             .tracker_client
             .lock()
             .expect("another user panicked while holding the lock");
         let tracker_client = tracker_client_mg.clone();
         drop(tracker_client_mg);
-        let tracker_client_arc = self.tracker_state.tracker_client.clone();
+        let tracker_client_arc = self.tracker_client.clone();
+        let info_hash = self.info_hash.clone();
         tokio::spawn(async move {
             if let Ok((updated_tracker_client, latest_advertised_peers)) = request_to_tracker(
                 tracker_client,

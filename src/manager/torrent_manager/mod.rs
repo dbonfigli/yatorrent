@@ -17,13 +17,13 @@ use crate::manager::peer_handler::{PeerAddr, PeersToManagerMsg, ToNewIncomingPee
 use crate::manager::piece_requestor::PieceRequestor;
 use crate::manager::rate_limiter::RateLimiter;
 use crate::manager::torrent_manager::pex::PexEvent;
+use crate::manager::torrent_manager::tracker_requestor::TrackerState;
 use crate::persistence::file_manager::{
     ReadPieceBlockRequest, ReadPieceBlockResponse, WritePieceBlockRequest, WritePieceBlockResponse,
     start_file_manager,
 };
 use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::tracker;
-use crate::tracker::TrackerClient;
 
 mod control_loop;
 mod file_manager_message_handler;
@@ -96,12 +96,6 @@ struct FileManagerState {
     // unbounded for the same reason as read_responses, without global caps since the messages are really small for this channel
     write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
     write_responses_rx: UnboundedReceiver<WritePieceBlockResponse>,
-}
-
-struct TrackerState {
-    tracker_client: Arc<Mutex<TrackerClient>>,
-    last_tracker_request_time: SystemTime,
-    completed_sent_to_tracker: bool,
 }
 
 struct DhtState {
@@ -225,15 +219,12 @@ impl TorrentManager {
                 raw_metadata.as_ref().map(|m| m.len() as i64).or(None),
                 raw_metadata,
             ),
-            tracker_state: TrackerState {
-                tracker_client: Arc::new(Mutex::new(TrackerClient::new(
-                    own_peer_id.clone(),
-                    announce_list,
-                    listening_torrent_wire_protocol_port,
-                ))),
-                last_tracker_request_time: SystemTime::UNIX_EPOCH,
-                completed_sent_to_tracker: false,
-            },
+            tracker_state: TrackerState::new(
+                own_peer_id,
+                announce_list,
+                listening_torrent_wire_protocol_port,
+                info_hash,
+            ),
             bandwidth_tracker: BandwidthTracker::new(),
             piece_requestor: PieceRequestor::new(),
 
