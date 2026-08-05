@@ -4,10 +4,7 @@ use crate::{
     dht::dht_manager::ToDhtManagerMsg,
     manager::{
         peer_handler::{self, ToPeerMsg},
-        torrent_manager::{
-            DHT_NEW_PEER_COOL_OFF_PERIOD, TorrentManager, tracker_requestor::TrackeRequestContext,
-            util::should_choke,
-        },
+        torrent_manager::{DHT_NEW_PEER_COOL_OFF_PERIOD, TorrentManager, util::should_choke},
     },
     torrent_protocol::wire_protocol::Message,
 };
@@ -224,11 +221,14 @@ impl TorrentManager {
 
     async fn send_status_to_tracker(&mut self) {
         self.tracker_state
-            .async_update_to_tracker(TrackeRequestContext {
-                torrent_data_status: &self.torrent_data_status,
-                peers_state: &self.peers_state,
-                bandwidth_tracker: &self.bandwidth_tracker,
-            })
+            .async_update_to_tracker(
+                self.peers_state.advertised_peers.clone(),
+                self.torrent_data_status.as_ref().map(|f| f.bytes_left()),
+                (
+                    self.bandwidth_tracker.uploaded_bytes(),
+                    self.bandwidth_tracker.downloaded_bytes(),
+                ),
+            )
             .await;
     }
 }

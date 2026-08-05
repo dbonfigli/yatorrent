@@ -3,10 +3,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use crate::manager::bandwidth_tracker::BandwidthTracker;
 use crate::manager::peer_handler::PeerAddr;
-use crate::manager::torrent_manager::PeersState;
-use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::tracker;
 use crate::tracker::{Event, NoTrackerError, Response, TrackerClient};
 
@@ -15,12 +12,6 @@ pub(super) struct TrackerState {
     last_tracker_request_time: SystemTime,
     completed_sent_to_tracker: bool,
     info_hash: [u8; 20],
-}
-
-pub(super) struct TrackeRequestContext<'a, 'b, 'c> {
-    pub(super) torrent_data_status: &'a Option<TorrentDataStatus>,
-    pub(super) peers_state: &'b PeersState,
-    pub(super) bandwidth_tracker: &'c BandwidthTracker,
 }
 
 impl TrackerState {
@@ -43,9 +34,11 @@ impl TrackerState {
     }
 
     // used to send recurring updates to tracker
-    pub(super) async fn async_update_to_tracker<'a, 'b, 'c>(
+    pub(super) async fn async_update_to_tracker(
         &mut self,
-        context: TrackeRequestContext<'a, 'b, 'c>,
+        advertised_peers: Arc<Mutex<HashMap<String, (tracker::Peer, SystemTime)>>>,
+        bytes_left: Option<u64>,
+        uploaded_downloaded_bytes: (u64, u64),
     ) {
         let tracker_client_mg = self
             .tracker_client
@@ -60,16 +53,24 @@ impl TrackerState {
                 } else {
                     Event::None
                 };
-                self.async_request_to_tracker(event, context).await;
+                self.async_request_to_tracker(
+                    event,
+                    advertised_peers,
+                    bytes_left,
+                    uploaded_downloaded_bytes,
+                )
+                .await;
             }
         }
     }
 
     // used for specific events
-    pub(super) async fn async_request_to_tracker<'a, 'b, 'c>(
+    pub(super) async fn async_request_to_tracker(
         &mut self,
         event: Event,
-        context: TrackeRequestContext<'a, 'b, 'c>,
+        advertised_peers: Arc<Mutex<HashMap<String, (tracker::Peer, SystemTime)>>>,
+        bytes_left: Option<u64>,
+        uploaded_downloaded_bytes: (u64, u64),
     ) {
         if event == Event::Completed {
             if self.completed_sent_to_tracker {
@@ -79,11 +80,7 @@ impl TrackerState {
         }
 
         self.last_tracker_request_time = SystemTime::now();
-        let bytes_left = context.torrent_data_status.as_ref().map(|f| f.bytes_left());
-        let uploaded_bytes = context.bandwidth_tracker.uploaded_bytes();
-        let downloaded_bytes = context.bandwidth_tracker.downloaded_bytes();
-        let advertised_peers: Arc<Mutex<HashMap<String, (tracker::Peer, SystemTime)>>> =
-            context.peers_state.advertised_peers.clone();
+        let (uploaded_bytes, downloaded_bytes) = uploaded_downloaded_bytes;
         let tracker_client_mg = self
             .tracker_client
             .lock()

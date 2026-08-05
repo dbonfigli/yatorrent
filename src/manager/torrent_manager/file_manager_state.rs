@@ -8,7 +8,7 @@ use crate::{
     manager::{
         peer::Peer,
         peer_handler::{ToNewIncomingPeersHandlerMsg, ToPeerMsg},
-        torrent_manager::{TorrentManager, tracker_requestor::TrackeRequestContext},
+        torrent_manager::TorrentManager,
     },
     persistence::{
         file_manager::{
@@ -156,11 +156,12 @@ impl TorrentManager {
                         self.tracker_state
                             .async_request_to_tracker(
                                 Event::Completed,
-                                TrackeRequestContext {
-                                    torrent_data_status: &self.torrent_data_status,
-                                    peers_state: &self.peers_state,
-                                    bandwidth_tracker: &self.bandwidth_tracker,
-                                },
+                                self.peers_state.advertised_peers.clone(),
+                                self.torrent_data_status.as_ref().map(|f| f.bytes_left()),
+                                (
+                                    self.bandwidth_tracker.uploaded_bytes(),
+                                    self.bandwidth_tracker.downloaded_bytes(),
+                                ),
                             )
                             .await;
                         if self.torrent_manager_config.exit_when_complete {
