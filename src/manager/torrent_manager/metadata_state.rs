@@ -17,7 +17,7 @@ use crate::{
 };
 
 enum MetadataMessageHandlingOutcome {
-    MetadatComplete {
+    MetadataComplete {
         piece_length: u64,
         piece_hashes: Vec<[u8; 20]>,
         file_list: Vec<(String, u64)>,
@@ -225,7 +225,7 @@ impl MetadataState {
 
         match infodict::get_infodict(&info_dict) {
             Ok((piece_length, piece_hashes, metainfo_file)) => {
-                return MetadataMessageHandlingOutcome::MetadatComplete {
+                return MetadataMessageHandlingOutcome::MetadataComplete {
                     piece_length,
                     piece_hashes,
                     file_list: metainfo::get_files(&metainfo_file),
@@ -264,7 +264,7 @@ impl TorrentManager {
             )
             .await;
 
-        if let MetadataMessageHandlingOutcome::MetadatComplete {
+        if let MetadataMessageHandlingOutcome::MetadataComplete {
             piece_length,
             piece_hashes,
             file_list,
