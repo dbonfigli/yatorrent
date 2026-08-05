@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::SystemTime;
 
 use anyhow::Error;
@@ -9,7 +10,7 @@ use crate::manager::peer::{
     METADATA_MESSAGE_DATA, METADATA_MESSAGE_REJECT, METADATA_MESSAGE_REQUEST, MetadataMessage, Peer,
 };
 use crate::manager::peer_handler::{PeerAddr, ToNewIncomingPeersHandlerMsg};
-use crate::manager::torrent_manager::{FileManagerState, PeersState, TorrentManagerConfig};
+use crate::manager::torrent_manager::{FileManagerState, PeersState};
 use crate::metadata::infodict;
 use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::{
@@ -17,20 +18,28 @@ use crate::{
     metadata::metainfo::get_files,
 };
 
-pub(super) struct ExtendedMetadataMessageContext<'a, 'b, 'c, 'd> {
-    pub(super) torrent_manager_config: &'a TorrentManagerConfig,
-    pub(super) peers_state: &'b mut PeersState,
-    pub(super) file_manager_state: &'c mut FileManagerState,
-    pub(super) torrent_data_status: &'d mut Option<TorrentDataStatus>,
+pub(super) struct ExtendedMetadataMessageContext<'a, 'b, 'c> {
+    pub(super) peers_state: &'a mut PeersState,
+    pub(super) file_manager_state: &'b mut FileManagerState,
+    pub(super) torrent_data_status: &'c mut Option<TorrentDataStatus>,
 }
 
 pub(super) struct MetadataState {
+    torrent_info_hash: [u8; 20],
+    torrent_base_path: PathBuf,
     metadata_handler: MetadataHandler,
 }
 
 impl MetadataState {
-    pub(super) fn new(raw_metadata_size: Option<i64>, raw_metadata: Option<Vec<u8>>) -> Self {
+    pub(super) fn new(
+        raw_metadata_size: Option<i64>,
+        raw_metadata: Option<Vec<u8>>,
+        torrent_info_hash: [u8; 20],
+        torrent_base_path: PathBuf,
+    ) -> Self {
         MetadataState {
+            torrent_info_hash,
+            torrent_base_path,
             metadata_handler: MetadataHandler::new(raw_metadata_size, raw_metadata),
         }
     }
@@ -71,12 +80,12 @@ impl MetadataState {
         }
     }
 
-    pub(super) async fn handle_receive_extended_message_ut_metadata<'a, 'b, 'c, 'd>(
+    pub(super) async fn handle_receive_extended_message_ut_metadata<'a, 'b, 'c>(
         &mut self,
         value: Value,
         peer_addr: String,
         additional_data: Vec<u8>,
-        context: ExtendedMetadataMessageContext<'a, 'b, 'c, 'd>,
+        context: ExtendedMetadataMessageContext<'a, 'b, 'c>,
     ) {
         let d = match value {
             Dict(d, _, _) => d,
@@ -170,12 +179,12 @@ impl MetadataState {
         }
     }
 
-    async fn handle_receive_extended_message_metadata_message_data<'a, 'b, 'c, 'd>(
+    async fn handle_receive_extended_message_metadata_message_data<'a, 'b, 'c>(
         &mut self,
         raw_metadata_size: i64,
         piece_idx: i64,
         piece_data: Vec<u8>,
-        context: ExtendedMetadataMessageContext<'a, 'b, 'c, 'd>,
+        context: ExtendedMetadataMessageContext<'a, 'b, 'c>,
     ) {
         let raw_metadata_size = match self.metadata_handler.raw_metadata_size() {
             Some(raw_metadata_size) => raw_metadata_size,
@@ -207,7 +216,7 @@ impl MetadataState {
 
         // check hash
         let info_hash: [u8; 20] = Sha1::digest(raw_metadata).into();
-        if info_hash != context.torrent_manager_config.info_hash {
+        if info_hash != self.torrent_info_hash {
             self.corrupted_metadata(Error::msg("hash mismatch"));
             return;
         }
@@ -228,7 +237,7 @@ impl MetadataState {
 
                 // start file manager
                 *context.torrent_data_status = Some(context.file_manager_state.start(
-                    context.torrent_manager_config.base_path.as_path(),
+                    self.torrent_base_path.as_path(),
                     get_files(&m),
                     piece_length,
                     piece_hashes,

@@ -50,7 +50,6 @@ const DHT_MANAGER_TO_TORRENT_MANAGER_CAPACITY: usize = 1000;
 const DHT_NEW_PEER_COOL_OFF_PERIOD: Duration = Duration::from_secs(15);
 
 struct TorrentManagerConfig {
-    base_path: PathBuf,
     info_hash: [u8; 20],
     own_peer_id: String,
     listening_torrent_wire_protocol_port: u16,
@@ -151,7 +150,6 @@ impl TorrentManager {
 
         let mut torrent_manager = TorrentManager {
             torrent_manager_config: TorrentManagerConfig {
-                base_path: PathBuf::from(base_path),
                 info_hash,
                 own_peer_id: own_peer_id.clone(),
                 listening_torrent_wire_protocol_port,
@@ -180,6 +178,8 @@ impl TorrentManager {
             metadata_state: MetadataState::new(
                 raw_metadata.as_ref().map(|m| m.len() as i64).or(None),
                 raw_metadata,
+                info_hash,
+                PathBuf::from(base_path),
             ),
             tracker_state: TrackerState::new(
                 own_peer_id,

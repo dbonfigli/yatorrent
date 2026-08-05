@@ -396,7 +396,6 @@ impl TorrentManager {
                         peer_addr,
                         additional_data,
                         ExtendedMetadataMessageContext {
-                            torrent_manager_config: &self.torrent_manager_config,
                             peers_state: &mut self.peers_state,
                             file_manager_state: &mut self.file_manager_state,
                             torrent_data_status: &mut self.torrent_data_status,
