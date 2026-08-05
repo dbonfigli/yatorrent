@@ -16,7 +16,7 @@ use crate::manager::peer_handler;
 use crate::manager::peer_handler::{PeerAddr, PeersToManagerMsg, ToNewIncomingPeersHandlerMsg};
 use crate::manager::piece_requestor::PieceRequestor;
 use crate::manager::rate_limiter::RateLimiter;
-use crate::manager::torrent_manager::pex::PexEvent;
+use crate::manager::torrent_manager::pex::PexHandler;
 use crate::manager::torrent_manager::tracker_requestor::TrackerState;
 use crate::persistence::file_manager::{
     ReadPieceBlockRequest, ReadPieceBlockResponse, WritePieceBlockRequest, WritePieceBlockResponse,
@@ -132,7 +132,7 @@ pub struct TorrentManager {
     tracker_state: TrackerState,
     bandwidth_tracker: BandwidthTracker,
     piece_requestor: PieceRequestor,
-    added_dropped_peer_events: Vec<(SystemTime, PeerAddr, PexEvent)>, // time of event, address of peer for this event, pex event. This field is used to support pex
+    pex_handler: PexHandler,
     request_timeout: Duration,
     outstanding_read_ops: usize,
 }
@@ -227,8 +227,7 @@ impl TorrentManager {
             ),
             bandwidth_tracker: BandwidthTracker::new(),
             piece_requestor: PieceRequestor::new(),
-
-            added_dropped_peer_events: Vec::new(),
+            pex_handler: PexHandler::new(),
             request_timeout: BASE_REQUEST_TIMEOUT,
             outstanding_read_ops: 0,
             rate_limiter_state: RateLimiterState {

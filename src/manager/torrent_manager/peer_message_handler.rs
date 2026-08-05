@@ -5,7 +5,7 @@ use crate::{
         BLOCK_SIZE_B,
         metadata_handler::MetadataHandler,
         peer_handler::ToPeerMsg,
-        torrent_manager::{TorrentManager, util::should_choke},
+        torrent_manager::{TorrentManager, pex, util::should_choke},
     },
     persistence::file_manager::{ReadPieceBlockRequest, WritePieceBlockRequest},
     torrent_protocol::wire_protocol::{BlockRequest, Message},
@@ -378,7 +378,11 @@ impl TorrentManager {
             }
             _ if extension_id == peer.get_ut_pex_id() => {
                 // this is an ut_pex extended message
-                self.handle_receive_extended_message_ut_pex(extended_message, peer_addr);
+                pex::handle_receive_extended_message_ut_pex(
+                    extended_message,
+                    peer_addr,
+                    self.peers_state.advertised_peers.clone(),
+                );
             }
             _ if extension_id == peer.get_ut_metadata_id() => {
                 // this is an ut_metadata extended message

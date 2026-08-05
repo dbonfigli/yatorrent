@@ -154,7 +154,7 @@ impl TorrentManager {
             ),
         );
         log::debug!("new peer initialized: {peer_addr}");
-        self.new_pex_event(peer_addr, PexEvent::Added);
+        self.pex_handler.new_pex_event(peer_addr, PexEvent::Added);
         if self.peers_state.peers.len() > self.torrent_manager_config.max_connected_peers {
             log::trace!("stop accepting new peers");
             self.peers_state

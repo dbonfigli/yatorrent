@@ -30,7 +30,9 @@ impl TorrentManager {
         self.unchoke_peers().await;
         self.check_endgame_status().await;
         self.request_new_peers_to_dht_manager().await;
-        self.send_pex_messages().await;
+        self.pex_handler
+            .send_pex_messages(&mut self.peers_state.peers)
+            .await;
         self.send_metadata_reqs().await;
         self.send_pieces_reqs().await;
     }
