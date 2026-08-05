@@ -17,7 +17,7 @@ pub(super) fn should_choke(
         || !file_manager_initialized
         || outstanding_incoming_piece_block_requests_for_this_peer
             > MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER as usize
-        || file_manager_state.should_choke()
+        || file_manager_state.read_saturated()
 }
 
 impl TorrentManager {

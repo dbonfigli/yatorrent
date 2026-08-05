@@ -154,7 +154,7 @@ impl FileManagerState {
         self.outstanding_read_ops
     }
 
-    pub(super) fn should_choke(&self) -> bool {
+    pub(super) fn read_saturated(&self) -> bool {
         self.read_requests_tx.capacity() == 0
             || self.outstanding_read_ops > MAX_OUTSTANDING_READ_OPS
     }
