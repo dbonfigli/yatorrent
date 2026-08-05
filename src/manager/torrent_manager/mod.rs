@@ -46,6 +46,7 @@ const BASE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const TO_NEW_INCOMING_PEERS_HANDLER_CHANNEL_CAPACITY: usize = 100;
 
 struct TorrentManagerConfig {
+    base_path: PathBuf,
     info_hash: [u8; 20],
     own_peer_id: String,
     listening_torrent_wire_protocol_port: u16,
@@ -136,6 +137,7 @@ impl TorrentManager {
 
         let mut torrent_manager = TorrentManager {
             torrent_manager_config: TorrentManagerConfig {
+                base_path: PathBuf::from(base_path),
                 info_hash,
                 own_peer_id: own_peer_id.clone(),
                 listening_torrent_wire_protocol_port,
@@ -159,7 +161,6 @@ impl TorrentManager {
                 raw_metadata.as_ref().map(|m| m.len() as i64).or(None),
                 raw_metadata,
                 info_hash,
-                PathBuf::from(base_path),
             ),
             tracker_state: TrackerState::new(
                 own_peer_id,

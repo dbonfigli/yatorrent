@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::time::SystemTime;
 
 use anyhow::Error;
@@ -10,23 +9,24 @@ use crate::manager::peer::{
     METADATA_MESSAGE_DATA, METADATA_MESSAGE_REJECT, METADATA_MESSAGE_REQUEST, MetadataMessage, Peer,
 };
 use crate::manager::peer_handler::{PeerAddr, ToNewIncomingPeersHandlerMsg};
-use crate::manager::torrent_manager::{FileManagerState, PeersState};
+use crate::manager::torrent_manager::TorrentManager;
 use crate::metadata::infodict;
-use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::{
     bencoding::Value::{self, Dict, Int},
-    metadata::metainfo::get_files,
+    metadata::metainfo,
 };
 
-pub(super) struct ExtendedMetadataMessageContext<'a, 'b, 'c> {
-    pub(super) peers_state: &'a mut PeersState,
-    pub(super) file_manager_state: &'b mut FileManagerState,
-    pub(super) torrent_data_status: &'c mut Option<TorrentDataStatus>,
+enum MetadataMessageHandlingOutcome {
+    MetadatComplete {
+        piece_length: u64,
+        piece_hashes: Vec<[u8; 20]>,
+        file_list: Vec<(String, u64)>,
+    },
+    Other,
 }
 
 pub(super) struct MetadataState {
     torrent_info_hash: [u8; 20],
-    torrent_base_path: PathBuf,
     metadata_handler: MetadataHandler,
 }
 
@@ -35,11 +35,9 @@ impl MetadataState {
         raw_metadata_size: Option<i64>,
         raw_metadata: Option<Vec<u8>>,
         torrent_info_hash: [u8; 20],
-        torrent_base_path: PathBuf,
     ) -> Self {
         MetadataState {
             torrent_info_hash,
-            torrent_base_path,
             metadata_handler: MetadataHandler::new(raw_metadata_size, raw_metadata),
         }
     }
@@ -80,20 +78,20 @@ impl MetadataState {
         }
     }
 
-    pub(super) async fn handle_receive_extended_message_ut_metadata<'a, 'b, 'c>(
+    async fn handle_receive_extended_message_ut_metadata(
         &mut self,
         value: Value,
         peer_addr: String,
         additional_data: Vec<u8>,
-        context: ExtendedMetadataMessageContext<'a, 'b, 'c>,
-    ) {
+        peers: &mut HashMap<PeerAddr, Peer>,
+    ) -> MetadataMessageHandlingOutcome {
         let d = match value {
             Dict(d, _, _) => d,
             _ => {
                 log::debug!(
                     "got an ut_metadataextension message from {peer_addr}, it was a bencoded value but not a dict dict, ignoring it"
                 );
-                return;
+                return MetadataMessageHandlingOutcome::Other;
             }
         };
         let msg_type = match d.get(&b"msg_type".to_vec()) {
@@ -102,7 +100,7 @@ impl MetadataState {
                 log::debug!(
                     "got an ut_metadataextension message from {peer_addr} but no msg_type key was found in the bencoded dict, ignoring it"
                 );
-                return;
+                return MetadataMessageHandlingOutcome::Other;
             }
         };
         let piece = match d.get(&b"piece".to_vec()) {
@@ -111,14 +109,14 @@ impl MetadataState {
                 log::debug!(
                     "got an ut_metadataextension message from {peer_addr} but no piece key was found in the bencoded dict, ignoring it"
                 );
-                return;
+                return MetadataMessageHandlingOutcome::Other;
             }
         };
         match *msg_type {
             METADATA_MESSAGE_REQUEST => {
-                let peer = match context.peers_state.peers.get_mut(&peer_addr) {
+                let peer = match peers.get_mut(&peer_addr) {
                     Some(peer) => peer,
-                    None => return,
+                    None => return MetadataMessageHandlingOutcome::Other,
                 };
                 self.handle_receive_extended_message_metadata_message_request(peer, *piece)
                     .await;
@@ -130,19 +128,19 @@ impl MetadataState {
                         log::debug!(
                             "got a metadata message data without the required total_size field or total_size is not an integer, ignoring it"
                         );
-                        return;
+                        return MetadataMessageHandlingOutcome::Other;
                     }
                 };
-                self.handle_receive_extended_message_metadata_message_data(
-                    *metadata_size,
-                    *piece,
-                    additional_data,
-                    context,
-                )
-                .await;
+                return self
+                    .handle_receive_extended_message_metadata_message_data(
+                        *metadata_size,
+                        *piece,
+                        additional_data,
+                    )
+                    .await;
             }
             METADATA_MESSAGE_REJECT => {
-                if let Some(peer) = context.peers_state.peers.get_mut(&peer_addr) {
+                if let Some(peer) = peers.get_mut(&peer_addr) {
                     peer.set_last_metadata_request_rejection(SystemTime::now());
                 }
             }
@@ -152,6 +150,7 @@ impl MetadataState {
                 );
             }
         }
+        MetadataMessageHandlingOutcome::Other
     }
 
     async fn handle_receive_extended_message_metadata_message_request(
@@ -179,25 +178,20 @@ impl MetadataState {
         }
     }
 
-    async fn handle_receive_extended_message_metadata_message_data<'a, 'b, 'c>(
+    async fn handle_receive_extended_message_metadata_message_data(
         &mut self,
         raw_metadata_size: i64,
         piece_idx: i64,
         piece_data: Vec<u8>,
-        context: ExtendedMetadataMessageContext<'a, 'b, 'c>,
-    ) {
-        let raw_metadata_size = match self.metadata_handler.raw_metadata_size() {
-            Some(raw_metadata_size) => raw_metadata_size,
-            None => {
-                // we do not know the metadata size yet, take notes
-                self.metadata_handler = MetadataHandler::new(Some(raw_metadata_size), None);
-                raw_metadata_size
-            }
-        };
+    ) -> MetadataMessageHandlingOutcome {
+        if self.metadata_handler.raw_metadata_size().is_none() {
+            // we do not know the metadata size yet, take notes
+            self.metadata_handler = MetadataHandler::new(Some(raw_metadata_size), None);
+        }
 
         if self.metadata_handler.full_metadata_known() || piece_idx < 0 {
             // we are not interested in this message
-            return;
+            return MetadataMessageHandlingOutcome::Other;
         }
 
         self.metadata_handler
@@ -205,7 +199,7 @@ impl MetadataState {
 
         // check if metadata is complete
         if !self.metadata_handler.full_metadata_known() {
-            return;
+            return MetadataMessageHandlingOutcome::Other;
         }
 
         let raw_metadata = self
@@ -218,70 +212,28 @@ impl MetadataState {
         let info_hash: [u8; 20] = Sha1::digest(raw_metadata).into();
         if info_hash != self.torrent_info_hash {
             self.corrupted_metadata(Error::msg("hash mismatch"));
-            return;
+            return MetadataMessageHandlingOutcome::Other;
         }
 
         let info_dict = match Value::new(raw_metadata) {
             Dict(info_dict, _, _) => info_dict,
             _ => {
                 self.corrupted_metadata(Error::msg("not a bencoded dict"));
-                return;
+                return MetadataMessageHandlingOutcome::Other;
             }
         };
 
         match infodict::get_infodict(&info_dict) {
-            Ok((piece_length, piece_hashes, m)) => {
-                log::warn!(
-                    "metadata download completed, we can now start downloading the actual torrent data..."
-                );
-
-                // start file manager
-                *context.torrent_data_status = Some(context.file_manager_state.start(
-                    self.torrent_base_path.as_path(),
-                    get_files(&m),
+            Ok((piece_length, piece_hashes, metainfo_file)) => {
+                return MetadataMessageHandlingOutcome::MetadatComplete {
                     piece_length,
                     piece_hashes,
-                ));
-
-                // update new incoming peers handler with new data info
-                context
-                    .peers_state
-                    .to_new_incoming_peers_handler_tx
-                    .send(ToNewIncomingPeersHandlerMsg::TorrentDataInitialized((
-                        raw_metadata_size,
-                        context
-                            .torrent_data_status
-                            .as_mut()
-                            .expect("initialized few lines above")
-                            .current_piece_completion_status(),
-                    )))
-                    .await
-                    .expect("to_new_incoming_peers_handler_tx receiver half closed");
-
-                // we finally have the metadata and can exchange files
-                // we discarded have messages (we could not save them because we could not know how many pieces there were in total)
-                // and, most importantly, bitfield messages from peers till now, so, let's disconnect from the current peers:
-                // the reconnection will trigger the necessary bitfield message that we need to request pieces
-                // let's also ignore the last connection attempt for connected peers
-                log::warn!(
-                    "resetting current connected peers to retrieve which block each peer has..."
-                );
-                let mut advertised_peers_mg = context
-                    .peers_state
-                    .advertised_peers
-                    .lock()
-                    .expect("another user panicked while holding the lock");
-                for (peer_addr, _) in context.peers_state.peers.iter() {
-                    if let Some((advertised_peer, _)) = advertised_peers_mg.remove(peer_addr) {
-                        advertised_peers_mg
-                            .insert(peer_addr.clone(), (advertised_peer, SystemTime::UNIX_EPOCH));
-                    }
-                }
-                drop(advertised_peers_mg);
-                context.peers_state.peers = HashMap::new();
+                    file_list: metainfo::get_files(&metainfo_file),
+                };
             }
             Err(e) => {
                 self.corrupted_metadata(e);
+                return MetadataMessageHandlingOutcome::Other;
             }
         }
     }
@@ -292,5 +244,80 @@ impl MetadataState {
             error
         );
         self.metadata_handler = MetadataHandler::new(None, None);
+    }
+}
+
+impl TorrentManager {
+    pub(super) async fn handle_receive_extended_message_ut_metadata(
+        &mut self,
+        value: Value,
+        peer_addr: String,
+        additional_data: Vec<u8>,
+    ) {
+        let outcome = self
+            .metadata_state
+            .handle_receive_extended_message_ut_metadata(
+                value,
+                peer_addr,
+                additional_data,
+                &mut self.peers_state.peers,
+            )
+            .await;
+
+        if let MetadataMessageHandlingOutcome::MetadatComplete {
+            piece_length,
+            piece_hashes,
+            file_list,
+        } = outcome
+        {
+            log::warn!(
+                "metadata download completed, we can now start downloading the actual torrent data..."
+            );
+
+            // start file manager
+            self.torrent_data_status = Some(self.file_manager_state.start(
+                self.torrent_manager_config.base_path.as_path(),
+                file_list,
+                piece_length,
+                piece_hashes,
+            ));
+
+            // update new incoming peers handler with new data info
+            self.peers_state
+                .to_new_incoming_peers_handler_tx
+                .send(ToNewIncomingPeersHandlerMsg::TorrentDataInitialized((
+                    self.metadata_state
+                        .raw_metadata_size()
+                        .expect("it must exist, full metadata is known"),
+                    self.torrent_data_status
+                        .as_ref()
+                        .expect("initialized few lines above")
+                        .current_piece_completion_status(),
+                )))
+                .await
+                .expect("to_new_incoming_peers_handler_tx receiver half closed");
+
+            // we finally have the metadata and can exchange files
+            // we discarded have messages (we could not save them because we could not know how many pieces there were in total)
+            // and, most importantly, bitfield messages from peers till now, so, let's disconnect from the current peers:
+            // the reconnection will trigger the necessary bitfield message that we need to request pieces
+            // let's also ignore the last connection attempt for connected peers
+            log::warn!(
+                "resetting current connected peers to retrieve which block each peer has..."
+            );
+            let mut advertised_peers_mg = self
+                .peers_state
+                .advertised_peers
+                .lock()
+                .expect("another user panicked while holding the lock");
+            for (peer_addr, _) in self.peers_state.peers.iter() {
+                if let Some((advertised_peer, _)) = advertised_peers_mg.remove(peer_addr) {
+                    advertised_peers_mg
+                        .insert(peer_addr.clone(), (advertised_peer, SystemTime::UNIX_EPOCH));
+                }
+            }
+            drop(advertised_peers_mg);
+            self.peers_state.peers = HashMap::new();
+        }
     }
 }
