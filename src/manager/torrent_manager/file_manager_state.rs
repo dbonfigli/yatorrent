@@ -1,5 +1,9 @@
 use std::process;
 
+use tokio::sync::mpsc::{
+    self, Receiver, Sender, UnboundedReceiver, UnboundedSender, error::SendError,
+};
+
 use crate::{
     manager::{
         peer::Peer,
@@ -7,7 +11,10 @@ use crate::{
         torrent_manager::{TorrentManager, tracker_requestor::TrackeRequestContext},
     },
     persistence::{
-        file_manager::{ReadPieceBlockResponse, ShaCorruptedError, WritePieceBlockResponse},
+        file_manager::{
+            self, ReadPieceBlockRequest, ReadPieceBlockResponse, ShaCorruptedError,
+            WritePieceBlockRequest, WritePieceBlockResponse,
+        },
         torrent_data_status::TorrentDataStatus,
     },
     torrent_protocol::wire_protocol::Message,
@@ -15,6 +22,111 @@ use crate::{
 };
 
 const MAX_CORRUPTION_ERRORS: u32 = 20; // max sha1 corruption errors on blocks a peer can have before marking it as bad
+
+// the number of enqueued disk read operations requests.
+// This should be > than MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER, otherwise a single peer that is righfully sending the max number of block requets we advertise will lead to it being chocked (when read reqs channel cap is 0)
+const READ_REQUESTS_CHANNEL_CAPACITY: usize = 2500;
+// the number of enqueued disk writes operations requests
+const WRITE_REQUESTS_CHANNEL_CAPACITY: usize = 200;
+
+pub(super) struct FileManagerState {
+    read_requests_tx: Sender<ReadPieceBlockRequest>,
+    read_requests_rx: Option<Receiver<ReadPieceBlockRequest>>, // optional bc we will move it to the file manager handler at start
+    // for read disk operations, the flow is like this:
+    // torrent manager (read_requests channel) ->
+    //   file manager (read_responses channel) ->
+    //     torrent manager
+    //
+    // if read_responses was bounded and is full, and therefore file manager is blocked,
+    // also read_requests can become soon after full (because file manager is not dequeuing)
+    // causing a deadlock on torrent manager in case it wants to send a new message to read_responses.
+    //
+    // To avoid this, we use unbounded channels.
+    // Outstanding read requests are globally bounded anyway by MAX_OUTSTANDING_READ_OPS
+    // so the memory is bound to 16KB x 3000 = ~46MB.
+    read_responses_tx: UnboundedSender<ReadPieceBlockResponse>,
+    pub(super) read_responses_rx: UnboundedReceiver<ReadPieceBlockResponse>,
+    write_requests_tx: Sender<WritePieceBlockRequest>,
+    write_requests_rx: Option<Receiver<WritePieceBlockRequest>>, // optional bc we will move it to the file manager handler at start
+    // unbounded for the same reason as read_responses, without global caps since the messages are really small for this channel
+    write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
+    pub(super) write_responses_rx: UnboundedReceiver<WritePieceBlockResponse>,
+}
+
+impl FileManagerState {
+    pub(super) fn new() -> Self {
+        let (read_requests_tx, read_requests_rx) = mpsc::channel(READ_REQUESTS_CHANNEL_CAPACITY);
+        let (read_responses_tx, read_responses_rx) = mpsc::unbounded_channel();
+        let (write_requests_tx, write_requests_rx) = mpsc::channel(WRITE_REQUESTS_CHANNEL_CAPACITY);
+        let (write_responses_tx, write_responses_rx) = mpsc::unbounded_channel();
+
+        FileManagerState {
+            read_requests_tx,
+            read_requests_rx: Some(read_requests_rx),
+            read_responses_tx,
+            read_responses_rx,
+            write_requests_tx,
+            write_requests_rx: Some(write_requests_rx),
+            write_responses_tx,
+            write_responses_rx,
+        }
+    }
+
+    pub(super) fn start(
+        &mut self,
+        base_path: &std::path::Path,
+        file_list: Vec<(String, u64)>,
+        piece_length: u64,
+        piece_hashes: Vec<[u8; 20]>,
+    ) -> TorrentDataStatus {
+        let read_requests_rx = self
+            .read_requests_rx
+            .take()
+            .expect("no read_requests_rx, has start been called twice?");
+        let write_requests_rx = self
+            .write_requests_rx
+            .take()
+            .expect("no write_requests_rx, has start been called twice?");
+        let read_responses_tx = self.read_responses_tx.clone();
+        let write_responses_tx = self.write_responses_tx.clone();
+        file_manager::start_file_manager(
+            base_path,
+            file_list,
+            piece_length,
+            piece_hashes,
+            read_requests_rx,
+            read_responses_tx,
+            write_requests_rx,
+            write_responses_tx,
+        )
+    }
+
+    pub(super) fn inflight_write_reqs(&self) -> usize {
+        WRITE_REQUESTS_CHANNEL_CAPACITY - self.write_requests_tx.capacity()
+    }
+
+    pub(super) fn inflight_read_reqs(&self) -> usize {
+        READ_REQUESTS_CHANNEL_CAPACITY - self.read_requests_tx.capacity()
+    }
+
+    pub(super) async fn send_read_req(
+        &mut self,
+        read_req: ReadPieceBlockRequest,
+    ) -> Result<(), SendError<ReadPieceBlockRequest>> {
+        self.read_requests_tx.send(read_req).await
+    }
+
+    pub(super) async fn send_write_req(
+        &mut self,
+        write_req: WritePieceBlockRequest,
+    ) -> Result<(), SendError<WritePieceBlockRequest>> {
+        self.write_requests_tx.send(write_req).await
+    }
+
+    pub(super) fn read_requests_capacity(&self) -> usize {
+        self.read_requests_tx.capacity()
+    }
+}
 
 impl TorrentManager {
     pub(super) async fn handle_write_piece_block_response(

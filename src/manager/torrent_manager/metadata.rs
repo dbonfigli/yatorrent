@@ -11,7 +11,6 @@ use crate::manager::peer::{
 use crate::manager::peer_handler::{PeerAddr, ToNewIncomingPeersHandlerMsg};
 use crate::manager::torrent_manager::{FileManagerState, PeersState, TorrentManagerConfig};
 use crate::metadata::infodict;
-use crate::persistence::file_manager::start_file_manager;
 use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::{
     bencoding::Value::{self, Dict, Int},
@@ -228,27 +227,11 @@ impl MetadataState {
                 );
 
                 // start file manager
-                let read_requests_rx = context
-                    .file_manager_state
-                    .read_requests_rx
-                    .take()
-                    .expect("no read_requests_rx, has start been called twice?");
-                let write_requests_rx = context
-                    .file_manager_state
-                    .write_requests_rx
-                    .take()
-                    .expect("no write_requests_rx, has start been called twice?");
-                let read_responses_tx = context.file_manager_state.read_responses_tx.clone();
-                let write_responses_tx = context.file_manager_state.write_responses_tx.clone();
-                *context.torrent_data_status = Some(start_file_manager(
+                *context.torrent_data_status = Some(context.file_manager_state.start(
                     context.torrent_manager_config.base_path.as_path(),
                     get_files(&m),
                     piece_length,
                     piece_hashes,
-                    read_requests_rx,
-                    read_responses_tx,
-                    write_requests_rx,
-                    write_responses_tx,
                 ));
 
                 // update new incoming peers handler with new data info

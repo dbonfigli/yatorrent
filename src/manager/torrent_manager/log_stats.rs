@@ -5,10 +5,7 @@ use size::{Size, Style};
 
 use crate::manager::{
     peer::Peer,
-    torrent_manager::{
-        PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY, READ_REQUESTS_CHANNEL_CAPACITY, TorrentManager,
-        WRITE_REQUESTS_CHANNEL_CAPACITY,
-    },
+    torrent_manager::{PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY, TorrentManager},
 };
 
 const TIME_TO_CONSIDER_DOWNLOAD_STALLED: Duration = Duration::from_secs(15);
@@ -80,11 +77,9 @@ impl TorrentManager {
                     }),
             cur_ch_cap = PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY
                 - self.peers_state.peers_to_torrent_manager_tx.capacity(),
-            read_reqs = READ_REQUESTS_CHANNEL_CAPACITY
-                - self.file_manager_state.read_requests_tx.capacity(),
+            read_reqs = self.file_manager_state.inflight_read_reqs(),
             inflight_read_ops = self.outstanding_read_ops,
-            write_reqs = WRITE_REQUESTS_CHANNEL_CAPACITY
-                - self.file_manager_state.write_requests_tx.capacity(),
+            write_reqs = self.file_manager_state.inflight_write_reqs(),
         );
     }
 

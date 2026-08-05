@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime};
 use std::{iter, path::Path};
 
 use rand::RngExt;
-use tokio::sync::mpsc::{self, Receiver, Sender, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use crate::dht::dht_manager::{DhtManager, ToDhtManagerMsg};
 use crate::manager::bandwidth_tracker::BandwidthTracker;
@@ -15,18 +15,15 @@ use crate::manager::peer_handler;
 use crate::manager::peer_handler::{PeerAddr, PeersToManagerMsg, ToNewIncomingPeersHandlerMsg};
 use crate::manager::piece_requestor::PieceRequestor;
 use crate::manager::rate_limiter::RateLimiter;
+use crate::manager::torrent_manager::file_manager_state::FileManagerState;
 use crate::manager::torrent_manager::metadata::MetadataState;
 use crate::manager::torrent_manager::pex::PexHandler;
 use crate::manager::torrent_manager::tracker_requestor::TrackerState;
-use crate::persistence::file_manager::{
-    ReadPieceBlockRequest, ReadPieceBlockResponse, WritePieceBlockRequest, WritePieceBlockResponse,
-    start_file_manager,
-};
 use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::tracker;
 
 mod control_loop;
-mod file_manager_message_handler;
+mod file_manager_state;
 mod log_stats;
 mod metadata;
 mod peer_message_handler;
@@ -52,12 +49,6 @@ const TO_DHT_MANAGER_CHANNEL_CAPACITY: usize = 1000;
 const DHT_MANAGER_TO_TORRENT_MANAGER_CAPACITY: usize = 1000;
 const DHT_NEW_PEER_COOL_OFF_PERIOD: Duration = Duration::from_secs(15);
 
-// the number of enqueued disk read operations requests.
-// This should be > than MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER, otherwise a single peer that is righfully sending the max number of block requets we advertise will lead to it being chocked (when read reqs channel cap is 0)
-const READ_REQUESTS_CHANNEL_CAPACITY: usize = 2500;
-// the number of enqueued disk writes operations requests
-const WRITE_REQUESTS_CHANNEL_CAPACITY: usize = 200;
-
 struct TorrentManagerConfig {
     base_path: PathBuf,
     info_hash: [u8; 20],
@@ -72,30 +63,6 @@ struct TorrentManagerConfig {
     // risking to be choked by them because of this and generally being inefficient
     max_connected_peers: usize,
     exit_when_complete: bool,
-}
-
-struct FileManagerState {
-    read_requests_tx: Sender<ReadPieceBlockRequest>,
-    read_requests_rx: Option<Receiver<ReadPieceBlockRequest>>, // optional bc we will move it to the file manager handler at start
-    // for read disk operations, the flow is like this:
-    // torrent manager (read_requests channel) ->
-    //   file manager (read_responses channel) ->
-    //     torrent manager
-    //
-    // if read_responses was bounded and is full, and therefore file manager is blocked,
-    // also read_requests can become soon after full (because file manager is not dequeuing)
-    // causing a deadlock on torrent manager in case it wants to send a new message to read_responses.
-    //
-    // To avoid this, we use unbounded channels.
-    // Outstanding read requests are globally bounded anyway by MAX_OUTSTANDING_READ_OPS
-    // so the memory is bound to 16KB x 3000 = ~46MB.
-    read_responses_tx: UnboundedSender<ReadPieceBlockResponse>,
-    read_responses_rx: UnboundedReceiver<ReadPieceBlockResponse>,
-    write_requests_tx: Sender<WritePieceBlockRequest>,
-    write_requests_rx: Option<Receiver<WritePieceBlockRequest>>, // optional bc we will move it to the file manager handler at start
-    // unbounded for the same reason as read_responses, without global caps since the messages are really small for this channel
-    write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
-    write_responses_rx: UnboundedReceiver<WritePieceBlockResponse>,
 }
 
 struct DhtState {
@@ -182,11 +149,6 @@ impl TorrentManager {
         let (peers_to_torrent_manager_tx, peers_to_torrent_manager_rx) =
             mpsc::channel::<PeersToManagerMsg>(PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY);
 
-        let (read_requests_tx, read_requests_rx) = mpsc::channel(READ_REQUESTS_CHANNEL_CAPACITY);
-        let (read_responses_tx, read_responses_rx) = mpsc::unbounded_channel();
-        let (write_requests_tx, write_requests_rx) = mpsc::channel(WRITE_REQUESTS_CHANNEL_CAPACITY);
-        let (write_responses_tx, write_responses_rx) = mpsc::unbounded_channel();
-
         let mut torrent_manager = TorrentManager {
             torrent_manager_config: TorrentManagerConfig {
                 base_path: PathBuf::from(base_path),
@@ -236,43 +198,15 @@ impl TorrentManager {
                 upload_rate_limiter: max_upload_bandwidth
                     .map(|b| Arc::new(tokio::sync::Mutex::new(RateLimiter::new(b as u128)))),
             },
-            file_manager_state: FileManagerState {
-                read_requests_tx,
-                read_requests_rx: Some(read_requests_rx),
-                read_responses_tx,
-                read_responses_rx,
-                write_requests_tx,
-                write_requests_rx: Some(write_requests_rx),
-                write_responses_tx,
-                write_responses_rx,
-            },
+            file_manager_state: FileManagerState::new(),
         };
 
         if let Some((file_list, piece_length, piece_hashes)) = files_data {
-            let read_requests_rx = torrent_manager
-                .file_manager_state
-                .read_requests_rx
-                .take()
-                .expect("no read_requests_rx, has start been called twice?");
-            let write_requests_rx = torrent_manager
-                .file_manager_state
-                .write_requests_rx
-                .take()
-                .expect("no write_requests_rx, has start been called twice?");
-            let read_responses_tx = torrent_manager.file_manager_state.read_responses_tx.clone();
-            let write_responses_tx = torrent_manager
-                .file_manager_state
-                .write_responses_tx
-                .clone();
-            torrent_manager.torrent_data_status = Some(start_file_manager(
+            torrent_manager.torrent_data_status = Some(torrent_manager.file_manager_state.start(
                 base_path,
                 file_list,
                 piece_length,
                 piece_hashes,
-                read_requests_rx,
-                read_responses_tx,
-                write_requests_rx,
-                write_responses_tx,
             ));
         }
 

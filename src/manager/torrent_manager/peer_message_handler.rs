@@ -220,7 +220,7 @@ impl TorrentManager {
             && should_choke(
                 // todo: choking algorithm is really naive, must improve it to avoid saturating upload
                 self.peers_state.peers_to_torrent_manager_tx.capacity(),
-                self.file_manager_state.read_requests_tx.capacity(),
+                self.file_manager_state.read_requests_capacity(),
                 peer.get_outstanding_incoming_piece_block_requests(),
                 self.outstanding_read_ops,
                 true,
@@ -243,8 +243,7 @@ impl TorrentManager {
         self.outstanding_read_ops += 1;
         let _ = self
             .file_manager_state
-            .read_requests_tx
-            .send(ReadPieceBlockRequest {
+            .send_read_req(ReadPieceBlockRequest {
                 requestor_peer_addr: peer_addr,
                 piece_idx: block_request.piece_idx as usize,
                 block_begin: block_request.block_begin as u64,
@@ -507,8 +506,7 @@ impl TorrentManager {
         // send data to file manager to persist it
         let _ = self
             .file_manager_state
-            .write_requests_tx
-            .send(WritePieceBlockRequest {
+            .send_write_req(WritePieceBlockRequest {
                 requestor_peer_addr: peer_addr,
                 piece_idx: piece_idx as usize,
                 data,
