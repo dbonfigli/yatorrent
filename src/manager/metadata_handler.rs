@@ -7,8 +7,8 @@ use std::{
 use rand::seq::SliceRandom;
 use size::{Size, Style};
 
-use crate::manager::peer_handler::PeerAddr;
 use crate::manager::peer::Peer;
+use crate::manager::peer_handler::PeerAddr;
 
 const METADATA_PIECE_SIZE_B: usize = 16384;
 const PEER_METADATA_REQUEST_REJECTION_COOL_OFF_PERIOD: Duration = Duration::from_secs(30);
@@ -61,9 +61,11 @@ impl MetadataHandler {
     }
 
     pub fn full_metadata_known(&self) -> bool {
-        self.metadata_piece_download_status
-            .iter()
-            .all(|(completed, _, _)| *completed)
+        self.metadata_piece_download_status.len() != 0
+            && self
+                .metadata_piece_download_status
+                .iter()
+                .all(|(completed, _, _)| *completed)
     }
 
     pub fn raw_metadata_size(&self) -> Option<i64> {

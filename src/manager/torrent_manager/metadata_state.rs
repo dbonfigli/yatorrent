@@ -184,14 +184,14 @@ impl MetadataState {
         piece_idx: i64,
         piece_data: Vec<u8>,
     ) -> MetadataMessageHandlingOutcome {
-        if self.metadata_handler.raw_metadata_size().is_none() {
-            // we do not know the metadata size yet, take notes
-            self.metadata_handler = MetadataHandler::new(Some(raw_metadata_size), None);
-        }
-
         if self.metadata_handler.full_metadata_known() || piece_idx < 0 {
             // we are not interested in this message
             return MetadataMessageHandlingOutcome::Other;
+        }
+
+        if self.metadata_handler.raw_metadata_size().is_none() {
+            // we do not know the metadata size yet, take notes
+            self.metadata_handler = MetadataHandler::new(Some(raw_metadata_size), None);
         }
 
         self.metadata_handler
