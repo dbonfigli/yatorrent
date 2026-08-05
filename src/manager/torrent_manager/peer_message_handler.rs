@@ -4,7 +4,7 @@ use crate::{
         BLOCK_SIZE_B,
         peer_handler::ToPeerMsg,
         torrent_manager::{
-            TorrentManager, metadata::ExtendedMetadataMessageContext, pex, util::should_choke,
+            TorrentManager, metadata_state::ExtendedMetadataMessageContext, pex, util::should_choke,
         },
     },
     persistence::file_manager::{ReadPieceBlockRequest, WritePieceBlockRequest},
