@@ -10,7 +10,7 @@ use tokio::{
 };
 
 use crate::{
-    dht::dht_manager::{DhtToTorrentManagerMsg, ToDhtManagerMsg},
+    dht::dht_manager::DhtToTorrentManagerMsg,
     manager::{
         peer::Peer,
         peer_handler::{
@@ -105,17 +105,10 @@ impl TorrentManager {
         let peer_addr = match tcp_stream.peer_addr() {
             Ok(s) => {
                 // send to dht manager the fact that we know a new good peer
-                let peer_port = s.port();
                 if let IpAddr::V4(peer_addr) = s.ip() {
                     self.dht_state
-                        .to_dht_manager_tx
-                        .send(ToDhtManagerMsg::ConnectedToNewPeer(
-                            self.torrent_manager_config.info_hash,
-                            peer_addr,
-                            peer_port,
-                        ))
+                        .connected_to_new_peer(peer_addr, s.port())
                         .await
-                        .expect("to_dht_manager_tx receiver half closed");
                 }
                 s.to_string()
             }

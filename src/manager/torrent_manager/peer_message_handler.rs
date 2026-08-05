@@ -1,6 +1,5 @@
 use crate::{
     bencoding::Value::{self, Dict, Int},
-    dht::dht_manager::ToDhtManagerMsg,
     manager::{
         BLOCK_SIZE_B,
         peer_handler::ToPeerMsg,
@@ -66,11 +65,7 @@ impl TorrentManager {
                 let peer_ip_addr = peer_addr.split(":").next().expect(
                     "peer_addr, taken from tcp_stream.peer_addr(), is always of format ip:port",
                 );
-                let _ = self
-                    .dht_state
-                    .to_dht_manager_tx
-                    .send(ToDhtManagerMsg::NewNode(format!("{peer_ip_addr}:{port}")))
-                    .await;
+                self.dht_state.discovered_new_node(peer_ip_addr, port).await;
             }
             Message::Suggest(piece_idx) => {
                 self.handle_suggest_message(peer_addr, piece_idx).await;

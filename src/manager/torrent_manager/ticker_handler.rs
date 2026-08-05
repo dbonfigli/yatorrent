@@ -1,10 +1,9 @@
 use std::time::{Duration, SystemTime};
 
 use crate::{
-    dht::dht_manager::ToDhtManagerMsg,
     manager::{
         peer_handler::{self, ToPeerMsg},
-        torrent_manager::{DHT_NEW_PEER_COOL_OFF_PERIOD, TorrentManager, util::should_choke},
+        torrent_manager::{TorrentManager, util::should_choke},
     },
     torrent_protocol::wire_protocol::Message,
 };
@@ -156,21 +155,8 @@ impl TorrentManager {
     }
 
     async fn request_new_peers_to_dht_manager(&mut self) {
-        let now = SystemTime::now();
-        if self.peers_state.peers.len() < MAX_CONNECTED_PEERS_TO_ASK_DHT_FOR_MORE
-            && now
-                .duration_since(self.dht_state.last_get_peers_requested_time)
-                .unwrap_or_default()
-                > DHT_NEW_PEER_COOL_OFF_PERIOD
-        {
-            self.dht_state.last_get_peers_requested_time = now;
-            let _ = self
-                .dht_state
-                .to_dht_manager_tx
-                .send(ToDhtManagerMsg::GetNewPeers(
-                    self.torrent_manager_config.info_hash,
-                ))
-                .await;
+        if self.peers_state.peers.len() < MAX_CONNECTED_PEERS_TO_ASK_DHT_FOR_MORE {
+            self.dht_state.request_new_peers_to_dht_manager().await;
         }
     }
 

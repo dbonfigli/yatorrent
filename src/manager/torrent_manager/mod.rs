@@ -7,7 +7,6 @@ use std::{iter, path::Path};
 use rand::RngExt;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
-use crate::dht::dht_manager::{DhtManager, ToDhtManagerMsg};
 use crate::manager::bandwidth_tracker::BandwidthTracker;
 
 use crate::manager::peer::Peer;
@@ -15,6 +14,7 @@ use crate::manager::peer_handler;
 use crate::manager::peer_handler::{PeerAddr, PeersToManagerMsg, ToNewIncomingPeersHandlerMsg};
 use crate::manager::piece_requestor::PieceRequestor;
 use crate::manager::rate_limiter::RateLimiter;
+use crate::manager::torrent_manager::dht_handler::DhtState;
 use crate::manager::torrent_manager::file_manager_state::FileManagerState;
 use crate::manager::torrent_manager::metadata::MetadataState;
 use crate::manager::torrent_manager::pex::PexHandler;
@@ -23,6 +23,7 @@ use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::tracker;
 
 mod control_loop;
+mod dht_handler;
 mod file_manager_state;
 mod log_stats;
 mod metadata;
@@ -31,8 +32,6 @@ pub(super) mod pex;
 mod ticker_handler;
 mod tracker_requestor;
 mod util;
-
-const DHT_BOOTSTRAP_TIME: Duration = Duration::from_secs(5);
 
 // this is mostly the number of inflight (i.e. not fulfilled) requests from peers
 // and downloaded blocks from peers, the latter in particular are holding the block buffers
@@ -45,9 +44,6 @@ const PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY: usize = 50000;
 const BASE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 const TO_NEW_INCOMING_PEERS_HANDLER_CHANNEL_CAPACITY: usize = 100;
-const TO_DHT_MANAGER_CHANNEL_CAPACITY: usize = 1000;
-const DHT_MANAGER_TO_TORRENT_MANAGER_CAPACITY: usize = 1000;
-const DHT_NEW_PEER_COOL_OFF_PERIOD: Duration = Duration::from_secs(15);
 
 struct TorrentManagerConfig {
     info_hash: [u8; 20],
@@ -62,14 +58,6 @@ struct TorrentManagerConfig {
     // risking to be choked by them because of this and generally being inefficient
     max_connected_peers: usize,
     exit_when_complete: bool,
-}
-
-struct DhtState {
-    dht_nodes: Vec<String>,
-    // internal channels, we store them here to avoid passing them around in nested calls
-    to_dht_manager_tx: Sender<ToDhtManagerMsg>,
-    to_dht_manager_rx: Option<Receiver<ToDhtManagerMsg>>, // optional bc we will move it to the dht manager at start, todo: should we move creation of this channel there?
-    last_get_peers_requested_time: SystemTime,
 }
 
 struct PeersState {
@@ -142,7 +130,6 @@ impl TorrentManager {
             initial_advertised_peers.insert(peer_addr, (p, SystemTime::UNIX_EPOCH));
         }
         let advertised_peers = Arc::new(Mutex::new(initial_advertised_peers));
-        let (to_dht_manager_tx, to_dht_manager_rx) = mpsc::channel(TO_DHT_MANAGER_CHANNEL_CAPACITY);
         let (to_new_incoming_peers_handler_tx, to_new_incoming_peers_handler_rx) =
             mpsc::channel(TO_NEW_INCOMING_PEERS_HANDLER_CHANNEL_CAPACITY);
         let (peers_to_torrent_manager_tx, peers_to_torrent_manager_rx) =
@@ -168,13 +155,7 @@ impl TorrentManager {
                 peers_to_torrent_manager_tx,
                 peers_to_torrent_manager_rx,
             },
-            dht_state: DhtState {
-                dht_nodes,
-                to_dht_manager_tx,
-                to_dht_manager_rx: Some(to_dht_manager_rx),
-                last_get_peers_requested_time: SystemTime::now() - DHT_NEW_PEER_COOL_OFF_PERIOD
-                    + DHT_BOOTSTRAP_TIME, // try to wait a bit before the first request, in hope that the dht has been bootstrapped, so that we don't waste time for the first request with an empty routing table
-            },
+            dht_state: DhtState::new(dht_nodes, info_hash),
             metadata_state: MetadataState::new(
                 raw_metadata.as_ref().map(|m| m.len() as i64).or(None),
                 raw_metadata,
@@ -215,24 +196,11 @@ impl TorrentManager {
 
     pub async fn start(&mut self) {
         // start dht manager
-        let (dht_to_torrent_manager_tx, dht_to_torrent_manager_rx) =
-            mpsc::channel(DHT_MANAGER_TO_TORRENT_MANAGER_CAPACITY);
-        let mut dht_manager = DhtManager::new(
+        let dht_to_torrent_manager_rx = self.dht_state.start_dht_manager(
             self.torrent_manager_config
                 .listening_torrent_wire_protocol_port,
             self.torrent_manager_config.listening_dht_port,
-            self.dht_state.dht_nodes.clone(),
         );
-        let to_dht_manager_rx = self
-            .dht_state
-            .to_dht_manager_rx
-            .take()
-            .expect("no to_dht_manager_rx, has start been called twice?");
-        tokio::spawn(async move {
-            dht_manager
-                .start(to_dht_manager_rx, dht_to_torrent_manager_tx)
-                .await;
-        });
 
         // start incoming peer connections handler
         peer_handler::run_new_incoming_peers_handler(
