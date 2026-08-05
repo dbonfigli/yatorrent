@@ -88,7 +88,6 @@ pub struct TorrentManager {
     piece_requestor: PieceRequestor,
     pex_handler: PexHandler,
     request_timeout: Duration,
-    outstanding_read_ops: usize,
 }
 
 impl TorrentManager {
@@ -172,7 +171,6 @@ impl TorrentManager {
             piece_requestor: PieceRequestor::new(),
             pex_handler: PexHandler::new(),
             request_timeout: BASE_REQUEST_TIMEOUT,
-            outstanding_read_ops: 0,
             rate_limiter_state: RateLimiterState {
                 download_rate_limiter: max_download_bandwidth
                     .map(|b| Arc::new(tokio::sync::Mutex::new(RateLimiter::new(b as u128)))),

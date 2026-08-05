@@ -78,7 +78,7 @@ impl TorrentManager {
             cur_ch_cap = PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY
                 - self.peers_state.peers_to_torrent_manager_tx.capacity(),
             read_reqs = self.file_manager_state.inflight_read_reqs(),
-            inflight_read_ops = self.outstanding_read_ops,
+            inflight_read_ops = self.file_manager_state.outstanding_read_ops(),
             write_reqs = self.file_manager_state.inflight_write_reqs(),
         );
     }

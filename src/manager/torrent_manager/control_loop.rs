@@ -18,7 +18,7 @@ use crate::{
             PeerError, PeersToManagerMsg, ToNewIncomingPeersHandlerMsg,
         },
         piece_requestor::MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT,
-        torrent_manager::{TorrentManager, pex::PexEvent},
+        torrent_manager::{TorrentManager, file_manager_state::FileManagerResponse, pex::PexEvent},
     },
     tracker,
 };
@@ -60,13 +60,16 @@ impl TorrentManager {
                         },
                     }
                 }
-                Some(msg) = self.file_manager_state.write_responses_rx.recv() => {
-                    self.handle_write_piece_block_response(msg)
-                    .await;
-                }
-                Some(msg) = self.file_manager_state.read_responses_rx.recv() => {
-                    self.handle_read_piece_block_response(msg)
-                    .await;
+                Some(msg) = self.file_manager_state.recv_response() => {
+                    match msg {
+                        FileManagerResponse::Write(msg) => {
+                           self.handle_write_piece_block_response(msg).await;
+                        }
+                        FileManagerResponse::Read(msg) => {
+                            self.handle_read_piece_block_response(msg).await;
+                        }
+                    }
+
                 }
                 _ = ticker.tick() => {
                     self.handle_tick().await;

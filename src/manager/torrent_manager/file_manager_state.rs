@@ -29,7 +29,19 @@ const READ_REQUESTS_CHANNEL_CAPACITY: usize = 2500;
 // the number of enqueued disk writes operations requests
 const WRITE_REQUESTS_CHANNEL_CAPACITY: usize = 200;
 
+// maximum allowed number of read operations in flight across all peers; i.e., read requests that have been sent to the file manager and whose responses have not yet been handled by the torrent manager.
+// We use this to limit memory usage since read_responses channel is unbounded to avoid deadlock.
+// See also MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER that is a similar limit (but different: it includes the time to also send the data), per peer.
+const MAX_OUTSTANDING_READ_OPS: usize = 3000;
+
+pub(super) enum FileManagerResponse {
+    Read(ReadPieceBlockResponse),
+    Write(WritePieceBlockResponse),
+}
+
 pub(super) struct FileManagerState {
+    outstanding_read_ops: usize,
+
     read_requests_tx: Sender<ReadPieceBlockRequest>,
     read_requests_rx: Option<Receiver<ReadPieceBlockRequest>>, // optional bc we will move it to the file manager handler at start
     // for read disk operations, the flow is like this:
@@ -45,12 +57,12 @@ pub(super) struct FileManagerState {
     // Outstanding read requests are globally bounded anyway by MAX_OUTSTANDING_READ_OPS
     // so the memory is bound to 16KB x 3000 = ~46MB.
     read_responses_tx: UnboundedSender<ReadPieceBlockResponse>,
-    pub(super) read_responses_rx: UnboundedReceiver<ReadPieceBlockResponse>,
+    read_responses_rx: UnboundedReceiver<ReadPieceBlockResponse>,
     write_requests_tx: Sender<WritePieceBlockRequest>,
     write_requests_rx: Option<Receiver<WritePieceBlockRequest>>, // optional bc we will move it to the file manager handler at start
     // unbounded for the same reason as read_responses, without global caps since the messages are really small for this channel
     write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
-    pub(super) write_responses_rx: UnboundedReceiver<WritePieceBlockResponse>,
+    write_responses_rx: UnboundedReceiver<WritePieceBlockResponse>,
 }
 
 impl FileManagerState {
@@ -61,6 +73,7 @@ impl FileManagerState {
         let (write_responses_tx, write_responses_rx) = mpsc::unbounded_channel();
 
         FileManagerState {
+            outstanding_read_ops: 0,
             read_requests_tx,
             read_requests_rx: Some(read_requests_rx),
             read_responses_tx,
@@ -113,6 +126,7 @@ impl FileManagerState {
         &mut self,
         read_req: ReadPieceBlockRequest,
     ) -> Result<(), SendError<ReadPieceBlockRequest>> {
+        self.outstanding_read_ops += 1;
         self.read_requests_tx.send(read_req).await
     }
 
@@ -123,8 +137,26 @@ impl FileManagerState {
         self.write_requests_tx.send(write_req).await
     }
 
-    pub(super) fn read_requests_capacity(&self) -> usize {
-        self.read_requests_tx.capacity()
+    pub(super) async fn recv_response(&mut self) -> Option<FileManagerResponse> {
+        tokio::select! {
+            Some(msg) = self.read_responses_rx.recv() => {
+                self.outstanding_read_ops = self.outstanding_read_ops.saturating_sub(1);
+                Some(FileManagerResponse::Read(msg))
+            }
+            Some(msg) = self.write_responses_rx.recv() => {
+                Some(FileManagerResponse::Write(msg))
+            }
+            else => None
+        }
+    }
+
+    pub(super) fn outstanding_read_ops(&self) -> usize {
+        self.outstanding_read_ops
+    }
+
+    pub(super) fn should_choke(&self) -> bool {
+        self.read_requests_tx.capacity() == 0
+            || self.outstanding_read_ops > MAX_OUTSTANDING_READ_OPS
     }
 }
 
@@ -224,8 +256,6 @@ impl TorrentManager {
         &mut self,
         read_piece_block_response: ReadPieceBlockResponse,
     ) {
-        self.outstanding_read_ops = self.outstanding_read_ops.saturating_sub(1);
-
         let peer = match self
             .peers_state
             .peers

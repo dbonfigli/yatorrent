@@ -215,10 +215,9 @@ impl TorrentManager {
             && should_choke(
                 // todo: choking algorithm is really naive, must improve it to avoid saturating upload
                 self.peers_state.peers_to_torrent_manager_tx.capacity(),
-                self.file_manager_state.read_requests_capacity(),
                 peer.get_outstanding_incoming_piece_block_requests(),
-                self.outstanding_read_ops,
                 true,
+                &self.file_manager_state,
             )
         {
             peer.send(ToPeerMsg::Send(Message::Choke)).await;
@@ -235,7 +234,6 @@ impl TorrentManager {
 
         // else, we are not choking, we can send the block, read the piece, once read, we will send it
         peer.increase_outstanding_incoming_piece_block_requests();
-        self.outstanding_read_ops += 1;
         let _ = self
             .file_manager_state
             .send_read_req(ReadPieceBlockRequest {

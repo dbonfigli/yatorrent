@@ -126,10 +126,9 @@ impl TorrentManager {
                     > MIN_CHOKE_TIME
                 && !should_choke(
                     self.peers_state.peers_to_torrent_manager_tx.capacity(),
-                    self.file_manager_state.read_requests_capacity(),
                     peer.get_outstanding_incoming_piece_block_requests(),
-                    self.outstanding_read_ops,
                     self.torrent_data_status.is_some(),
+                    &self.file_manager_state,
                 )
             {
                 peer.set_am_choking(false);
