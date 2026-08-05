@@ -14,7 +14,7 @@ use crate::manager::peer_handler;
 use crate::manager::peer_handler::{PeerAddr, PeersToManagerMsg, ToNewIncomingPeersHandlerMsg};
 use crate::manager::piece_requestor::PieceRequestor;
 use crate::manager::rate_limiter::RateLimiter;
-use crate::manager::torrent_manager::dht_handler::DhtState;
+use crate::manager::torrent_manager::dht_state::DhtState;
 use crate::manager::torrent_manager::file_manager_state::FileManagerState;
 use crate::manager::torrent_manager::metadata::MetadataState;
 use crate::manager::torrent_manager::pex::PexHandler;
@@ -23,7 +23,7 @@ use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::tracker;
 
 mod control_loop;
-mod dht_handler;
+mod dht_state;
 mod file_manager_state;
 mod log_stats;
 mod metadata;
