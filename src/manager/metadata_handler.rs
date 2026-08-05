@@ -43,6 +43,9 @@ fn metadata_pieces_from_size(size: i64, default_value: bool) -> Vec<(bool, PeerA
 
 impl MetadataHandler {
     pub fn new(raw_metadata_size: Option<i64>, raw_metadata: Option<Vec<u8>>) -> Self {
+        // discard negative values
+        let raw_metadata_size = raw_metadata_size.filter(|s| *s > 0);
+
         let metadata_piece_download_status = match raw_metadata_size {
             None => Vec::new(),
             Some(s) => metadata_pieces_from_size(s, raw_metadata.is_some()),
@@ -61,7 +64,7 @@ impl MetadataHandler {
     }
 
     pub fn full_metadata_known(&self) -> bool {
-        self.metadata_piece_download_status.len() != 0
+        !self.metadata_piece_download_status.is_empty()
             && self
                 .metadata_piece_download_status
                 .iter()
