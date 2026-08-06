@@ -18,7 +18,9 @@ use crate::{
             PeerError, PeersToManagerMsg, ToNewIncomingPeersHandlerMsg,
         },
         piece_requestor::MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT,
-        torrent_manager::{TorrentManager, file_manager_state::FileManagerResponse, pex::PexEvent},
+        torrent_manager::{
+            TorrentManager, file_manager_handler::FileManagerResponse, pex_handler::PexEvent,
+        },
     },
     tracker,
     util::HostAndPort,
@@ -44,7 +46,7 @@ impl TorrentManager {
 
         loop {
             tokio::select! {
-                Some(msg) = self.peers_state.peers_to_torrent_manager_rx.recv() => {
+                Some(msg) = self.peers_ctx.peers_to_torrent_manager_rx.recv() => {
                     match msg {
                         PeersToManagerMsg::Error(peer_addr, error_type) => {
                             self.handle_peer_error(peer_addr, error_type).await;
@@ -61,7 +63,7 @@ impl TorrentManager {
                         },
                     }
                 }
-                Some(msg) = self.file_manager_state.recv_response() => {
+                Some(msg) = self.file_manager_handler.recv_response() => {
                     match msg {
                         FileManagerResponse::Write(msg) => {
                            self.handle_write_piece_block_response(msg).await;
@@ -77,7 +79,7 @@ impl TorrentManager {
                 }
                 Some(DhtToTorrentManagerMsg::NewPeer(ip, port)) = dht_to_torrent_manager_rx.recv() => {
                     let p = tracker::Peer{peer_id: None, ip: ip.to_string(), port};
-                    let mut advertised_peers_mg = self.peers_state.advertised_peers.lock().expect("another user panicked while holding the lock");
+                    let mut advertised_peers_mg = self.peers_ctx.advertised_peers.lock().expect("another user panicked while holding the lock");
                     advertised_peers_mg.insert(format!("{ip}:{port}"), (p, SystemTime::UNIX_EPOCH));
                     drop(advertised_peers_mg);
                 }
@@ -90,13 +92,13 @@ impl TorrentManager {
         log::debug!("removing errored peer {peer_addr}");
         if error_type == PeerError::HandshakeError {
             // todo: understand other error cases that are not recoverable and should stop trying again on this peer
-            self.peers_state.bad_peers.insert(peer_addr.clone());
+            self.peers_ctx.bad_peers.insert(peer_addr.clone());
         }
         self.remove_peer(peer_addr).await;
     }
 
     fn handle_piece_block_request_fulfilled(&mut self, peer_addr: HostAndPort) {
-        if let Some(peer) = self.peers_state.peers.get_mut(&peer_addr) {
+        if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
             peer.decrease_outstanding_incoming_piece_block_requests();
         }
     }
@@ -110,7 +112,7 @@ impl TorrentManager {
             Ok(s) => {
                 // send to dht manager the fact that we know a new good peer
                 if let IpAddr::V4(peer_addr) = s.ip() {
-                    self.dht_state
+                    self.dht_handler
                         .connected_to_new_peer(peer_addr, s.port())
                         .await
                 }
@@ -128,19 +130,19 @@ impl TorrentManager {
         peer_handler::start_peer_msg_handlers(
             peer_addr.clone(),
             tcp_stream,
-            self.peers_state.peers_to_torrent_manager_tx.clone(),
+            self.peers_ctx.peers_to_torrent_manager_tx.clone(),
             to_peer_rx,
             to_peer_cancel_rx,
-            self.rate_limiter_state
+            self.global_rate_limiter
                 .download_rate_limiter
                 .as_ref()
                 .map(|a| a.clone()),
-            self.rate_limiter_state
+            self.global_rate_limiter
                 .upload_rate_limiter
                 .as_ref()
                 .map(|a| a.clone()),
         );
-        self.peers_state.peers.insert(
+        self.peers_ctx.peers.insert(
             peer_addr.clone(),
             Peer::new(
                 peer_addr.clone(),
@@ -152,9 +154,9 @@ impl TorrentManager {
         );
         log::debug!("new peer initialized: {peer_addr}");
         self.pex_handler.new_pex_event(peer_addr, PexEvent::Added);
-        if self.peers_state.peers.len() > self.torrent_manager_config.max_connected_peers {
+        if self.peers_ctx.peers.len() > self.torrent_manager_config.max_connected_peers {
             log::trace!("stop accepting new peers");
-            self.peers_state
+            self.peers_ctx
                 .to_new_incoming_peers_handler_tx
                 .send(ToNewIncomingPeersHandlerMsg::OkToAcceptConnection(false))
                 .await

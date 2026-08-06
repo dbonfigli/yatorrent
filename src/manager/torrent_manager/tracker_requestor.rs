@@ -7,21 +7,21 @@ use crate::tracker;
 use crate::tracker::{Event, NoTrackerError, Response, TrackerClient};
 use crate::util::HostAndPort;
 
-pub(super) struct TrackerState {
+pub(super) struct TrackerRequestor {
     tracker_client: Arc<Mutex<TrackerClient>>,
     last_tracker_request_time: SystemTime,
     completed_sent_to_tracker: bool,
     info_hash: [u8; 20],
 }
 
-impl TrackerState {
+impl TrackerRequestor {
     pub(super) fn new(
         peer_id: String,
         trackers_url: Vec<Vec<String>>,
         listening_torrent_wire_protocol_port: u16,
         info_hash: [u8; 20],
     ) -> Self {
-        TrackerState {
+        TrackerRequestor {
             tracker_client: Arc::new(Mutex::new(TrackerClient::new(
                 peer_id,
                 trackers_url,

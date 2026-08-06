@@ -14,24 +14,24 @@ use crate::manager::peer_handler;
 use crate::manager::peer_handler::{PeersToManagerMsg, ToNewIncomingPeersHandlerMsg};
 use crate::manager::piece_requestor::PieceRequestor;
 use crate::manager::rate_limiter::RateLimiter;
-use crate::manager::torrent_manager::dht_state::DhtState;
-use crate::manager::torrent_manager::file_manager_state::FileManagerState;
-use crate::manager::torrent_manager::metadata_state::MetadataState;
-use crate::manager::torrent_manager::pex::PexHandler;
-use crate::manager::torrent_manager::tracker_state::TrackerState;
+use crate::manager::torrent_manager::dht_handler::DhtHandler;
+use crate::manager::torrent_manager::file_manager_handler::FileManagerHandler;
+use crate::manager::torrent_manager::metadata_handler::MetadataHandler;
+use crate::manager::torrent_manager::pex_handler::PexHandler;
+use crate::manager::torrent_manager::tracker_requestor::TrackerRequestor;
 use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::tracker;
 use crate::util::{FileEntry, HostAndPort};
 
 mod control_loop;
-mod dht_state;
-mod file_manager_state;
+mod dht_handler;
+mod file_manager_handler;
 mod log_stats;
-mod metadata_state;
+mod metadata_handler;
 mod peer_message_handler;
-pub(super) mod pex;
+pub(super) mod pex_handler;
 mod ticker_handler;
-mod tracker_state;
+mod tracker_requestor;
 mod util;
 
 // this is mostly the number of inflight (i.e. not fulfilled) requests from peers
@@ -62,7 +62,7 @@ struct TorrentManagerConfig {
     exit_when_complete: bool,
 }
 
-struct PeersState {
+struct PeersContext {
     peers: HashMap<HostAndPort, Peer>,
     advertised_peers: Arc<Mutex<HashMap<HostAndPort, (tracker::Peer, SystemTime)>>>, // peer addr -> (peer, last connection attempt)
     bad_peers: HashSet<HostAndPort>, // todo: remove old bad peers after a while?
@@ -72,7 +72,7 @@ struct PeersState {
     peers_to_torrent_manager_rx: Receiver<PeersToManagerMsg>,
 }
 
-struct RateLimiterState {
+struct GlobalRateLimiter {
     download_rate_limiter: Option<Arc<tokio::sync::Mutex<RateLimiter>>>,
     upload_rate_limiter: Option<Arc<tokio::sync::Mutex<RateLimiter>>>,
 }
@@ -80,12 +80,12 @@ struct RateLimiterState {
 pub struct TorrentManager {
     torrent_manager_config: TorrentManagerConfig,
     torrent_data_status: Option<TorrentDataStatus>,
-    peers_state: PeersState,
-    dht_state: DhtState,
-    rate_limiter_state: RateLimiterState,
-    file_manager_state: FileManagerState,
-    metadata_state: MetadataState,
-    tracker_state: TrackerState,
+    peers_ctx: PeersContext,
+    dht_handler: DhtHandler,
+    global_rate_limiter: GlobalRateLimiter,
+    file_manager_handler: FileManagerHandler,
+    metadata_handler: MetadataHandler,
+    tracker_requestor: TrackerRequestor,
     bandwidth_tracker: BandwidthTracker,
     piece_requestor: PieceRequestor,
     pex_handler: PexHandler,
@@ -148,7 +148,7 @@ impl TorrentManager {
                 exit_when_complete,
             },
             torrent_data_status: None,
-            peers_state: PeersState {
+            peers_ctx: PeersContext {
                 peers: HashMap::new(),
                 advertised_peers,
                 bad_peers: HashSet::new(),
@@ -157,13 +157,13 @@ impl TorrentManager {
                 peers_to_torrent_manager_tx,
                 peers_to_torrent_manager_rx,
             },
-            dht_state: DhtState::new(dht_nodes, info_hash),
-            metadata_state: MetadataState::new(
+            dht_handler: DhtHandler::new(dht_nodes, info_hash),
+            metadata_handler: MetadataHandler::new(
                 raw_metadata.as_ref().map(|m| m.len() as i64).or(None),
                 raw_metadata,
                 info_hash,
             ),
-            tracker_state: TrackerState::new(
+            tracker_requestor: TrackerRequestor::new(
                 own_peer_id,
                 announce_list,
                 listening_torrent_wire_protocol_port,
@@ -173,17 +173,17 @@ impl TorrentManager {
             piece_requestor: PieceRequestor::new(),
             pex_handler: PexHandler::new(),
             request_timeout: BASE_REQUEST_TIMEOUT,
-            rate_limiter_state: RateLimiterState {
+            global_rate_limiter: GlobalRateLimiter {
                 download_rate_limiter: max_download_bandwidth
                     .map(|b| Arc::new(tokio::sync::Mutex::new(RateLimiter::new(b as u128)))),
                 upload_rate_limiter: max_upload_bandwidth
                     .map(|b| Arc::new(tokio::sync::Mutex::new(RateLimiter::new(b as u128)))),
             },
-            file_manager_state: FileManagerState::new(),
+            file_manager_handler: FileManagerHandler::new(),
         };
 
         if let Some((file_list, piece_length, piece_hashes)) = files_data {
-            torrent_manager.torrent_data_status = Some(torrent_manager.file_manager_state.start(
+            torrent_manager.torrent_data_status = Some(torrent_manager.file_manager_handler.start(
                 base_path,
                 file_list,
                 piece_length,
@@ -196,7 +196,7 @@ impl TorrentManager {
 
     pub async fn start(&mut self) {
         // start dht manager
-        let dht_to_torrent_manager_rx = self.dht_state.start_dht_manager(
+        let dht_to_torrent_manager_rx = self.dht_handler.start_dht_manager(
             self.torrent_manager_config
                 .listening_torrent_wire_protocol_port,
             self.torrent_manager_config.listening_dht_port,
@@ -212,12 +212,12 @@ impl TorrentManager {
             self.torrent_data_status
                 .as_ref()
                 .map(|f| f.current_piece_completion_status()),
-            self.peers_state
+            self.peers_ctx
                 .to_new_incoming_peers_handler_rx
                 .take()
                 .expect("no to_new_incoming_peers_handler_rx, has start been called twice?"),
-            self.peers_state.peers_to_torrent_manager_tx.clone(),
-            self.metadata_state.raw_metadata_size(),
+            self.peers_ctx.peers_to_torrent_manager_tx.clone(),
+            self.metadata_handler.raw_metadata_size(),
         )
         .await;
 

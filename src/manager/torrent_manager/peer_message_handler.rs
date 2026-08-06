@@ -3,7 +3,7 @@ use crate::{
     manager::{
         BLOCK_SIZE_B,
         peer_handler::ToPeerMsg,
-        torrent_manager::{TorrentManager, pex, util::should_choke},
+        torrent_manager::{TorrentManager, pex_handler, util::should_choke},
     },
     persistence::file_manager::{ReadPieceBlockRequest, WritePieceBlockRequest},
     torrent_protocol::wire_protocol::{BlockRequest, Message},
@@ -21,7 +21,7 @@ impl TorrentManager {
             Message::KeepAlive => {}
             Message::Choke => self.handle_receive_choke_message(peer_addr).await,
             Message::Unchoke => {
-                if let Some(peer) = self.peers_state.peers.get_mut(&peer_addr) {
+                if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
                     peer.set_peer_choking(false);
                     log::trace!("received unchoke from {peer_addr}");
                     // since we received an unchoke, we can try to send more requests immediately to this peer, without waiting for a tick
@@ -29,12 +29,12 @@ impl TorrentManager {
                 }
             }
             Message::Interested => {
-                if let Some(peer) = self.peers_state.peers.get_mut(&peer_addr) {
+                if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
                     peer.set_peer_interested(true);
                 }
             }
             Message::NotInterested => {
-                if let Some(peer) = self.peers_state.peers.get_mut(&peer_addr) {
+                if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
                     peer.set_peer_interested(false);
                 }
             }
@@ -58,7 +58,7 @@ impl TorrentManager {
                     .await
             }
             Message::Cancel(block_request) => {
-                if let Some(peer) = self.peers_state.peers.get_mut(&peer_addr) {
+                if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
                     peer.send_cancel(block_request);
                 }
             }
@@ -67,7 +67,9 @@ impl TorrentManager {
                 let peer_ip_addr = peer_addr.split(":").next().expect(
                     "peer_addr, taken from tcp_stream.peer_addr(), is always of format ip:port",
                 );
-                self.dht_state.discovered_new_node(peer_ip_addr, port).await;
+                self.dht_handler
+                    .discovered_new_node(peer_ip_addr, port)
+                    .await;
             }
             Message::Suggest(piece_idx) => {
                 self.handle_suggest_message(peer_addr, piece_idx).await;
@@ -102,7 +104,7 @@ impl TorrentManager {
     }
 
     async fn handle_receive_have_message(&mut self, peer_addr: HostAndPort, piece_idx: u32) {
-        let peer = match self.peers_state.peers.get_mut(&peer_addr) {
+        let peer = match self.peers_ctx.peers.get_mut(&peer_addr) {
             Some(peer) => peer,
             None => return,
         };
@@ -125,7 +127,7 @@ impl TorrentManager {
                 "got message \"have\" {piece_idx} from peer {peer_addr} but the torrent have only {} pieces",
                 torrent_data_status.num_pieces()
             );
-            self.peers_state.bad_peers.insert(peer_addr.clone());
+            self.peers_ctx.bad_peers.insert(peer_addr.clone());
             peer.send(ToPeerMsg::Disconnect()).await;
             self.remove_peer(peer_addr).await;
         }
@@ -147,12 +149,12 @@ impl TorrentManager {
                 bitfield.len(),
                 torrent_data_status.num_pieces()
             );
-            self.peers_state.bad_peers.insert(peer_addr.clone());
-            if let Some(peer) = self.peers_state.peers.get_mut(&peer_addr) {
+            self.peers_ctx.bad_peers.insert(peer_addr.clone());
+            if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
                 peer.send(ToPeerMsg::Disconnect()).await;
             }
             self.remove_peer(peer_addr).await;
-        } else if let Some(peer) = self.peers_state.peers.get_mut(&peer_addr) {
+        } else if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
             // ignore bitfield if we don't have the torrent file yet, we cannot trust the bitfield from the peer
             if peer.get_haves().is_none() {
                 return;
@@ -184,7 +186,7 @@ impl TorrentManager {
     }
 
     async fn handle_receive_choke_message(&mut self, peer_addr: HostAndPort) {
-        let peer = match self.peers_state.peers.get_mut(&peer_addr) {
+        let peer = match self.peers_ctx.peers.get_mut(&peer_addr) {
             Some(peer) => peer,
             None => return,
         };
@@ -206,7 +208,7 @@ impl TorrentManager {
             return;
         }
 
-        let peer = match self.peers_state.peers.get_mut(&peer_addr) {
+        let peer = match self.peers_ctx.peers.get_mut(&peer_addr) {
             Some(peer) => peer,
             None => return,
         };
@@ -224,10 +226,10 @@ impl TorrentManager {
         if !peer.get_am_choking()
             && should_choke(
                 // todo: choking algorithm is really naive, must improve it to avoid saturating upload
-                self.peers_state.peers_to_torrent_manager_tx.capacity(),
+                self.peers_ctx.peers_to_torrent_manager_tx.capacity(),
                 peer.get_outstanding_incoming_piece_block_requests(),
                 true,
-                &self.file_manager_state,
+                &self.file_manager_handler,
             )
         {
             peer.send(ToPeerMsg::Send(Message::Choke)).await;
@@ -245,7 +247,7 @@ impl TorrentManager {
         // else, we are not choking, we can send the block, read the piece, once read, we will send it
         peer.increase_outstanding_incoming_piece_block_requests();
         let _ = self
-            .file_manager_state
+            .file_manager_handler
             .send_read_req(ReadPieceBlockRequest {
                 requestor_peer_addr: peer_addr,
                 piece_idx: block_request.piece_idx as usize,
@@ -257,7 +259,7 @@ impl TorrentManager {
     }
 
     async fn handle_suggest_message(&mut self, peer_addr: HostAndPort, _piece_idx: u32) {
-        if let Some(peer) = self.peers_state.peers.get_mut(&peer_addr) {
+        if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
             if !peer.supports_fast_extension() {
                 log::debug!(
                     "removing peer {peer_addr}: we received a \"suggest\" fast track message but the peer did not advertise its support"
@@ -277,7 +279,7 @@ impl TorrentManager {
             None => return,
         };
 
-        if let Some(peer) = self.peers_state.peers.get_mut(&peer_addr) {
+        if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
             if !peer.supports_fast_extension() {
                 log::debug!(
                     "removing peer {peer_addr}: we received a \"have all\" fast track message but the peer did not advertise its support"
@@ -309,7 +311,7 @@ impl TorrentManager {
             None => return,
         };
 
-        if let Some(peer) = self.peers_state.peers.get_mut(&peer_addr) {
+        if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
             if !peer.supports_fast_extension() {
                 log::debug!(
                     "removing peer {peer_addr}: we received a \"have none\" fast track message but the peer did not advertise its support"
@@ -328,7 +330,7 @@ impl TorrentManager {
         peer_addr: HostAndPort,
         _block_request: BlockRequest,
     ) {
-        if let Some(peer) = self.peers_state.peers.get_mut(&peer_addr) {
+        if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
             if !peer.supports_fast_extension() {
                 log::debug!(
                     "removing peer {peer_addr}: we received a \"reject\" fast track message but the peer did not advertise its support"
@@ -342,7 +344,7 @@ impl TorrentManager {
     }
 
     async fn handle_allow_fast_message(&mut self, peer_addr: HostAndPort, _piece_idx: usize) {
-        if let Some(peer) = self.peers_state.peers.get_mut(&peer_addr) {
+        if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
             if !peer.supports_fast_extension() {
                 log::debug!(
                     "removing peer {peer_addr}: we received an \"allow fast\" fast track message but the peer did not advertise its support"
@@ -362,7 +364,7 @@ impl TorrentManager {
         extended_message: Value,
         additional_data: Vec<u8>,
     ) {
-        let peer = match self.peers_state.peers.get_mut(&peer_addr) {
+        let peer = match self.peers_ctx.peers.get_mut(&peer_addr) {
             Some(peer) => peer,
             None => return,
         };
@@ -389,10 +391,10 @@ impl TorrentManager {
             }
             _ if extension_id == peer.get_ut_pex_id() => {
                 // this is an ut_pex extended message
-                pex::handle_receive_extended_message_ut_pex(
+                pex_handler::handle_receive_extended_message_ut_pex(
                     extended_message,
                     peer_addr,
-                    self.peers_state.advertised_peers.clone(),
+                    self.peers_ctx.advertised_peers.clone(),
                 );
             }
             _ if extension_id == peer.get_ut_metadata_id() => {
@@ -440,13 +442,13 @@ impl TorrentManager {
         };
 
         let other_active_peers = self
-            .peers_state
+            .peers_ctx
             .peers
             .keys()
             .filter(|k| peer_addr != **k)
             .map(|k| k.clone())
             .collect::<Vec<_>>();
-        let peer = match self.peers_state.peers.get_mut(&peer_addr) {
+        let peer = match self.peers_ctx.peers.get_mut(&peer_addr) {
             Some(peer) => peer,
             None => return,
         };
@@ -468,7 +470,8 @@ impl TorrentManager {
                         "got an ut_metadata extension handshake where \"metadata_size\" was <= 0, ignoring this message"
                     );
                 } else {
-                    self.metadata_state.update_raw_metadata_size(*metadata_size);
+                    self.metadata_handler
+                        .update_raw_metadata_size(*metadata_size);
                 }
             }
         }
@@ -487,7 +490,7 @@ impl TorrentManager {
 
         let data_len = data.len() as u64;
         self.bandwidth_tracker.add_downloaded_bytes(data_len);
-        if let Some(peer) = self.peers_state.peers.get_mut(&peer_addr) {
+        if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
             peer.get_bandwidth_tracker_mut()
                 .add_downloaded_bytes(data_len);
             let rtt = self.piece_requestor.block_request_completed(
@@ -508,7 +511,7 @@ impl TorrentManager {
 
         // send data to file manager to persist it
         let _ = self
-            .file_manager_state
+            .file_manager_handler
             .send_write_req(WritePieceBlockRequest {
                 requestor_peer_addr: peer_addr,
                 piece_idx: piece_idx as usize,
@@ -524,7 +527,7 @@ impl TorrentManager {
             None => return,
         };
 
-        let peer = match self.peers_state.peers.get_mut(&peer_addr) {
+        let peer = match self.peers_ctx.peers.get_mut(&peer_addr) {
             Some(peer) => peer,
             None => return,
         };

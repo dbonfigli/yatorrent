@@ -40,7 +40,7 @@ pub(super) enum FileManagerResponse {
     Write(WritePieceBlockResponse),
 }
 
-pub(super) struct FileManagerState {
+pub(super) struct FileManagerHandler {
     outstanding_read_ops: usize,
 
     read_requests_tx: Sender<ReadPieceBlockRequest>,
@@ -66,14 +66,14 @@ pub(super) struct FileManagerState {
     write_responses_rx: UnboundedReceiver<WritePieceBlockResponse>,
 }
 
-impl FileManagerState {
+impl FileManagerHandler {
     pub(super) fn new() -> Self {
         let (read_requests_tx, read_requests_rx) = mpsc::channel(READ_REQUESTS_CHANNEL_CAPACITY);
         let (read_responses_tx, read_responses_rx) = mpsc::unbounded_channel();
         let (write_requests_tx, write_requests_rx) = mpsc::channel(WRITE_REQUESTS_CHANNEL_CAPACITY);
         let (write_responses_tx, write_responses_rx) = mpsc::unbounded_channel();
 
-        FileManagerState {
+        FileManagerHandler {
             outstanding_read_ops: 0,
             read_requests_tx,
             read_requests_rx: Some(read_requests_rx),
@@ -186,10 +186,10 @@ impl TorrentManager {
                         .completed()
                     {
                         log::warn!("torrent download completed");
-                        self.tracker_state
+                        self.tracker_requestor
                             .async_request_to_tracker(
                                 Event::Completed,
-                                self.peers_state.advertised_peers.clone(),
+                                self.peers_ctx.advertised_peers.clone(),
                                 self.torrent_data_status.as_ref().map(|f| f.bytes_left()),
                                 (
                                     self.bandwidth_tracker.uploaded_bytes(),
@@ -204,12 +204,12 @@ impl TorrentManager {
                     }
 
                     let _ = self
-                        .peers_state
+                        .peers_ctx
                         .to_new_incoming_peers_handler_tx
                         .send(ToNewIncomingPeersHandlerMsg::PieceCompleted(piece_idx))
                         .await;
 
-                    for (_, peer) in self.peers_state.peers.iter_mut() {
+                    for (_, peer) in self.peers_ctx.peers.iter_mut() {
                         // send "have" to all peers.
                         // it can happen on very fast downloads that "have" messages overwhelm the channel,
                         // discard the message in those cases to not block the loop
@@ -236,7 +236,7 @@ impl TorrentManager {
 
                 // keep track of corruptions, remove if too many
                 if let Some(_) = e.downcast_ref::<ShaCorruptedError>() {
-                    let peer = match self.peers_state.peers.get_mut(&peer_addr) {
+                    let peer = match self.peers_ctx.peers.get_mut(&peer_addr) {
                         Some(peer) => peer,
                         None => return,
                     };
@@ -258,7 +258,7 @@ impl TorrentManager {
         read_piece_block_response: ReadPieceBlockResponse,
     ) {
         let peer = match self
-            .peers_state
+            .peers_ctx
             .peers
             .get_mut(&read_piece_block_response.request.requestor_peer_addr)
         {
