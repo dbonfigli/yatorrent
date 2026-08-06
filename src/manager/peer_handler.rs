@@ -14,7 +14,7 @@ use tokio::time::{sleep, timeout};
 use crate::bencoding::Value;
 use crate::manager::rate_limiter::RateLimiter;
 use crate::torrent_protocol::wire_protocol::{
-    BlockRequest, Message, Protocol, ProtocolReadHalf, ProtocolWriteHalf,
+    BlockRequest, Handshake, Message, Protocol, ProtocolReadHalf, ProtocolWriteHalf,
 };
 use crate::util::{HostAndPort, force_string, pretty_info_hash, version_string};
 
@@ -325,7 +325,12 @@ async fn handshake(
     piece_completion_status: Option<Vec<bool>>,
     metadata_size: Option<i64>,
 ) -> Result<(TcpStream, FastExtensionSupport)> {
-    let (peer_protocol, reserved, peer_info_hash, peer_id) = stream
+    let Handshake {
+        pstr: peer_protocol,
+        reserved,
+        info_hash: peer_info_hash,
+        peer_id,
+    } = stream
         .handshake(info_hash, own_peer_id.as_bytes().try_into()?)
         .await?;
     log::trace!(

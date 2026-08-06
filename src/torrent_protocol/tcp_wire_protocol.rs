@@ -8,9 +8,8 @@ use tokio::{
 };
 
 use crate::{
-    bencoding::Value,
-    torrent_protocol::wire_protocol::{
-        BlockRequest, Message, Protocol, ProtocolError, ProtocolReadHalf, ProtocolWriteHalf,
+    bencoding::Value, torrent_protocol::wire_protocol::{
+        BlockRequest, Handshake, Message, Protocol, ProtocolError, ProtocolReadHalf, ProtocolWriteHalf,
     },
 };
 
@@ -19,12 +18,7 @@ use crate::{
 const MAX_MESSAGE_SIZE_B: u32 = 16384 * 8; // 128KB, i.e. the size of 8 blocks
 
 impl Protocol for TcpStream {
-    async fn handshake(
-        &mut self,
-        info_hash: [u8; 20],
-        peer_id: [u8; 20],
-        // peer_protocol, reserved, peer_info_hash, peer_id
-    ) -> Result<(String, [u8; 8], [u8; 20], [u8; 20])> {
+    async fn handshake(&mut self, info_hash: [u8; 20], peer_id: [u8; 20]) -> Result<Handshake> {
         let peer_addr = self.peer_addr()?;
         log::trace!("peer {}: performing handshake", &peer_addr);
 
@@ -86,7 +80,12 @@ impl Protocol for TcpStream {
                 }
 
                 log::trace!("peer {}: full handshake received", &peer_addr);
-                return Ok((pstr, reserved_buf, info_hash_buf, peer_id));
+                return Ok(Handshake {
+                    pstr,
+                    reserved: reserved_buf,
+                    info_hash: info_hash_buf,
+                    peer_id,
+                });
             }
         );
 

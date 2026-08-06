@@ -118,13 +118,16 @@ impl fmt::Display for Message {
     }
 }
 
+pub struct Handshake {
+    pub pstr: String,
+    pub reserved: [u8; 8],
+    pub info_hash: [u8; 20],
+    pub peer_id: [u8; 20],
+}
+
 #[trait_variant::make(Send)]
 pub trait Protocol {
-    async fn handshake(
-        &mut self,
-        info_hash: [u8; 20],
-        peer_id: [u8; 20],
-    ) -> Result<(String, [u8; 8], [u8; 20], [u8; 20])>; // pstr, reserved, info_hash, peer_id
+    async fn handshake(&mut self, info_hash: [u8; 20], peer_id: [u8; 20]) -> Result<Handshake>;
 }
 
 #[trait_variant::make(Send)]
