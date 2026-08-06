@@ -15,13 +15,25 @@ const METADATA_PIECE_REQUEST_TIMEOUT: Duration = Duration::from_secs(15); // tim
 const MAX_OUTSTANDING_METADATA_PIECE_REQUESTS_PER_PEER: i64 = 100;
 const METADATA_BIG_WARN_THRESHOLD: i64 = 200 * 1024 * 1024;
 
+#[derive(Clone)]
+struct MetadataPieceDownloadStatus {
+    downloaded: bool,
+    request_destination_peer: HostAndPort,
+    request_time: SystemTime,
+}
+
+pub struct MetadataPieceRequest {
+    pub destination_peer: HostAndPort,
+    pub piece_index: usize,
+}
+
 pub struct MetadataHandler {
-    metadata_piece_download_status: Vec<(bool, HostAndPort, SystemTime)>, // downloaded, peer addr we requested piece to, request time
+    metadata_piece_download_status: Vec<MetadataPieceDownloadStatus>, // The index in the vector is the piece index
     raw_metadata: Option<Vec<u8>>,
     raw_metadata_size: Option<i64>,
 }
 
-fn metadata_pieces_from_size(size: i64, default_value: bool) -> Vec<(bool, HostAndPort, SystemTime)> {
+fn metadata_pieces_from_size(size: i64, default_value: bool) -> Vec<MetadataPieceDownloadStatus> {
     if size > METADATA_BIG_WARN_THRESHOLD {
         log::warn!(
             "the metadata size is abnormally big: {} (metadata is fully kept in memory)",
@@ -31,11 +43,11 @@ fn metadata_pieces_from_size(size: i64, default_value: bool) -> Vec<(bool, HostA
         );
     }
     vec![
-        (
-            default_value,
-            "0.0.0.0:0".to_string(),
-            SystemTime::UNIX_EPOCH
-        );
+        MetadataPieceDownloadStatus {
+            downloaded: default_value,
+            request_destination_peer: "0.0.0.0:0".to_string(),
+            request_time: SystemTime::UNIX_EPOCH
+        };
         (size as f64 / METADATA_PIECE_SIZE_B as f64).ceil() as usize
     ]
 }
@@ -67,7 +79,7 @@ impl MetadataHandler {
             && self
                 .metadata_piece_download_status
                 .iter()
-                .all(|(completed, _, _)| *completed)
+                .all(|entry| entry.downloaded)
     }
 
     pub fn raw_metadata_size(&self) -> Option<i64> {
@@ -77,7 +89,7 @@ impl MetadataHandler {
     pub fn total_metadata_pieces_downloaded(&self) -> usize {
         self.metadata_piece_download_status
             .iter()
-            .fold(0, |acc, v| if v.0 { acc + 1 } else { acc })
+            .fold(0, |acc, v| if v.downloaded { acc + 1 } else { acc })
     }
 
     pub fn total_metadata_pieces(&self) -> usize {
@@ -91,7 +103,7 @@ impl MetadataHandler {
         };
 
         if piece_idx >= self.metadata_piece_download_status.len()
-            || self.metadata_piece_download_status[piece_idx].0
+            || self.metadata_piece_download_status[piece_idx].downloaded
         {
             return;
         }
@@ -105,7 +117,7 @@ impl MetadataHandler {
         if piece_data.len() < (raw_metadata_end - raw_metadata_start) {
             // peer sent us less data than expected for this piece, avoid panic on copy_from_slice
             // in this case will ask for again for this piece immediatelly
-            self.metadata_piece_download_status[piece_idx].2 = SystemTime::UNIX_EPOCH;
+            self.metadata_piece_download_status[piece_idx].request_time = SystemTime::UNIX_EPOCH;
             return;
         }
 
@@ -115,7 +127,7 @@ impl MetadataHandler {
             [raw_metadata_start..raw_metadata_end]
             .copy_from_slice(&piece_data[..raw_metadata_end - raw_metadata_start]);
 
-        self.metadata_piece_download_status[piece_idx].0 = true;
+        self.metadata_piece_download_status[piece_idx].downloaded = true;
     }
 
     pub fn get_raw_metadata(&self) -> &Option<Vec<u8>> {
@@ -151,11 +163,17 @@ impl MetadataHandler {
     pub fn generate_metadata_piece_reqs(
         &mut self,
         peers: &HashMap<HostAndPort, Peer>,
-    ) -> Vec<(HostAndPort, usize)> {
+    ) -> Vec<MetadataPieceRequest> {
         // get inflight requests
-        let mut inflight_metadata_piece_requests_per_peer: HashMap<HostAndPort, i64> = HashMap::new();
+        let mut inflight_metadata_piece_requests_per_peer: HashMap<HostAndPort, i64> =
+            HashMap::new();
         let now = SystemTime::now();
-        for (downloaded, peer_addr, request_time) in self.metadata_piece_download_status.iter() {
+        for MetadataPieceDownloadStatus {
+            downloaded,
+            request_destination_peer,
+            request_time,
+        } in self.metadata_piece_download_status.iter()
+        {
             if *downloaded
                 || now.duration_since(*request_time).unwrap_or_default()
                     > METADATA_PIECE_REQUEST_TIMEOUT
@@ -164,7 +182,7 @@ impl MetadataHandler {
             }
 
             inflight_metadata_piece_requests_per_peer
-                .entry(peer_addr.clone())
+                .entry(request_destination_peer.clone())
                 .and_modify(|outstanding_requests| *outstanding_requests += 1)
                 .or_insert(1);
         }
@@ -196,9 +214,9 @@ impl MetadataHandler {
 
         let mut metadata_pieces_to_request: Vec<usize> = Vec::new();
         for n in 0..self.metadata_piece_download_status.len() {
-            if !self.metadata_piece_download_status[n].0
+            if !self.metadata_piece_download_status[n].downloaded
                 && now
-                    .duration_since(self.metadata_piece_download_status[n].2)
+                    .duration_since(self.metadata_piece_download_status[n].request_time)
                     .unwrap_or_default()
                     > METADATA_PIECE_REQUEST_TIMEOUT
             {
@@ -222,8 +240,15 @@ impl MetadataHandler {
                 }
                 let piece_to_request = metadata_pieces_to_request[metadata_pieces_to_request_idx];
                 self.metadata_piece_download_status[piece_to_request] =
-                    (false, peer_addr.clone(), now);
-                new_metadata_piece_requests.push((peer_addr.clone(), piece_to_request));
+                    MetadataPieceDownloadStatus {
+                        downloaded: false,
+                        request_destination_peer: peer_addr.clone(),
+                        request_time: now,
+                    };
+                new_metadata_piece_requests.push(MetadataPieceRequest {
+                    destination_peer: peer_addr.clone(),
+                    piece_index: piece_to_request,
+                });
                 *outstanding_reqs += 1;
                 metadata_pieces_to_request_idx += 1;
             }

@@ -5,7 +5,7 @@ use anyhow::Error;
 use sha1::{Digest, Sha1};
 
 use crate::bencoding::Value::{self, Dict, Int};
-use crate::manager::metadata_handler::MetadataHandler;
+use crate::manager::metadata_handler::{MetadataHandler, MetadataPieceRequest};
 use crate::manager::peer::{
     METADATA_MESSAGE_DATA, METADATA_MESSAGE_REJECT, METADATA_MESSAGE_REQUEST, MetadataMessage, Peer,
 };
@@ -65,13 +65,15 @@ impl MetadataState {
         }
         // we still have to download the metadata, ask metadata pieces to peers
         let new_medatada_piece_requests = self.metadata_handler.generate_metadata_piece_reqs(peers);
-        for (peer_addr, piece_to_request) in new_medatada_piece_requests {
-            if let Some(peer) = peers.get_mut(&peer_addr) {
-                log::debug!("sending metadata piece request to {peer_addr}: {piece_to_request}");
-                peer.send_metadata_extension_message(MetadataMessage::Request(
-                    piece_to_request as u64,
-                ))
-                .await;
+        for MetadataPieceRequest {
+            destination_peer,
+            piece_index,
+        } in new_medatada_piece_requests
+        {
+            if let Some(peer) = peers.get_mut(&destination_peer) {
+                log::debug!("sending metadata piece request to {destination_peer}: {piece_index}");
+                peer.send_metadata_extension_message(MetadataMessage::Request(piece_index as u64))
+                    .await;
             }
         }
     }
