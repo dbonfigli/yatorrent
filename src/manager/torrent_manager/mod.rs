@@ -43,6 +43,41 @@ const BASE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 const TO_NEW_INCOMING_PEERS_HANDLER_CHANNEL_CAPACITY: usize = 100;
 
+pub struct FilesData {
+    pub file_list: Vec<FileEntry>,
+    pub piece_length: u64,
+    pub piece_hashes: Vec<[u8; 20]>,
+}
+
+pub struct TorrentManagerLimitOptions {
+    pub max_connected_peers: usize,
+    pub max_download_bandwidth: Option<i64>,
+    pub max_upload_bandwidth: Option<i64>,
+}
+
+pub struct TorrentManagerStorageOptions {
+    pub base_path: String,
+    pub files_data: Option<FilesData>,
+    pub raw_metadata: Option<Vec<u8>>,
+}
+
+pub struct TorrentManagerNetworkOptions {
+    pub listening_torrent_wire_protocol_port: u16,
+    pub listening_dht_port: u16,
+    pub dht_nodes: Vec<HostAndPort>,
+    pub initial_peers: Vec<HostAndPort>,
+}
+
+pub struct TorrentManagerOptions {
+    pub info_hash: [u8; 20],
+    pub network_opts: TorrentManagerNetworkOptions,
+    pub storage_opts: TorrentManagerStorageOptions,
+    pub limit_opts: TorrentManagerLimitOptions,
+    pub tracker_announce_list: Vec<Vec<String>>,
+    pub show_peers_stats: bool,
+    pub exit_when_complete: bool,
+}
+
 struct TorrentManagerConfig {
     base_path: PathBuf,
     info_hash: [u8; 20],
@@ -76,11 +111,11 @@ struct GlobalRateLimiter {
 
 pub struct TorrentManager {
     torrent_manager_config: TorrentManagerConfig,
+    file_manager_handler: FileManagerHandler,
     torrent_data_status: Option<TorrentDataStatus>,
     peers_ctx: PeersContext,
     dht_handler: DhtHandler,
     global_rate_limiter: GlobalRateLimiter,
-    file_manager_handler: FileManagerHandler,
     metadata_handler: MetadataHandler,
     tracker_requestor: TrackerRequestor,
     bandwidth_tracker: BandwidthTracker,
@@ -90,29 +125,12 @@ pub struct TorrentManager {
 }
 
 impl TorrentManager {
-    pub fn new(
-        info_hash: [u8; 20],
-        base_path: &Path,
-        listening_torrent_wire_protocol_port: u16,
-        announce_list: Vec<Vec<String>>,
-        files_data: Option<(
-            Vec<FileEntry>, // files_list
-            u64,            // piece_length
-            Vec<[u8; 20]>,  // piece_hashes
-        )>,
-        raw_metadata: Option<Vec<u8>>,
-        listening_dht_port: u16,
-        dht_nodes: Vec<HostAndPort>,
-        initial_peers: Vec<HostAndPort>,
-        show_peers_details: bool,
-        max_connected_peers: usize,
-        max_download_bandwidth: Option<i64>,
-        max_upload_bandwidth: Option<i64>,
-        exit_when_complete: bool,
-    ) -> Self {
+    pub fn new(opts: TorrentManagerOptions) -> Self {
         let own_peer_id = generate_peer_id();
+        let base_path = Path::new(&opts.storage_opts.base_path);
+
         let mut initial_advertised_peers = HashMap::new();
-        for peer_addr in initial_peers {
+        for peer_addr in opts.network_opts.initial_peers {
             let ip_and_port = peer_addr
                 .rsplit_once(':')
                 .expect("all initial peers should be of the host:port format");
@@ -128,67 +146,87 @@ impl TorrentManager {
             initial_advertised_peers.insert(peer_addr, (p, SystemTime::UNIX_EPOCH));
         }
         let advertised_peers = Arc::new(Mutex::new(initial_advertised_peers));
+
+        let torrent_manager_config = TorrentManagerConfig {
+            base_path: PathBuf::from(base_path),
+            info_hash: opts.info_hash,
+            own_peer_id: own_peer_id.clone(),
+            listening_torrent_wire_protocol_port: opts
+                .network_opts
+                .listening_torrent_wire_protocol_port,
+            listening_dht_port: opts.network_opts.listening_dht_port,
+            show_peers_stats: opts.show_peers_stats,
+            max_connected_peers: opts.limit_opts.max_connected_peers,
+            exit_when_complete: opts.exit_when_complete,
+        };
+
+        let mut file_manager_handler = FileManagerHandler::new();
+        let torrent_data_status = opts.storage_opts.files_data.map(
+            |FilesData {
+                 file_list,
+                 piece_length,
+                 piece_hashes,
+             }| {
+                file_manager_handler.start(base_path, file_list, piece_length, piece_hashes)
+            },
+        );
+
         let (to_new_incoming_peers_handler_tx, to_new_incoming_peers_handler_rx) =
             mpsc::channel(TO_NEW_INCOMING_PEERS_HANDLER_CHANNEL_CAPACITY);
         let (peers_to_torrent_manager_tx, peers_to_torrent_manager_rx) =
             mpsc::channel::<PeersToManagerMsg>(PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY);
+        let peers_ctx = PeersContext {
+            peers: HashMap::new(),
+            advertised_peers,
+            bad_peers: HashSet::new(),
+            to_new_incoming_peers_handler_tx,
+            to_new_incoming_peers_handler_rx: Some(to_new_incoming_peers_handler_rx),
+            peers_to_torrent_manager_tx,
+            peers_to_torrent_manager_rx,
+        };
 
-        let mut torrent_manager = TorrentManager {
-            torrent_manager_config: TorrentManagerConfig {
-                base_path: PathBuf::from(base_path),
-                info_hash,
-                own_peer_id: own_peer_id.clone(),
-                listening_torrent_wire_protocol_port,
-                listening_dht_port,
-                show_peers_stats: show_peers_details,
-                max_connected_peers,
-                exit_when_complete,
-            },
-            torrent_data_status: None,
-            peers_ctx: PeersContext {
-                peers: HashMap::new(),
-                advertised_peers,
-                bad_peers: HashSet::new(),
-                to_new_incoming_peers_handler_tx,
-                to_new_incoming_peers_handler_rx: Some(to_new_incoming_peers_handler_rx),
-                peers_to_torrent_manager_tx,
-                peers_to_torrent_manager_rx,
-            },
-            dht_handler: DhtHandler::new(dht_nodes, info_hash),
-            metadata_handler: MetadataHandler::new(
-                raw_metadata.as_ref().map(|m| m.len() as i64).or(None),
-                raw_metadata,
-                info_hash,
-            ),
-            tracker_requestor: TrackerRequestor::new(
-                own_peer_id,
-                announce_list,
-                listening_torrent_wire_protocol_port,
-                info_hash,
-            ),
+        let global_rate_limiter = GlobalRateLimiter {
+            download_rate_limiter: opts
+                .limit_opts
+                .max_download_bandwidth
+                .map(|b| Arc::new(tokio::sync::Mutex::new(RateLimiter::new(b as u128)))),
+            upload_rate_limiter: opts
+                .limit_opts
+                .max_upload_bandwidth
+                .map(|b| Arc::new(tokio::sync::Mutex::new(RateLimiter::new(b as u128)))),
+        };
+
+        let metadata_handler = MetadataHandler::new(
+            opts.storage_opts
+                .raw_metadata
+                .as_ref()
+                .map(|m| m.len() as i64)
+                .or(None),
+            opts.storage_opts.raw_metadata,
+            opts.info_hash,
+        );
+
+        let tracker_requestor = TrackerRequestor::new(
+            own_peer_id,
+            opts.tracker_announce_list,
+            opts.network_opts.listening_torrent_wire_protocol_port,
+            opts.info_hash,
+        );
+
+        TorrentManager {
+            torrent_manager_config,
+            file_manager_handler,
+            torrent_data_status,
+            peers_ctx,
+            dht_handler: DhtHandler::new(opts.network_opts.dht_nodes, opts.info_hash),
+            global_rate_limiter,
+            metadata_handler,
+            tracker_requestor,
             bandwidth_tracker: BandwidthTracker::new(),
             piece_requestor: PieceRequestor::new(),
             pex_handler: PexHandler::new(),
             request_timeout: BASE_REQUEST_TIMEOUT,
-            global_rate_limiter: GlobalRateLimiter {
-                download_rate_limiter: max_download_bandwidth
-                    .map(|b| Arc::new(tokio::sync::Mutex::new(RateLimiter::new(b as u128)))),
-                upload_rate_limiter: max_upload_bandwidth
-                    .map(|b| Arc::new(tokio::sync::Mutex::new(RateLimiter::new(b as u128)))),
-            },
-            file_manager_handler: FileManagerHandler::new(),
-        };
-
-        if let Some((file_list, piece_length, piece_hashes)) = files_data {
-            torrent_manager.torrent_data_status = Some(torrent_manager.file_manager_handler.start(
-                base_path,
-                file_list,
-                piece_length,
-                piece_hashes,
-            ));
         }
-
-        torrent_manager
     }
 
     pub async fn start(&mut self) {

@@ -3,7 +3,6 @@ use clap::{CommandFactory, Parser};
 use manager::torrent_manager;
 use size::{self, Size};
 use std::env::current_dir;
-use std::path::Path;
 use std::process::exit;
 use std::{fmt, fs};
 use torrent_manager::TorrentManager;
@@ -14,6 +13,10 @@ use rlimit::{Resource, getrlimit, setrlimit};
 use std::cmp::min;
 
 use crate::manager::BLOCK_SIZE_B;
+use crate::manager::torrent_manager::{
+    FilesData, TorrentManagerLimitOptions, TorrentManagerNetworkOptions, TorrentManagerOptions,
+    TorrentManagerStorageOptions,
+};
 
 mod bencoding;
 mod dht;
@@ -98,7 +101,6 @@ const MAX_OPENED_FILES: u64 = 16384;
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let base_path = Path::new(&args.base_path);
 
     // init logging
     env_logger::init_from_env(
@@ -159,23 +161,32 @@ async fn main() -> Result<()> {
                         "The .torrent file contains a \"nodes\" field, the torrent is announcing also via specific DHT nodes"
                     );
                 }
-                TorrentManager::new(
-                    m.info_hash,
-                    base_path,
-                    args.port,
-                    m.announce_list.clone(),
-                    Some((m.get_files(), m.piece_length, m.piece_hashes)),
-                    Some(m.raw_metadata),
-                    // dht data
-                    args.dht_port,
-                    m.nodes,
-                    Vec::new(),
-                    args.show_peers_stats,
-                    args.max_connected_peers,
-                    max_download_bandwidth,
-                    max_upload_bandwidth,
-                    args.exit_when_complete,
-                )
+                TorrentManager::new(TorrentManagerOptions {
+                    info_hash: m.info_hash,
+                    network_opts: TorrentManagerNetworkOptions {
+                        listening_torrent_wire_protocol_port: args.port,
+                        listening_dht_port: args.dht_port,
+                        dht_nodes: m.nodes.clone(),
+                        initial_peers: Vec::new(),
+                    },
+                    storage_opts: TorrentManagerStorageOptions {
+                        base_path: args.base_path,
+                        files_data: Some(FilesData {
+                            file_list: m.get_files(),
+                            piece_length: m.piece_length,
+                            piece_hashes: m.piece_hashes,
+                        }),
+                        raw_metadata: Some(m.raw_metadata),
+                    },
+                    limit_opts: TorrentManagerLimitOptions {
+                        max_connected_peers: args.max_connected_peers,
+                        max_download_bandwidth,
+                        max_upload_bandwidth,
+                    },
+                    tracker_announce_list: m.announce_list.clone(),
+                    show_peers_stats: args.show_peers_stats,
+                    exit_when_complete: args.exit_when_complete,
+                })
                 .start()
                 .await;
                 exit(0);
@@ -188,23 +199,28 @@ async fn main() -> Result<()> {
     } else if let Some(magnet_uri) = args.magnet_uri {
         match magnet::Magnet::new(magnet_uri) {
             Ok(magnet) => {
-                TorrentManager::new(
-                    magnet.info_hash,
-                    base_path,
-                    args.port,
-                    vec![magnet.tracker_urls],
-                    None,
-                    None,
-                    // dht data
-                    args.dht_port,
-                    Vec::new(),
-                    magnet.peer_addresses,
-                    args.show_peers_stats,
-                    args.max_connected_peers,
-                    max_download_bandwidth,
-                    max_upload_bandwidth,
-                    args.exit_when_complete,
-                )
+                TorrentManager::new(TorrentManagerOptions {
+                    info_hash: magnet.info_hash,
+                    network_opts: TorrentManagerNetworkOptions {
+                        listening_torrent_wire_protocol_port: args.port,
+                        listening_dht_port: args.dht_port,
+                        dht_nodes: Vec::new(),
+                        initial_peers: magnet.peer_addresses,
+                    },
+                    storage_opts: TorrentManagerStorageOptions {
+                        base_path: args.base_path,
+                        files_data: None,
+                        raw_metadata: None,
+                    },
+                    limit_opts: TorrentManagerLimitOptions {
+                        max_connected_peers: args.max_connected_peers,
+                        max_download_bandwidth,
+                        max_upload_bandwidth,
+                    },
+                    tracker_announce_list: vec![magnet.tracker_urls],
+                    show_peers_stats: args.show_peers_stats,
+                    exit_when_complete: args.exit_when_complete,
+                })
                 .start()
                 .await;
                 exit(0);
