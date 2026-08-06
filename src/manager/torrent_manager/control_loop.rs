@@ -17,10 +17,9 @@ use crate::{
             self, FastExtensionSupport, MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER,
             PeerError, PeersToManagerMsg, ToNewIncomingPeersHandlerMsg,
         },
+        pex_handler::PexEvent,
         piece_requestor::MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT,
-        torrent_manager::{
-            TorrentManager, file_manager_handler::FileManagerResponse, pex_handler::PexEvent,
-        },
+        torrent_manager::{TorrentManager, file_manager_handler::FileManagerResponse},
     },
     tracker,
     util::HostAndPort,
@@ -113,7 +112,7 @@ impl TorrentManager {
                 // send to dht manager the fact that we know a new good peer
                 if let IpAddr::V4(peer_addr) = s.ip() {
                     self.dht_handler
-                        .connected_to_new_peer(peer_addr, s.port())
+                        .new_peer_connected(peer_addr, s.port())
                         .await
                 }
                 s.to_string()

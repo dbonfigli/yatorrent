@@ -9,7 +9,7 @@ use crate::{
     manager::{
         bandwidth_tracker::BandwidthTracker,
         peer_handler::{FastExtensionSupport, ToPeerCancelMsg, ToPeerMsg},
-        torrent_manager::pex_handler::{AddedDroppedEvent, PexEvent},
+        pex_handler::{AddedDroppedEvent, PexEvent},
     },
     torrent_protocol::wire_protocol::{BlockRequest, Message},
     util::HostAndPort,
@@ -226,11 +226,13 @@ impl Peer {
     pub fn get_outstanding_incoming_piece_block_requests(&self) -> usize {
         self.outstanding_incoming_piece_block_requests
     }
+
     pub fn decrease_outstanding_incoming_piece_block_requests(&mut self) {
         self.outstanding_incoming_piece_block_requests = self
             .outstanding_incoming_piece_block_requests
             .saturating_sub(1);
     }
+
     pub fn increase_outstanding_incoming_piece_block_requests(&mut self) {
         self.outstanding_incoming_piece_block_requests += 1;
     }
@@ -288,6 +290,7 @@ impl Peer {
     pub fn get_ut_metadata_id(&self) -> u8 {
         self.ut_metadata_id
     }
+
     pub fn set_ut_metadata_id(&mut self, ut_metadata_id: u8) {
         self.ut_metadata_id = ut_metadata_id;
     }

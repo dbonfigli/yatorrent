@@ -9,29 +9,26 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use crate::manager::bandwidth_tracker::BandwidthTracker;
 
+use crate::manager::dht_handler::DhtHandler;
 use crate::manager::peer::Peer;
 use crate::manager::peer_handler;
 use crate::manager::peer_handler::{PeersToManagerMsg, ToNewIncomingPeersHandlerMsg};
+use crate::manager::pex_handler::PexHandler;
 use crate::manager::piece_requestor::PieceRequestor;
 use crate::manager::rate_limiter::RateLimiter;
-use crate::manager::torrent_manager::dht_handler::DhtHandler;
 use crate::manager::torrent_manager::file_manager_handler::FileManagerHandler;
 use crate::manager::torrent_manager::metadata_handler::MetadataHandler;
-use crate::manager::torrent_manager::pex_handler::PexHandler;
-use crate::manager::torrent_manager::tracker_requestor::TrackerRequestor;
+use crate::manager::tracker_requestor::TrackerRequestor;
 use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::tracker;
 use crate::util::{FileEntry, HostAndPort};
 
 mod control_loop;
-mod dht_handler;
 mod file_manager_handler;
 mod log_stats;
 mod metadata_handler;
 mod peer_message_handler;
-pub(super) mod pex_handler;
 mod ticker_handler;
-mod tracker_requestor;
 mod util;
 
 // this is mostly the number of inflight (i.e. not fulfilled) requests from peers

@@ -15,7 +15,7 @@ const DHT_NEW_PEER_COOL_OFF_PERIOD: Duration = Duration::from_secs(15);
 const TO_DHT_MANAGER_CHANNEL_CAPACITY: usize = 1000;
 const DHT_MANAGER_TO_TORRENT_MANAGER_CAPACITY: usize = 1000;
 
-pub(super) struct DhtHandler {
+pub struct DhtHandler {
     torrent_info_hash: [u8; 20],
     dht_nodes: Vec<HostAndPort>,
     // internal channels, we store them here to avoid passing them around in nested calls
@@ -25,7 +25,7 @@ pub(super) struct DhtHandler {
 }
 
 impl DhtHandler {
-    pub(super) fn new(dht_nodes: Vec<HostAndPort>, torrent_info_hash: [u8; 20]) -> Self {
+    pub fn new(dht_nodes: Vec<HostAndPort>, torrent_info_hash: [u8; 20]) -> Self {
         let (to_dht_manager_tx, to_dht_manager_rx) = mpsc::channel(TO_DHT_MANAGER_CHANNEL_CAPACITY);
 
         DhtHandler {
@@ -38,7 +38,7 @@ impl DhtHandler {
         }
     }
 
-    pub(super) fn start_dht_manager(
+    pub fn start_dht_manager(
         &mut self,
         listening_torrent_wire_protocol_port: u16,
         listening_dht_port: u16,
@@ -65,7 +65,7 @@ impl DhtHandler {
         dht_to_torrent_manager_rx
     }
 
-    pub(super) async fn request_new_peers_to_dht_manager(&mut self) {
+    pub async fn request_new_peers_to_dht_manager(&mut self) {
         let now = SystemTime::now();
         if now
             .duration_since(self.last_get_peers_requested_time)
@@ -80,7 +80,7 @@ impl DhtHandler {
         }
     }
 
-    pub(super) async fn discovered_new_node(&mut self, peer_ip_addr: &str, peer_port: u16) {
+    pub async fn new_node_discovered(&mut self, peer_ip_addr: &str, peer_port: u16) {
         self.to_dht_manager_tx
             .send(ToDhtManagerMsg::NewNode(format!(
                 "{peer_ip_addr}:{peer_port}"
@@ -89,7 +89,7 @@ impl DhtHandler {
             .expect("to_dht_manager_tx receiver half closed");
     }
 
-    pub(super) async fn connected_to_new_peer(&mut self, peer_ip_addr: Ipv4Addr, peer_port: u16) {
+    pub async fn new_peer_connected(&mut self, peer_ip_addr: Ipv4Addr, peer_port: u16) {
         self.to_dht_manager_tx
             .send(ToDhtManagerMsg::ConnectedToNewPeer(
                 self.torrent_info_hash,

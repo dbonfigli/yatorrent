@@ -3,9 +3,9 @@ use crate::{
         peer_handler::{
             MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER, ToNewIncomingPeersHandlerMsg,
         },
+        pex_handler::PexEvent,
         torrent_manager::{
             FileManagerHandler, PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY, TorrentManager,
-            pex_handler::PexEvent,
         },
     },
     util::HostAndPort,

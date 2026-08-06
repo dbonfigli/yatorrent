@@ -7,7 +7,7 @@ use crate::tracker;
 use crate::tracker::{Event, NoTrackerError, Response, TrackerClient};
 use crate::util::HostAndPort;
 
-pub(super) struct TrackerRequestor {
+pub struct TrackerRequestor {
     tracker_client: Arc<Mutex<TrackerClient>>,
     last_tracker_request_time: SystemTime,
     completed_sent_to_tracker: bool,
@@ -15,7 +15,7 @@ pub(super) struct TrackerRequestor {
 }
 
 impl TrackerRequestor {
-    pub(super) fn new(
+    pub fn new(
         peer_id: String,
         trackers_url: Vec<Vec<String>>,
         listening_torrent_wire_protocol_port: u16,
@@ -34,7 +34,7 @@ impl TrackerRequestor {
     }
 
     // used to send recurring updates to tracker
-    pub(super) async fn async_update_to_tracker(
+    pub async fn async_update_to_tracker(
         &mut self,
         advertised_peers: Arc<Mutex<HashMap<HostAndPort, (tracker::Peer, SystemTime)>>>,
         bytes_left: Option<u64>,
@@ -65,7 +65,7 @@ impl TrackerRequestor {
     }
 
     // used for specific events
-    pub(super) async fn async_request_to_tracker(
+    pub async fn async_request_to_tracker(
         &mut self,
         event: Event,
         advertised_peers: Arc<Mutex<HashMap<HostAndPort, (tracker::Peer, SystemTime)>>>,

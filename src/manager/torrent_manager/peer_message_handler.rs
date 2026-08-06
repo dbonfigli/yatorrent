@@ -3,7 +3,8 @@ use crate::{
     manager::{
         BLOCK_SIZE_B,
         peer_handler::ToPeerMsg,
-        torrent_manager::{TorrentManager, pex_handler, util::should_choke},
+        pex_handler,
+        torrent_manager::{TorrentManager, util},
     },
     persistence::file_manager::{ReadPieceBlockRequest, WritePieceBlockRequest},
     torrent_protocol::wire_protocol::{BlockRequest, Message},
@@ -68,7 +69,7 @@ impl TorrentManager {
                     "peer_addr, taken from tcp_stream.peer_addr(), is always of format ip:port",
                 );
                 self.dht_handler
-                    .discovered_new_node(peer_ip_addr, port)
+                    .new_node_discovered(peer_ip_addr, port)
                     .await;
             }
             Message::Suggest(piece_idx) => {
@@ -224,7 +225,7 @@ impl TorrentManager {
         }
 
         if !peer.get_am_choking()
-            && should_choke(
+            && util::should_choke(
                 // todo: choking algorithm is really naive, must improve it to avoid saturating upload
                 self.peers_ctx.peers_to_torrent_manager_tx.capacity(),
                 peer.get_outstanding_incoming_piece_block_requests(),

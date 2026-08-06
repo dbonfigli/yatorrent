@@ -25,18 +25,18 @@ pub struct AddedDroppedEvent {
     pub event_type: PexEvent,
 }
 
-pub(super) struct PexHandler {
+pub struct PexHandler {
     added_dropped_peer_events: Vec<AddedDroppedEvent>,
 }
 
 impl PexHandler {
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         PexHandler {
             added_dropped_peer_events: Vec::new(),
         }
     }
 
-    pub(super) async fn send_pex_messages(&mut self, peers: &mut HashMap<HostAndPort, Peer>) {
+    pub async fn send_pex_messages(&mut self, peers: &mut HashMap<HostAndPort, Peer>) {
         // remove old added / dropped events
         let now = SystemTime::now();
         self.added_dropped_peer_events.retain(
@@ -57,7 +57,7 @@ impl PexHandler {
         }
     }
 
-    pub(super) fn new_pex_event(&mut self, peer_addr: HostAndPort, pex_event: PexEvent) {
+    pub fn new_pex_event(&mut self, peer_addr: HostAndPort, pex_event: PexEvent) {
         self.added_dropped_peer_events.push(AddedDroppedEvent {
             event_timestamp: SystemTime::now(),
             peer: peer_addr,
@@ -66,7 +66,7 @@ impl PexHandler {
     }
 }
 
-pub(super) fn handle_receive_extended_message_ut_pex(
+pub fn handle_receive_extended_message_ut_pex(
     extended_message: Value,
     peer_addr: HostAndPort,
     advertised_peers: Arc<Mutex<HashMap<HostAndPort, (tracker::Peer, SystemTime)>>>,
