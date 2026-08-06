@@ -46,7 +46,7 @@ impl TorrentManager {
                     if total_metadata_pieces == total_downloaded {
                         "".to_string()
                     } else {
-                        format!(", metadata pieces: {total_metadata_pieces}/{total_downloaded}")
+                        format!(", metadata pieces: {total_downloaded}/{total_metadata_pieces}")
                     }
                 }
             },
