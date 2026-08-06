@@ -9,7 +9,7 @@ use crate::{
     manager::{
         bandwidth_tracker::BandwidthTracker,
         peer_handler::{FastExtensionSupport, ToPeerCancelMsg, ToPeerMsg},
-        torrent_manager::pex::PexEvent,
+        torrent_manager::pex::{AddedDroppedEvent, PexEvent},
     },
     torrent_protocol::wire_protocol::{BlockRequest, Message},
     util::HostAndPort,
@@ -400,7 +400,7 @@ impl Peer {
     pub async fn send_pex_extension_message_for_latest_peer_events(
         &mut self,
         latest_pex_update: SystemTime,
-        added_dropped_peer_events: &Vec<(SystemTime, HostAndPort, PexEvent)>,
+        added_dropped_peer_events: &Vec<AddedDroppedEvent>,
     ) {
         if !self.support_pex_extension() {
             return;
@@ -416,11 +416,21 @@ impl Peer {
         // only send events we have not yet sent
         let elided_events = added_dropped_peer_events
             .iter()
-            .filter(|(event_timestamp, _, _)| *event_timestamp > self.get_last_pex_message_sent())
-            .fold(HashMap::new(), |mut map, (_, addr, event_type)| {
-                map.insert(addr.clone(), *event_type);
-                map
-            });
+            .filter(
+                |AddedDroppedEvent {
+                     event_timestamp, ..
+                 }| *event_timestamp > self.get_last_pex_message_sent(),
+            )
+            .fold(
+                HashMap::new(),
+                |mut map,
+                 AddedDroppedEvent {
+                     peer, event_type, ..
+                 }| {
+                    map.insert(peer.clone(), *event_type);
+                    map
+                },
+            );
         let added = elided_events
             .iter()
             .filter(|(_, event_type)| **event_type == PexEvent::Added)
