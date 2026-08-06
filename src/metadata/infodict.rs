@@ -61,6 +61,9 @@ pub fn parse_infodict(info_dict: &HashMap<Vec<u8>, Value>) -> Result<ParsedInfod
                     "The .torrent file contains \"info.pieces\" that is not a string of length divisible by 20"
                 );
             }
+            if piece_hashes_byte_vec.is_empty() {
+                bail!("the .torrent file \"info.pieces\" kv cannot be empty");
+            }
             let mut piece_hashes = Vec::new();
             for p in (0..piece_hashes_byte_vec.len()).step_by(20) {
                 let mut piece_hash: [u8; 20] = [0; 20];
@@ -125,6 +128,11 @@ pub fn parse_infodict(info_dict: &HashMap<Vec<u8>, Value>) -> Result<ParsedInfod
                         "The .torrent file \"info.files\" kv has an entry with \"path\" with an element that is not a string"
                     ),
                 };
+                if p.is_empty() {
+                    bail!(
+                        "The .torrent file \"info.files\" kv has an entry with \"path\" with an empty element"
+                    );
+                }
                 entry_path_list.push(p);
             }
 
@@ -132,6 +140,9 @@ pub fn parse_infodict(info_dict: &HashMap<Vec<u8>, Value>) -> Result<ParsedInfod
                 length: *entry_length as u64,
                 path: entry_path_list,
             })
+        }
+        if files.is_empty() {
+            bail!("The .torrent file \"info.files\" kv cannot be an empty list");
         }
         metainfo_file = MetainfoFile::MultiFile(MetainfoMultiFile {
             name: name_string,
@@ -158,7 +169,14 @@ pub fn get_files(metainfo_file: &MetainfoFile) -> Vec<FileEntry> {
         MetainfoFile::MultiFile(m) => {
             let mut files = Vec::new();
             for file in &m.files {
-                files.push(FileEntry::new(file.path.join("/"), file.length))
+                files.push(FileEntry::new(
+                    if m.name.is_empty() {
+                        file.path.join("/")
+                    } else {
+                        format!("{}/{}", m.name, file.path.join("/"))
+                    },
+                    file.length,
+                ))
             }
             files
         }
