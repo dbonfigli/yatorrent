@@ -85,8 +85,7 @@ impl TorrentManager {
                     peer.port,
                     self.torrent_manager_config.info_hash,
                     self.torrent_manager_config.own_peer_id.clone(),
-                    self.torrent_manager_config
-                        .listening_torrent_wire_protocol_port,
+                    self.torrent_manager_config.listening_dht_port,
                     self.torrent_data_status
                         .as_ref()
                         .map(|f| f.current_piece_completion_status()),

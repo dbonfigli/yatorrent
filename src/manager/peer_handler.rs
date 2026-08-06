@@ -62,7 +62,7 @@ pub async fn connect_to_new_peer(
     port: u16,
     info_hash: [u8; 20],
     own_peer_id: String,
-    tcp_wire_protocol_listening_port: u16,
+    listening_dht_port: u16,
     piece_completion_status: Option<Vec<bool>>,
     metadata_size: Option<i64>,
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
@@ -110,7 +110,7 @@ pub async fn connect_to_new_peer(
                     tcp_stream,
                     info_hash.clone(),
                     own_peer_id.clone(),
-                    tcp_wire_protocol_listening_port,
+                    listening_dht_port,
                     piece_completion_status,
                     metadata_size,
                 ),
@@ -327,7 +327,7 @@ async fn handshake(
     mut stream: TcpStream,
     info_hash: [u8; 20],
     own_peer_id: String,
-    tcp_wire_protocol_listening_port: u16,
+    listening_dht_port: u16,
     piece_completion_status: Option<Vec<bool>>,
     metadata_size: Option<i64>,
 ) -> Result<(TcpStream, FastExtensionSupport)> {
@@ -378,9 +378,7 @@ async fn handshake(
 
     // if peer supports DHT, send port
     if reserved[7] & 1u8 != 0 {
-        write
-            .send(Message::Port(tcp_wire_protocol_listening_port))
-            .await?;
+        write.send(Message::Port(listening_dht_port)).await?;
         log::trace!("port sent to peer {peer_addr}");
     }
 
