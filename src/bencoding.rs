@@ -7,6 +7,8 @@ use crate::util::force_string;
 
 type IndexOfError = usize;
 
+const MAX_RECURSION_DEPTH: usize = 100;
+
 #[derive(PartialEq, Debug, Clone)]
 pub enum ErrorElem {
     Unknown,
@@ -82,11 +84,11 @@ impl Value {
     }
 
     pub fn new(source: &Vec<u8>) -> Self {
-        from_char_vec(&source, 0).0
+        from_char_vec(&source, 0, MAX_RECURSION_DEPTH).0
     }
 
     pub fn new_with_size(source: &Vec<u8>) -> (Value, usize) {
-        from_char_vec(&source, 0)
+        from_char_vec(&source, 0, MAX_RECURSION_DEPTH)
     }
 
     fn new_error(elem: ErrorElem, index: IndexOfError) -> Self {
@@ -131,12 +133,16 @@ fn encode_str(s: &Vec<u8>) -> Vec<u8> {
 // source is the source data
 // index is where to look from the source
 // return Value, index of next char to read
-fn from_char_vec(source: &Vec<u8>, index: usize) -> (Value, usize) {
+fn from_char_vec(
+    source: &Vec<u8>,
+    index: usize,
+    remaining_recursion_depth: usize,
+) -> (Value, usize) {
     match source.get(index) {
         Some(b'0'..=b'9') => parse_str(source, index),
         Some(b'i') => parse_int(source, index),
-        Some(b'l') => parse_list(source, index),
-        Some(b'd') => parse_dict(source, index),
+        Some(b'l') => parse_list(source, index, remaining_recursion_depth),
+        Some(b'd') => parse_dict(source, index, remaining_recursion_depth),
         _ => (Value::new_error(ErrorElem::Unknown, index), index),
     }
 }
@@ -227,7 +233,11 @@ fn parse_int(source: &Vec<u8>, index: usize) -> (Value, usize) {
     }
 }
 
-fn parse_list(source: &Vec<u8>, index: usize) -> (Value, usize) {
+fn parse_list(source: &Vec<u8>, index: usize, remaining_recursion_depth: usize) -> (Value, usize) {
+    if remaining_recursion_depth == 0 {
+        return (Value::new_error(ErrorElem::List, index), index);
+    }
+
     let mut l = Vec::new();
     let mut index = index + 1;
     loop {
@@ -238,7 +248,7 @@ fn parse_list(source: &Vec<u8>, index: usize) -> (Value, usize) {
                 break;
             }
             _ => {
-                let (v, new_index) = from_char_vec(source, index);
+                let (v, new_index) = from_char_vec(source, index, remaining_recursion_depth - 1);
                 if let Value::Error(_) = v {
                     return (v, index);
                 } else {
@@ -251,7 +261,11 @@ fn parse_list(source: &Vec<u8>, index: usize) -> (Value, usize) {
     (Value::List(l), index)
 }
 
-fn parse_dict(source: &Vec<u8>, index: usize) -> (Value, usize) {
+fn parse_dict(source: &Vec<u8>, index: usize, remaining_recursion_depth: usize) -> (Value, usize) {
+    if remaining_recursion_depth == 0 {
+        return (Value::new_error(ErrorElem::Dict, index), index);
+    }
+
     let mut d = HashMap::new();
     let start = index;
     let mut index = index + 1;
@@ -263,10 +277,11 @@ fn parse_dict(source: &Vec<u8>, index: usize) -> (Value, usize) {
                 break;
             }
             _ => {
-                let (v, new_index) = from_char_vec(source, index);
+                let (v, new_index) = from_char_vec(source, index, remaining_recursion_depth - 1);
                 if let Value::Str(k) = v {
                     index = new_index;
-                    let (v, new_index) = from_char_vec(source, index);
+                    let (v, new_index) =
+                        from_char_vec(source, index, remaining_recursion_depth - 1);
                     if let Value::Error(_) = v {
                         return (v, index);
                     } else {
@@ -297,6 +312,7 @@ mod tests {
     use super::Value;
     use crate::bencoding::ErrorElem;
     use crate::bencoding::ParseError;
+    use crate::bencoding::from_char_vec;
 
     #[test]
     fn encode_value() {
@@ -418,5 +434,102 @@ mod tests {
             end: 28,
         };
         assert_eq!(Value::new(&b"d2:k1li0e5:hello0:e2:k22:e3e".to_vec()), val_l);
+    }
+
+    #[test]
+    fn recursion_depth_zero_rejects_root_list() {
+        let input = b"le".to_vec();
+
+        let (value, next) = from_char_vec(&input, 0, 0);
+
+        assert!(matches!(value, Value::Error(_)));
+        assert_eq!(next, 0);
+    }
+
+    #[test]
+    fn recursion_depth_one_accepts_single_list() {
+        let input = b"le".to_vec();
+
+        let (value, next) = from_char_vec(&input, 0, 1);
+
+        assert_eq!(value, Value::List(vec![]));
+        assert_eq!(next, input.len());
+    }
+
+    #[test]
+    fn recursion_depth_one_rejects_nested_list() {
+        let input = b"llee".to_vec();
+
+        let (value, _) = from_char_vec(&input, 0, 1);
+
+        assert!(matches!(value, Value::Error(_)));
+    }
+
+    #[test]
+    fn recursion_depth_two_accepts_nested_list() {
+        let input = b"llee".to_vec();
+
+        let (value, next) = from_char_vec(&input, 0, 2);
+
+        assert_eq!(next, input.len());
+
+        match value {
+            Value::List(v) => {
+                assert_eq!(v.len(), 1);
+                assert!(matches!(v[0], Value::List(_)));
+            }
+            _ => panic!("expected list"),
+        }
+    }
+
+    #[test]
+    fn recursion_depth_zero_rejects_root_dict() {
+        let input = b"de".to_vec();
+
+        let (value, _) = from_char_vec(&input, 0, 0);
+
+        assert!(matches!(value, Value::Error(_)));
+    }
+
+    #[test]
+    fn recursion_depth_one_accepts_dict() {
+        let input = b"d1:ai1ee".to_vec();
+
+        let (value, next) = from_char_vec(&input, 0, 1);
+
+        assert_eq!(next, input.len());
+
+        match value {
+            Value::Dict { dict, .. } => {
+                assert_eq!(dict.len(), 1);
+                assert_eq!(dict.get(b"a".as_ref()), Some(&Value::Int(1)));
+            }
+            _ => panic!("expected dict"),
+        }
+    }
+
+    #[test]
+    fn recursion_depth_one_rejects_nested_dict() {
+        let input = b"d1:ad1:bi1eee".to_vec();
+
+        let (value, _) = from_char_vec(&input, 0, 1);
+
+        assert!(matches!(value, Value::Error(_)));
+    }
+
+    #[test]
+    fn recursion_depth_two_accepts_nested_dict() {
+        let input = b"d1:ad1:bi1eee".to_vec();
+
+        let (value, next) = from_char_vec(&input, 0, 2);
+
+        assert_eq!(next, input.len());
+
+        match value {
+            Value::Dict { dict, .. } => {
+                assert!(matches!(dict.get(b"a".as_ref()), Some(Value::Dict { .. })));
+            }
+            _ => panic!("expected dict"),
+        }
     }
 }
