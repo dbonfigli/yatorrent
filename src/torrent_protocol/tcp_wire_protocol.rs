@@ -336,6 +336,9 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
             }
             // bitfield
             5 => {
+                if size_message > MAX_MESSAGE_SIZE_B {
+                    bail!("malformed size_message ({size_message}) on bitfiled");
+                }
                 let bitfield_byte_size: usize = (size_message - 1).try_into()?;
                 let mut buf = vec![0; bitfield_byte_size];
                 if let Err(e) = self.read_exact(&mut buf).await {
@@ -366,6 +369,9 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
             }
             // piece
             7 => {
+                if size_message - 9 <= 0 || size_message > MAX_MESSAGE_SIZE_B {
+                    bail!("malformed size_message ({size_message}) on piece");
+                }
                 let mut index_buf: [u8; 4] = [0; 4];
                 if let Err(e) = self.read_exact(&mut index_buf).await {
                     return Err(e.into());
@@ -373,9 +379,6 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                 let mut begin_buf: [u8; 4] = [0; 4];
                 if let Err(e) = self.read_exact(&mut begin_buf).await {
                     return Err(e.into());
-                }
-                if size_message - 9 <= 0 || size_message > MAX_MESSAGE_SIZE_B {
-                    bail!("malformed size_message ({size_message}) on piece");
                 }
                 let block_size: usize = (size_message - 9).try_into()?;
                 let mut block_buf = vec![0; block_size];
@@ -458,14 +461,14 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
             }
             // extension message
             20 => {
+                if size_message - 2 <= 0 || size_message > MAX_MESSAGE_SIZE_B {
+                    bail!("malformed size_message ({size_message}) on extension message");
+                }
                 let mut buf: [u8; 1] = [0; 1];
                 if let Err(e) = self.read_exact(&mut buf).await {
                     return Err(e.into());
                 }
                 let extended_message_id = buf[0]; // i.e. id of the extension. 0 means this message is an extension handshake
-                if size_message - 2 <= 0 || size_message > MAX_MESSAGE_SIZE_B {
-                    bail!("malformed size_message ({size_message}) on extension message");
-                }
                 let payload_extended_message_size: usize = (size_message - 2).try_into()?;
                 let mut buf = vec![0; payload_extended_message_size];
                 if let Err(e) = self.read_exact(&mut buf).await {

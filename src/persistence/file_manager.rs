@@ -522,6 +522,10 @@ fn write_piece_block(
         );
     }
 
+    if data.is_empty() {
+        bail!("cannot write block: the block carries no data");
+    }
+
     // avoid useless writes if we already have the piece
     let piece_completion_status_mg = piece_completion_status
         .lock()
