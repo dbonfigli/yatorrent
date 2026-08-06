@@ -5,8 +5,8 @@ use anyhow::Error;
 use sha1::{Digest, Sha1};
 
 use crate::bencoding::Value::{self, Dict, Int};
-use crate::manager::metadata_handler::{
-    MetadataHandler, MetadataPieceReqResponse, MetadataPieceRequest,
+use crate::manager::metadata_store::{
+    MetadataPieceReqResponse, MetadataPieceRequest, MetadataStore,
 };
 use crate::manager::peer::{
     METADATA_MESSAGE_DATA, METADATA_MESSAGE_REJECT, METADATA_MESSAGE_REQUEST, MetadataMessage, Peer,
@@ -27,7 +27,7 @@ enum MetadataMessageHandlingOutcome {
 
 pub(super) struct MetadataState {
     torrent_info_hash: [u8; 20],
-    metadata_handler: MetadataHandler,
+    metadata_handler: MetadataStore,
 }
 
 impl MetadataState {
@@ -38,14 +38,14 @@ impl MetadataState {
     ) -> Self {
         MetadataState {
             torrent_info_hash,
-            metadata_handler: MetadataHandler::new(raw_metadata_size, raw_metadata),
+            metadata_handler: MetadataStore::new(raw_metadata_size, raw_metadata),
         }
     }
 
     pub(super) fn update_raw_metadata_size(&mut self, metadata_size: i64) {
         if self.metadata_handler.raw_metadata_size().is_none() {
             // we do not know the metadata size yet, take notes
-            self.metadata_handler = MetadataHandler::new(Some(metadata_size), None);
+            self.metadata_handler = MetadataStore::new(Some(metadata_size), None);
         }
     }
 
@@ -162,7 +162,7 @@ impl MetadataState {
     ) {
         match self
             .metadata_handler
-            .generate_piece_req_response(piece_idx as usize)
+            .generate_metadata_piece_req_response(piece_idx as usize)
         {
             None => {
                 log::debug!(
@@ -199,7 +199,7 @@ impl MetadataState {
 
         if self.metadata_handler.raw_metadata_size().is_none() {
             // we do not know the metadata size yet, take notes
-            self.metadata_handler = MetadataHandler::new(Some(raw_metadata_size), None);
+            self.metadata_handler = MetadataStore::new(Some(raw_metadata_size), None);
         }
 
         self.metadata_handler
@@ -257,7 +257,7 @@ impl MetadataState {
             "downloaded metadata is corrupted ({}), starting over its download...",
             error
         );
-        self.metadata_handler = MetadataHandler::new(None, None);
+        self.metadata_handler = MetadataStore::new(None, None);
     }
 }
 

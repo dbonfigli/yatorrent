@@ -27,7 +27,7 @@ pub struct MetadataPieceRequest {
     pub piece_index: usize,
 }
 
-pub struct MetadataHandler {
+pub struct MetadataStore {
     metadata_piece_download_status: Vec<MetadataPieceDownloadStatus>, // The index in the vector is the piece index
     raw_metadata: Option<Vec<u8>>,
     raw_metadata_size: Option<i64>,
@@ -57,7 +57,7 @@ fn metadata_pieces_from_size(size: i64, default_value: bool) -> Vec<MetadataPiec
     ]
 }
 
-impl MetadataHandler {
+impl MetadataStore {
     pub fn new(raw_metadata_size: Option<i64>, raw_metadata: Option<Vec<u8>>) -> Self {
         // discard negative values
         let raw_metadata_size = raw_metadata_size.filter(|s| *s > 0);
@@ -72,7 +72,7 @@ impl MetadataHandler {
             None => raw_metadata_size.map(|metadata_size| vec![0; metadata_size as usize]),
         };
 
-        MetadataHandler {
+        MetadataStore {
             metadata_piece_download_status,
             raw_metadata,
             raw_metadata_size,
@@ -139,7 +139,7 @@ impl MetadataHandler {
         &self.raw_metadata
     }
 
-    pub fn generate_piece_req_response(
+    pub fn generate_metadata_piece_req_response(
         &self,
         piece_idx: usize,
     ) -> Option<MetadataPieceReqResponse> {

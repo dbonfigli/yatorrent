@@ -1,5 +1,5 @@
 mod bandwidth_tracker;
-mod metadata_handler;
+mod metadata_store;
 mod peer;
 mod peer_handler;
 mod piece_requestor;
