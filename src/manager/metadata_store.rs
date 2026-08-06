@@ -63,7 +63,17 @@ impl MetadataStore {
         let raw_metadata_size = raw_metadata_size.filter(|s| *s > 0);
 
         let metadata_piece_download_status = match raw_metadata_size {
-            None => Vec::new(),
+            // We normally get the size with the peer handshake, but we could later discard it in case of metadata corruptions.
+            // By setting the metadata_piece_download_status with size 1, will will perform requests for the piece 0 even if we
+            // don't know the size, and with that we will get the it.
+            None => vec![
+                MetadataPieceDownloadStatus {
+                    downloaded: false,
+                    request_destination_peer: "0.0.0.0:0".to_string(),
+                    request_time: SystemTime::UNIX_EPOCH
+                };
+                1
+            ],
             Some(s) => metadata_pieces_from_size(s, raw_metadata.is_some()),
         };
 
@@ -80,7 +90,8 @@ impl MetadataStore {
     }
 
     pub fn full_metadata_known(&self) -> bool {
-        !self.metadata_piece_download_status.is_empty()
+        !self.raw_metadata_size.is_none()
+            && !self.metadata_piece_download_status.is_empty()
             && self
                 .metadata_piece_download_status
                 .iter()
