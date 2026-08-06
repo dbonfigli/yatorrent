@@ -1,7 +1,5 @@
 use crate::{
-    bencoding::Value,
-    metadata::infodict::ParsedInfodict,
-    util::{FileEntry, pretty_info_hash},
+    bencoding::Value, metadata::infodict::ParsedInfodict, util::{FileEntry, HostAndPort, pretty_info_hash},
 };
 use anyhow::{Result, bail};
 use sha1::{Digest, Sha1};
@@ -14,7 +12,7 @@ use super::infodict::{self, MetainfoFile};
 pub struct Metainfo {
     pub announce_list: Vec<Vec<String>>,
     pub url_list: Vec<String>,
-    pub nodes: Vec<String>,
+    pub nodes: Vec<HostAndPort>,
     pub piece_length: u64,           // number of bytes in each piece (integer)
     pub piece_hashes: Vec<[u8; 20]>, // 20-byte SHA1 of each piece
     pub info_hash: [u8; 20], // 20-byte SHA1 hash of the value of the info key from the Metainfo file

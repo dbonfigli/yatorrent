@@ -7,8 +7,7 @@ use std::{
 use rand::seq::SliceRandom;
 use size::{Size, Style};
 
-use crate::manager::peer::Peer;
-use crate::manager::peer_handler::PeerAddr;
+use crate::{manager::peer::Peer, util::HostAndPort};
 
 const METADATA_PIECE_SIZE_B: usize = 16384;
 const PEER_METADATA_REQUEST_REJECTION_COOL_OFF_PERIOD: Duration = Duration::from_secs(30);
@@ -17,12 +16,12 @@ const MAX_OUTSTANDING_METADATA_PIECE_REQUESTS_PER_PEER: i64 = 100;
 const METADATA_BIG_WARN_THRESHOLD: i64 = 200 * 1024 * 1024;
 
 pub struct MetadataHandler {
-    metadata_piece_download_status: Vec<(bool, PeerAddr, SystemTime)>, // downloaded, peer addr we requested piece to, request time
+    metadata_piece_download_status: Vec<(bool, HostAndPort, SystemTime)>, // downloaded, peer addr we requested piece to, request time
     raw_metadata: Option<Vec<u8>>,
     raw_metadata_size: Option<i64>,
 }
 
-fn metadata_pieces_from_size(size: i64, default_value: bool) -> Vec<(bool, PeerAddr, SystemTime)> {
+fn metadata_pieces_from_size(size: i64, default_value: bool) -> Vec<(bool, HostAndPort, SystemTime)> {
     if size > METADATA_BIG_WARN_THRESHOLD {
         log::warn!(
             "the metadata size is abnormally big: {} (metadata is fully kept in memory)",
@@ -151,10 +150,10 @@ impl MetadataHandler {
 
     pub fn generate_metadata_piece_reqs(
         &mut self,
-        peers: &HashMap<String, Peer>,
-    ) -> Vec<(PeerAddr, usize)> {
+        peers: &HashMap<HostAndPort, Peer>,
+    ) -> Vec<(HostAndPort, usize)> {
         // get inflight requests
-        let mut inflight_metadata_piece_requests_per_peer: HashMap<PeerAddr, i64> = HashMap::new();
+        let mut inflight_metadata_piece_requests_per_peer: HashMap<HostAndPort, i64> = HashMap::new();
         let now = SystemTime::now();
         for (downloaded, peer_addr, request_time) in self.metadata_piece_download_status.iter() {
             if *downloaded
@@ -187,7 +186,7 @@ impl MetadataHandler {
                     .unwrap_or_default();
                 (outstanding_req, peer_addr.clone())
             })
-            .collect::<Vec<(i64, String)>>();
+            .collect::<Vec<(i64, HostAndPort)>>();
         possible_peers.shuffle(&mut rand::rng());
         possible_peers.sort_by_key(|k| k.0);
 

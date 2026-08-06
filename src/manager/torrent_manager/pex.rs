@@ -6,8 +6,9 @@ use std::{
 
 use crate::{
     bencoding::Value::{self, Dict, Str},
-    manager::{peer::Peer, peer_handler::PeerAddr},
+    manager::peer::Peer,
     tracker,
+    util::HostAndPort,
 };
 
 const ADDED_DROPPED_PEER_EVENTS_RETENTION: Duration = Duration::from_secs(90); // should be bigger than PEX_MESSAGE_COOL_OFF_PERIOD
@@ -19,7 +20,7 @@ pub enum PexEvent {
 }
 
 pub(super) struct PexHandler {
-    added_dropped_peer_events: Vec<(SystemTime, PeerAddr, PexEvent)>, // time of event, address of peer for this event, pex event
+    added_dropped_peer_events: Vec<(SystemTime, HostAndPort, PexEvent)>, // time of event, address of peer for this event, pex event
 }
 
 impl PexHandler {
@@ -29,7 +30,7 @@ impl PexHandler {
         }
     }
 
-    pub(super) async fn send_pex_messages(&mut self, peers: &mut HashMap<PeerAddr, Peer>) {
+    pub(super) async fn send_pex_messages(&mut self, peers: &mut HashMap<HostAndPort, Peer>) {
         // remove old added / dropped events
         let now = SystemTime::now();
         self.added_dropped_peer_events
@@ -47,7 +48,7 @@ impl PexHandler {
         }
     }
 
-    pub(super) fn new_pex_event(&mut self, peer_addr: String, pex_event: PexEvent) {
+    pub(super) fn new_pex_event(&mut self, peer_addr: HostAndPort, pex_event: PexEvent) {
         self.added_dropped_peer_events
             .push((SystemTime::now(), peer_addr, pex_event));
     }
@@ -55,8 +56,8 @@ impl PexHandler {
 
 pub(super) fn handle_receive_extended_message_ut_pex(
     extended_message: Value,
-    peer_addr: String,
-    advertised_peers: Arc<Mutex<HashMap<PeerAddr, (tracker::Peer, SystemTime)>>>,
+    peer_addr: HostAndPort,
+    advertised_peers: Arc<Mutex<HashMap<HostAndPort, (tracker::Peer, SystemTime)>>>,
 ) {
     let d = match extended_message {
         Dict(d, _, _) => d,

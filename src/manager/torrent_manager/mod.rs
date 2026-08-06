@@ -11,7 +11,7 @@ use crate::manager::bandwidth_tracker::BandwidthTracker;
 
 use crate::manager::peer::Peer;
 use crate::manager::peer_handler;
-use crate::manager::peer_handler::{PeerAddr, PeersToManagerMsg, ToNewIncomingPeersHandlerMsg};
+use crate::manager::peer_handler::{PeersToManagerMsg, ToNewIncomingPeersHandlerMsg};
 use crate::manager::piece_requestor::PieceRequestor;
 use crate::manager::rate_limiter::RateLimiter;
 use crate::manager::torrent_manager::dht_state::DhtState;
@@ -21,7 +21,7 @@ use crate::manager::torrent_manager::pex::PexHandler;
 use crate::manager::torrent_manager::tracker_state::TrackerState;
 use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::tracker;
-use crate::util::FileEntry;
+use crate::util::{FileEntry, HostAndPort};
 
 mod control_loop;
 mod dht_state;
@@ -63,9 +63,9 @@ struct TorrentManagerConfig {
 }
 
 struct PeersState {
-    peers: HashMap<PeerAddr, Peer>,
-    advertised_peers: Arc<Mutex<HashMap<PeerAddr, (tracker::Peer, SystemTime)>>>, // peer addr -> (peer, last connection attempt)
-    bad_peers: HashSet<PeerAddr>, // todo: remove old bad peers after a while?
+    peers: HashMap<HostAndPort, Peer>,
+    advertised_peers: Arc<Mutex<HashMap<HostAndPort, (tracker::Peer, SystemTime)>>>, // peer addr -> (peer, last connection attempt)
+    bad_peers: HashSet<HostAndPort>, // todo: remove old bad peers after a while?
     to_new_incoming_peers_handler_tx: Sender<ToNewIncomingPeersHandlerMsg>,
     to_new_incoming_peers_handler_rx: Option<Receiver<ToNewIncomingPeersHandlerMsg>>, // optional bc we will move it to the incoming peer handler at start, todo: should we move creation of this channel there?
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
@@ -105,8 +105,8 @@ impl TorrentManager {
         )>,
         raw_metadata: Option<Vec<u8>>,
         listening_dht_port: u16,
-        dht_nodes: Vec<String>,
-        initial_peers: Vec<String>,
+        dht_nodes: Vec<HostAndPort>,
+        initial_peers: Vec<HostAndPort>,
         show_peers_details: bool,
         max_connected_peers: usize,
         max_download_bandwidth: Option<i64>,

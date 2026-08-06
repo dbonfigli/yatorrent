@@ -1,6 +1,8 @@
 use core::str;
 use std::ascii;
 
+pub type HostAndPort = String; // string of format ip:port
+
 pub fn force_string(v: &Vec<u8>) -> String {
     str::from_utf8(v)
         .unwrap_or(

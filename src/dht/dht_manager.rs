@@ -22,7 +22,7 @@ use crate::{
         },
         routing_table::{K_FACTOR, Node, biguint_to_u8_20, distance},
     },
-    util::{force_string, pretty_info_hash},
+    util::{HostAndPort, force_string, pretty_info_hash},
 };
 
 use super::{messages::KRPCMessage, routing_table::Bucket};
@@ -60,7 +60,7 @@ fn generate_transaction_id() -> [u8; 10] {
 
 pub enum ToDhtManagerMsg {
     GetNewPeers([u8; 20]), // info hash
-    NewNode(String),       // addr of new node, i.e. "host:port" string
+    NewNode(HostAndPort),     // host:port of new node
     ConnectedToNewPeer([u8; 20], Ipv4Addr, u16),
 }
 
@@ -72,7 +72,7 @@ pub struct DhtManager {
     listening_dht_port: u16,
     listening_torrent_wire_protocol_port: u16,
     own_node_id: [u8; 20],
-    bootstrap_nodes: Vec<String>,
+    bootstrap_nodes: Vec<HostAndPort>,
     msg_sender: MessageSender,
     routing_table: Bucket,
     token_signing_secret: [u8; 10], // todo: we must rotate this once in a while
@@ -108,7 +108,7 @@ struct MessageSender {
     inflight_requests: HashMap<
         Vec<u8>,
         (
-            String,           // dest addr
+            HostAndPort,         // dest addr
             SystemTime,       // req time
             KRPCMessage,      // message
             Option<[u8; 20]>, // optional request id (info hash or random id the request related to) in case it was a get_peers or find_node request
@@ -134,7 +134,7 @@ impl MessageSender {
     pub async fn do_req(
         &mut self,
         socket: &UdpSocket,
-        dest: String,
+        dest: HostAndPort,
         msg: KRPCMessage,
         request_id: Option<[u8; 20]>,
         call_depth: usize,
@@ -167,7 +167,7 @@ impl DhtManager {
     pub fn new(
         listening_torrent_wire_protocol_port: u16,
         listening_dht_port: u16,
-        mut bootstrap_nodes: Vec<String>,
+        mut bootstrap_nodes: Vec<HostAndPort>,
     ) -> DhtManager {
         for n in WELL_KNOWN_BOOTSTRAP_NODES {
             bootstrap_nodes.push(n.to_string());
@@ -362,7 +362,7 @@ impl DhtManager {
         }
     }
 
-    async fn find_node(&mut self, to_addr: String, socket: &UdpSocket, node_id: [u8; 20]) {
+    async fn find_node(&mut self, to_addr: HostAndPort, socket: &UdpSocket, node_id: [u8; 20]) {
         let mut random_id: [u8; 20] = [0u8; 20];
         for i in 0..20 {
             random_id[i] = rand::random();
@@ -1045,6 +1045,6 @@ impl DhtManager {
     }
 }
 
-fn to_addr_string(addr: &Ipv4Addr, port: u16) -> String {
+fn to_addr_string(addr: &Ipv4Addr, port: u16) -> HostAndPort {
     format!("{}:{port}", addr.to_string())
 }

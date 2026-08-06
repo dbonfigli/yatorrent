@@ -13,7 +13,7 @@ use tokio::sync::mpsc::{Receiver, UnboundedSender};
 
 use crate::persistence::piece::Piece;
 use crate::persistence::torrent_data_status::TorrentDataStatus;
-use crate::util::FileEntry;
+use crate::util::{FileEntry, HostAndPort};
 
 const MAX_CONCURRENT_READ_OPS: usize = 10; // todo: make this dynamic depending on the read speed (spinning disk should have this set to 1)
 
@@ -121,14 +121,14 @@ type PieceCompletionStatus = Vec<bool>; // piece identified by position in array
 type PieceHashes = Vec<[u8; 20]>; // piece identified by position in array -> hash
 
 pub struct WritePieceBlockRequest {
-    pub requestor_peer_addr: String,
+    pub requestor_peer_addr: HostAndPort,
     pub piece_idx: usize,
     pub data: Vec<u8>,
     pub block_begin: u64,
 }
 
 pub struct WritePieceBlockRequestReference {
-    pub requestor_peer_addr: String,
+    pub requestor_peer_addr: HostAndPort,
     pub piece_idx: usize,
 }
 
@@ -144,7 +144,7 @@ pub struct WritePieceBlockResponse {
 }
 
 pub struct ReadPieceBlockRequest {
-    pub requestor_peer_addr: String,
+    pub requestor_peer_addr: HostAndPort,
     pub piece_idx: usize,
     pub block_begin: u64,
     pub block_length: u64,

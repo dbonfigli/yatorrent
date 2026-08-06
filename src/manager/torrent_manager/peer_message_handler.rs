@@ -7,7 +7,7 @@ use crate::{
     },
     persistence::file_manager::{ReadPieceBlockRequest, WritePieceBlockRequest},
     torrent_protocol::wire_protocol::{BlockRequest, Message},
-    util::force_string,
+    util::{HostAndPort, force_string},
 };
 
 // the max request size we allow from peers, in bytes. In theory none should ask for more than 16KB, here we are a bit lenient.
@@ -15,7 +15,7 @@ use crate::{
 const MAX_ALLOWED_BLOCK_REQUEST_SIZE_B: u32 = BLOCK_SIZE_B as u32 * 4;
 
 impl TorrentManager {
-    pub(super) async fn handle_receive_message(&mut self, peer_addr: String, msg: Message) {
+    pub(super) async fn handle_receive_message(&mut self, peer_addr: HostAndPort, msg: Message) {
         log::trace!("received message from peer {peer_addr}: {msg}");
         match msg {
             Message::KeepAlive => {}
@@ -93,7 +93,7 @@ impl TorrentManager {
         }
     }
 
-    async fn handle_receive_have_message(&mut self, peer_addr: String, piece_idx: u32) {
+    async fn handle_receive_have_message(&mut self, peer_addr: HostAndPort, piece_idx: u32) {
         let peer = match self.peers_state.peers.get_mut(&peer_addr) {
             Some(peer) => peer,
             None => return,
@@ -123,7 +123,11 @@ impl TorrentManager {
         }
     }
 
-    async fn handle_receive_bitfield_message(&mut self, peer_addr: String, bitfield: Vec<bool>) {
+    async fn handle_receive_bitfield_message(
+        &mut self,
+        peer_addr: HostAndPort,
+        bitfield: Vec<bool>,
+    ) {
         let torrent_data_status = match &mut self.torrent_data_status {
             Some(torrent_data_status) => torrent_data_status,
             None => return,
@@ -171,7 +175,7 @@ impl TorrentManager {
         // todo: maybe re-compute assignations immediately here instead of waiting tick
     }
 
-    async fn handle_receive_choke_message(&mut self, peer_addr: String) {
+    async fn handle_receive_choke_message(&mut self, peer_addr: HostAndPort) {
         let peer = match self.peers_state.peers.get_mut(&peer_addr) {
             Some(peer) => peer,
             None => return,
@@ -187,7 +191,7 @@ impl TorrentManager {
 
     async fn handle_receive_request_message(
         &mut self,
-        peer_addr: String,
+        peer_addr: HostAndPort,
         block_request: BlockRequest,
     ) {
         if self.torrent_data_status.is_none() {
@@ -244,7 +248,7 @@ impl TorrentManager {
         // once the block is read, we will send it on handle_read_piece_block_response
     }
 
-    async fn handle_suggest_message(&mut self, peer_addr: String, _piece_idx: u32) {
+    async fn handle_suggest_message(&mut self, peer_addr: HostAndPort, _piece_idx: u32) {
         if let Some(peer) = self.peers_state.peers.get_mut(&peer_addr) {
             if !peer.supports_fast_extension() {
                 log::debug!(
@@ -259,7 +263,7 @@ impl TorrentManager {
         log::trace!("received a suggest from {peer_addr}");
     }
 
-    async fn handle_have_all_message(&mut self, peer_addr: String) {
+    async fn handle_have_all_message(&mut self, peer_addr: HostAndPort) {
         let torrent_data_status = match &mut self.torrent_data_status {
             Some(torrent_data_status) => torrent_data_status,
             None => return,
@@ -291,7 +295,7 @@ impl TorrentManager {
         // todo: maybe re-compute assignations immediately here instead of waiting tick
     }
 
-    async fn handle_have_none_message(&mut self, peer_addr: String) {
+    async fn handle_have_none_message(&mut self, peer_addr: HostAndPort) {
         let torrent_data_status = match &mut self.torrent_data_status {
             Some(torrent_data_status) => torrent_data_status,
             None => return,
@@ -311,7 +315,11 @@ impl TorrentManager {
         }
     }
 
-    async fn handle_reject_message(&mut self, peer_addr: String, _block_request: BlockRequest) {
+    async fn handle_reject_message(
+        &mut self,
+        peer_addr: HostAndPort,
+        _block_request: BlockRequest,
+    ) {
         if let Some(peer) = self.peers_state.peers.get_mut(&peer_addr) {
             if !peer.supports_fast_extension() {
                 log::debug!(
@@ -325,7 +333,7 @@ impl TorrentManager {
         }
     }
 
-    async fn handle_allow_fast_message(&mut self, peer_addr: String, _piece_idx: usize) {
+    async fn handle_allow_fast_message(&mut self, peer_addr: HostAndPort, _piece_idx: usize) {
         if let Some(peer) = self.peers_state.peers.get_mut(&peer_addr) {
             if !peer.supports_fast_extension() {
                 log::debug!(
@@ -341,7 +349,7 @@ impl TorrentManager {
 
     async fn handle_receive_extended_message(
         &mut self,
-        peer_addr: String,
+        peer_addr: HostAndPort,
         extension_id: u8,
         extended_message: Value,
         additional_data: Vec<u8>,
@@ -399,7 +407,7 @@ impl TorrentManager {
     async fn handle_receive_extended_message_handshake(
         &mut self,
         extended_message: Value,
-        peer_addr: String,
+        peer_addr: HostAndPort,
     ) {
         let extended_message_dict = match extended_message {
             Dict(extended_message_dict, _, _) => extended_message_dict,
@@ -457,7 +465,7 @@ impl TorrentManager {
 
     async fn handle_receive_piece_message(
         &mut self,
-        peer_addr: String,
+        peer_addr: HostAndPort,
         piece_idx: u32,
         begin: u32,
         data: Vec<u8>,
@@ -499,7 +507,7 @@ impl TorrentManager {
             .await;
     }
 
-    async fn send_pieces_reqs_to_peer(&mut self, peer_addr: String) {
+    async fn send_pieces_reqs_to_peer(&mut self, peer_addr: HostAndPort) {
         let torrent_data_status = match &self.torrent_data_status {
             Some(torrent_data_status) => torrent_data_status,
             None => return,

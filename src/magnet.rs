@@ -1,10 +1,12 @@
 use anyhow::{Result, bail};
 use percent_encoding;
 
+use crate::util::HostAndPort;
+
 pub struct Magnet {
     pub info_hash: [u8; 20],
     pub tracker_urls: Vec<String>,
-    pub peer_addresses: Vec<String>,
+    pub peer_addresses: Vec<HostAndPort>,
 }
 
 impl Magnet {
@@ -51,7 +53,7 @@ impl Magnet {
             }
         }
 
-        let peer_addresses: Vec<String> = magnet_url
+        let peer_addresses: Vec<HostAndPort> = magnet_url
             .query_pairs()
             .filter(|(key, _)| key == "x.pe")
             .map(|(_, value)| {

@@ -1,11 +1,11 @@
-use crate::manager::{
+use crate::{manager::{
     peer_handler::{
         MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER, ToNewIncomingPeersHandlerMsg,
     },
     torrent_manager::{
         FileManagerState, PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY, TorrentManager, pex::PexEvent,
     },
-};
+}, util::HostAndPort};
 
 pub(super) fn should_choke(
     peers_to_torrent_manager_channel_capacity: usize,
@@ -21,7 +21,7 @@ pub(super) fn should_choke(
 }
 
 impl TorrentManager {
-    pub(super) async fn remove_peer(&mut self, peer_addr: String) {
+    pub(super) async fn remove_peer(&mut self, peer_addr: HostAndPort) {
         self.pex_handler
             .new_pex_event(peer_addr.clone(), PexEvent::Dropped);
         if let Some(_) = self.peers_state.peers.remove(&peer_addr) {

@@ -5,7 +5,7 @@ use std::{
 
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
-use crate::dht::dht_manager::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMsg};
+use crate::{dht::dht_manager::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMsg}, util::HostAndPort};
 
 const DHT_BOOTSTRAP_TIME: Duration = Duration::from_secs(5);
 const DHT_NEW_PEER_COOL_OFF_PERIOD: Duration = Duration::from_secs(15);
@@ -14,7 +14,7 @@ const DHT_MANAGER_TO_TORRENT_MANAGER_CAPACITY: usize = 1000;
 
 pub(super) struct DhtState {
     torrent_info_hash: [u8; 20],
-    dht_nodes: Vec<String>,
+    dht_nodes: Vec<HostAndPort>,
     // internal channels, we store them here to avoid passing them around in nested calls
     to_dht_manager_tx: Sender<ToDhtManagerMsg>,
     to_dht_manager_rx: Option<Receiver<ToDhtManagerMsg>>, // optional bc we will move it to the dht manager at start, todo: should we move creation of this channel there?
@@ -22,7 +22,7 @@ pub(super) struct DhtState {
 }
 
 impl DhtState {
-    pub(super) fn new(dht_nodes: Vec<String>, torrent_info_hash: [u8; 20]) -> Self {
+    pub(super) fn new(dht_nodes: Vec<HostAndPort>, torrent_info_hash: [u8; 20]) -> Self {
         let (to_dht_manager_tx, to_dht_manager_rx) = mpsc::channel(TO_DHT_MANAGER_CHANNEL_CAPACITY);
 
         DhtState {

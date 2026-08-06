@@ -16,7 +16,7 @@ use crate::manager::rate_limiter::RateLimiter;
 use crate::torrent_protocol::wire_protocol::{
     BlockRequest, Message, Protocol, ProtocolReadHalf, ProtocolWriteHalf,
 };
-use crate::util::{force_string, pretty_info_hash, version_string};
+use crate::util::{HostAndPort, force_string, pretty_info_hash, version_string};
 
 pub const MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER: i64 = 500;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -39,14 +39,13 @@ impl fmt::Display for ToPeerMsg {
     }
 }
 
-pub type PeerAddr = String;
 pub type FastExtensionSupport = bool;
 
 pub enum PeersToManagerMsg {
-    Error(PeerAddr, PeerError),
-    Receive(PeerAddr, Message),
+    Error(HostAndPort, PeerError),
+    Receive(HostAndPort, Message),
     NewPeer(TcpStream, FastExtensionSupport),
-    PieceBlockRequestFulfilled(PeerAddr),
+    PieceBlockRequestFulfilled(HostAndPort),
 }
 
 #[derive(PartialEq)]
@@ -59,7 +58,7 @@ pub enum PeerError {
 pub type ToPeerCancelMsg = (BlockRequest, SystemTime); // block request, cancel time
 
 pub async fn connect_to_new_peer(
-    host: String,
+    host: HostAndPort,
     port: u16,
     info_hash: [u8; 20],
     own_peer_id: String,
@@ -286,7 +285,7 @@ fn addr_or_unknown(stream: &TcpStream) -> String {
 }
 
 pub fn start_peer_msg_handlers(
-    peer_addr: String,
+    peer_addr: HostAndPort,
     tcp_stream: TcpStream,
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
     to_peer_rx: Receiver<ToPeerMsg>,
@@ -414,7 +413,7 @@ async fn handshake(
 }
 
 async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
-    peer_addr: String,
+    peer_addr: HostAndPort,
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
     mut wire_proto: T,
     download_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
@@ -486,7 +485,7 @@ async fn rate_limit(proto_msg: &Message, rate_limiter: &Option<Arc<Mutex<RateLim
 }
 
 async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
-    peer_addr: String,
+    peer_addr: HostAndPort,
     mut to_peer_rx: Receiver<ToPeerMsg>,
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
     mut wire_proto: T,

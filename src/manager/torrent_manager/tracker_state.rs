@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use crate::manager::peer_handler::PeerAddr;
 use crate::tracker;
 use crate::tracker::{Event, NoTrackerError, Response, TrackerClient};
+use crate::util::HostAndPort;
 
 pub(super) struct TrackerState {
     tracker_client: Arc<Mutex<TrackerClient>>,
@@ -36,7 +36,7 @@ impl TrackerState {
     // used to send recurring updates to tracker
     pub(super) async fn async_update_to_tracker(
         &mut self,
-        advertised_peers: Arc<Mutex<HashMap<String, (tracker::Peer, SystemTime)>>>,
+        advertised_peers: Arc<Mutex<HashMap<HostAndPort, (tracker::Peer, SystemTime)>>>,
         bytes_left: Option<u64>,
         uploaded_downloaded_bytes: (u64, u64),
     ) {
@@ -68,7 +68,7 @@ impl TrackerState {
     pub(super) async fn async_request_to_tracker(
         &mut self,
         event: Event,
-        advertised_peers: Arc<Mutex<HashMap<String, (tracker::Peer, SystemTime)>>>,
+        advertised_peers: Arc<Mutex<HashMap<HostAndPort, (tracker::Peer, SystemTime)>>>,
         bytes_left: Option<u64>,
         uploaded_downloaded_bytes: (u64, u64),
     ) {
@@ -159,7 +159,7 @@ async fn request_to_tracker(
 
 fn update_tracker_client_and_advertised_peers(
     tracker_client: Arc<Mutex<TrackerClient>>,
-    advertised_peers: Arc<Mutex<HashMap<PeerAddr, (tracker::Peer, SystemTime)>>>,
+    advertised_peers: Arc<Mutex<HashMap<HostAndPort, (tracker::Peer, SystemTime)>>>,
     updated_tracker_client: TrackerClient,
     latest_advertised_peers: Vec<tracker::Peer>,
 ) {

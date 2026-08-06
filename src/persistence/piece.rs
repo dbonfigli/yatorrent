@@ -3,7 +3,19 @@ use std::cmp;
 #[derive(PartialEq, Debug, Clone)]
 pub struct Piece {
     length: u64,
-    fragments: Vec<(u64, u64)>, // begin, end (inclusive)
+    fragments: Vec<Fragment>,
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct Fragment {
+    pub begin: u64,
+    pub end: u64, // inclusive
+}
+
+impl Fragment {
+    fn new(begin: u64, end: u64) -> Self {
+        Fragment { begin, end }
+    }
 }
 
 impl Piece {
@@ -19,7 +31,7 @@ impl Piece {
         match self.get_fragment_idx_containing_value(begin) {
             None => false,
             Some(idx) => {
-                if end <= self.fragments[idx].1 {
+                if end <= self.fragments[idx].end {
                     return true;
                 }
                 false
@@ -30,28 +42,28 @@ impl Piece {
     pub fn add_fragment(&mut self, begin: u64, end: u64) {
         assert!(begin <= end && end < self.length);
         if self.fragments.len() == 0 {
-            self.fragments.push((begin, end));
+            self.fragments.push(Fragment::new(begin, end));
             return;
         }
         let closest_idx = self.get_closest_fragment_idx_containing_value(begin);
         let mut idx = closest_idx + 1;
-        if begin < self.fragments[closest_idx].0 {
+        if begin < self.fragments[closest_idx].begin {
             idx = closest_idx;
         }
         if idx >= self.fragments.len() {
-            self.fragments.push((begin, end));
+            self.fragments.push(Fragment::new(begin, end));
         } else {
-            self.fragments.insert(idx, (begin, end));
+            self.fragments.insert(idx, Fragment::new(begin, end));
         }
-        while idx + 1 < self.fragments.len() && end + 1 >= self.fragments[idx + 1].0 {
-            self.fragments[idx] = (begin, cmp::max(end, self.fragments[idx + 1].1));
+        while idx + 1 < self.fragments.len() && end + 1 >= self.fragments[idx + 1].begin {
+            self.fragments[idx] = Fragment::new(begin, cmp::max(end, self.fragments[idx + 1].end));
             self.fragments.remove(idx + 1);
         }
         if idx != 0 {
-            if begin <= self.fragments[idx - 1].1 + 1 {
-                self.fragments[idx] = (
-                    cmp::min(begin, self.fragments[idx - 1].0),
-                    self.fragments[idx].1,
+            if begin <= self.fragments[idx - 1].end + 1 {
+                self.fragments[idx] = Fragment::new(
+                    cmp::min(begin, self.fragments[idx - 1].begin),
+                    self.fragments[idx].end,
                 );
                 self.fragments.remove(idx - 1);
             }
@@ -61,43 +73,43 @@ impl Piece {
     pub fn complete(&self) -> bool {
         if self.length == 0
             || (self.fragments.len() == 1
-                && self.fragments[0].0 == 0
-                && self.fragments[0].1 == self.length - 1)
+                && self.fragments[0].begin == 0
+                && self.fragments[0].end == self.length - 1)
         {
             return true;
         }
         false
     }
 
-    pub fn get_next_fragment(&self, max_fragment_size: u64) -> Option<(u64, u64)> {
+    pub fn get_next_fragment(&self, max_fragment_size: u64) -> Option<Fragment> {
         assert!(max_fragment_size > 0);
         if self.complete() {
             None
         } else if self.fragments.len() == 0 {
             let begin = 0;
             let end = cmp::min(max_fragment_size - 1, self.length - 1);
-            Some((begin, end))
+            Some(Fragment::new(begin, end))
         } else if self.fragments.len() == 1 {
-            if self.fragments[0].0 == 0 {
-                let begin = self.fragments[0].1 + 1;
+            if self.fragments[0].begin == 0 {
+                let begin = self.fragments[0].end + 1;
                 let end = cmp::min(begin + max_fragment_size - 1, self.length - 1);
-                Some((begin, end))
+                Some(Fragment::new(begin, end))
             } else {
                 let begin = 0;
-                let end = cmp::min(max_fragment_size - 1, self.fragments[0].0 - 1);
-                Some((begin, end))
+                let end = cmp::min(max_fragment_size - 1, self.fragments[0].begin - 1);
+                Some(Fragment::new(begin, end))
             }
         } else {
-            if self.fragments[0].0 == 0 {
-                let begin = self.fragments[0].1 + 1;
+            if self.fragments[0].begin == 0 {
+                let begin = self.fragments[0].end + 1;
                 let end_with_max_fragment_size = begin + max_fragment_size - 1;
-                let end_with_next_fragment = begin + self.fragments[1].0 - 1;
+                let end_with_next_fragment = begin + self.fragments[1].begin - 1;
                 let end = cmp::min(end_with_max_fragment_size, end_with_next_fragment);
-                Some((begin, end))
+                Some(Fragment::new(begin, end))
             } else {
                 let begin = 0;
-                let end = cmp::min(max_fragment_size - 1, self.fragments[0].0 - 1);
-                Some((begin, end))
+                let end = cmp::min(max_fragment_size - 1, self.fragments[0].begin - 1);
+                Some(Fragment::new(begin, end))
             }
         }
     }
@@ -111,9 +123,9 @@ impl Piece {
     ) -> Option<usize> {
         if j >= i {
             let mid = i + (j - i) / 2;
-            if self.fragments[mid].0 <= value && value <= self.fragments[mid].1 {
+            if self.fragments[mid].begin <= value && value <= self.fragments[mid].end {
                 Some(mid)
-            } else if self.fragments[mid].0 > value {
+            } else if self.fragments[mid].begin > value {
                 // avoid subtracting with overflow
                 if mid == 0 {
                     return None;
@@ -143,9 +155,9 @@ impl Piece {
     ) -> usize {
         if j >= i {
             let mid = i + (j - i) / 2;
-            if self.fragments[mid].0 <= value && value <= self.fragments[mid].1 {
+            if self.fragments[mid].begin <= value && value <= self.fragments[mid].end {
                 mid
-            } else if self.fragments[mid].0 > value {
+            } else if self.fragments[mid].begin > value {
                 // avoid subtracting with overflow
                 if mid == 0 {
                     return 0;
@@ -157,7 +169,7 @@ impl Piece {
         } else {
             if j == 0 {
                 return j;
-            } else if value < self.fragments[j].0 {
+            } else if value < self.fragments[j].begin {
                 return j - 1;
             }
             j
@@ -174,20 +186,26 @@ impl Piece {
 
 #[cfg(test)]
 mod tests {
+    use crate::persistence::piece::Fragment;
+
     use super::Piece;
 
     #[test]
     fn test_complete() {
         let piece = Piece {
             length: 10,
-            fragments: vec![(0, 1), (3, 6), (8, 9)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+            ],
         };
 
         assert_eq!(piece.complete(), false);
 
         let piece = Piece {
             length: 10,
-            fragments: vec![(0, 9)],
+            fragments: vec![Fragment::new(0, 9)],
         };
 
         assert_eq!(piece.complete(), true);
@@ -203,97 +221,157 @@ mod tests {
 
         let piece = Piece {
             length: 20,
-            fragments: vec![(0, 3)],
+            fragments: vec![Fragment::new(0, 3)],
         };
         assert_eq!(piece.get_fragment_idx_containing_value(4), None);
 
         let piece = Piece {
             length: 20,
-            fragments: vec![(0, 3)],
+            fragments: vec![Fragment::new(0, 3)],
         };
         assert_eq!(piece.get_fragment_idx_containing_value(2), Some(0));
 
         let piece = Piece {
             length: 20,
-            fragments: vec![(0, 3)],
+            fragments: vec![Fragment::new(0, 3)],
         };
         assert_eq!(piece.get_fragment_idx_containing_value(0), Some(0));
 
         let piece = Piece {
             length: 20,
-            fragments: vec![(0, 3)],
+            fragments: vec![Fragment::new(0, 3)],
         };
         assert_eq!(piece.get_fragment_idx_containing_value(3), Some(0));
 
         let piece = Piece {
             length: 20,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (15, 19)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(15, 19),
+            ],
         };
         assert_eq!(piece.get_fragment_idx_containing_value(4), Some(1));
 
         let piece = Piece {
             length: 20,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (15, 19)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(15, 19),
+            ],
         };
         assert_eq!(piece.get_fragment_idx_containing_value(9), Some(2));
 
         let piece = Piece {
             length: 20,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (15, 19)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(15, 19),
+            ],
         };
         assert_eq!(piece.get_fragment_idx_containing_value(8), Some(2));
 
         let piece = Piece {
             length: 20,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (15, 19)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(15, 19),
+            ],
         };
         assert_eq!(piece.get_fragment_idx_containing_value(6), Some(1));
 
         let piece = Piece {
             length: 20,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (15, 19)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(15, 19),
+            ],
         };
         assert_eq!(piece.get_fragment_idx_containing_value(0), Some(0));
 
         let piece = Piece {
             length: 20,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (15, 19)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(15, 19),
+            ],
         };
         assert_eq!(piece.get_fragment_idx_containing_value(2), None);
 
         let piece = Piece {
             length: 20,
-            fragments: vec![(1, 2), (4, 6), (8, 9), (15, 19)],
+            fragments: vec![
+                Fragment::new(1, 2),
+                Fragment::new(4, 6),
+                Fragment::new(8, 9),
+                Fragment::new(15, 19),
+            ],
         };
         assert_eq!(piece.get_fragment_idx_containing_value(0), None);
 
         let piece = Piece {
             length: 20,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (15, 19)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(15, 19),
+            ],
         };
         assert_eq!(piece.get_fragment_idx_containing_value(10), None);
 
         let piece = Piece {
             length: 20,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (15, 19)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(15, 19),
+            ],
         };
         assert_eq!(piece.get_fragment_idx_containing_value(14), None);
 
         let piece = Piece {
             length: 20,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (15, 19)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(15, 19),
+            ],
         };
         assert_eq!(piece.get_fragment_idx_containing_value(15), Some(3));
 
         let piece = Piece {
             length: 20,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (15, 19)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(15, 19),
+            ],
         };
         assert_eq!(piece.get_fragment_idx_containing_value(20), None);
 
         let piece = Piece {
             length: 20,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (15, 19)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(15, 19),
+            ],
         };
         assert_eq!(piece.get_fragment_idx_containing_value(19), Some(3));
     }
@@ -308,97 +386,179 @@ mod tests {
 
         let piece = Piece {
             length: 10,
-            fragments: vec![(0, 1), (3, 6), (8, 9)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+            ],
         };
         assert_eq!(piece.get_closest_fragment_idx_containing_value(4), 1);
 
         let piece = Piece {
             length: 10,
-            fragments: vec![(0, 1), (3, 6), (8, 9)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+            ],
         };
         assert_eq!(piece.get_closest_fragment_idx_containing_value(9), 2);
 
         let piece = Piece {
             length: 10,
-            fragments: vec![(0, 1), (3, 6), (8, 9)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+            ],
         };
         assert_eq!(piece.get_closest_fragment_idx_containing_value(8), 2);
 
         let piece = Piece {
             length: 10,
-            fragments: vec![(0, 1), (3, 6), (8, 9)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+            ],
         };
         assert_eq!(piece.get_closest_fragment_idx_containing_value(6), 1);
 
         let piece = Piece {
             length: 10,
-            fragments: vec![(0, 1), (3, 6), (8, 9)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+            ],
         };
         assert_eq!(piece.get_closest_fragment_idx_containing_value(0), 0);
 
         let piece = Piece {
             length: 10,
-            fragments: vec![(0, 1), (3, 6), (8, 9)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+            ],
         };
         assert_eq!(piece.get_closest_fragment_idx_containing_value(2), 0);
 
         let piece = Piece {
             length: 10,
-            fragments: vec![(1, 2), (4, 6), (8, 9)],
+            fragments: vec![
+                Fragment::new(1, 2),
+                Fragment::new(4, 6),
+                Fragment::new(8, 9),
+            ],
         };
         assert_eq!(piece.get_closest_fragment_idx_containing_value(0), 0);
 
         let piece = Piece {
             length: 10,
-            fragments: vec![(0, 1), (3, 6), (8, 9)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+            ],
         };
         assert_eq!(piece.get_closest_fragment_idx_containing_value(10), 2);
 
         let piece = Piece {
             length: 10,
-            fragments: vec![(0, 1), (3, 6), (8, 9)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+            ],
         };
         assert_eq!(piece.get_closest_fragment_idx_containing_value(7), 1);
 
         let piece = Piece {
             length: 30,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (11, 14), (18, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+            ],
         };
         assert_eq!(piece.get_closest_fragment_idx_containing_value(7), 1);
 
         let piece = Piece {
             length: 30,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (11, 14), (18, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+            ],
         };
         assert_eq!(piece.get_closest_fragment_idx_containing_value(23), 4);
 
         let piece = Piece {
             length: 30,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (11, 14), (18, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+            ],
         };
         assert_eq!(piece.get_closest_fragment_idx_containing_value(2), 0);
 
         let piece = Piece {
             length: 30,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (11, 14), (18, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+            ],
         };
         assert_eq!(piece.get_closest_fragment_idx_containing_value(7), 1);
 
         let piece = Piece {
             length: 30,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (11, 14), (18, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+            ],
         };
         assert_eq!(piece.get_closest_fragment_idx_containing_value(10), 2);
 
         let piece = Piece {
             length: 30,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (11, 14), (18, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+            ],
         };
         assert_eq!(piece.get_closest_fragment_idx_containing_value(15), 3);
 
         let piece = Piece {
             length: 10,
-            fragments: vec![(0, 1), (3, 6), (8, 9)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+            ],
         };
         assert_eq!(piece.get_closest_fragment_idx_containing_value(2), 0);
     }
@@ -407,174 +567,288 @@ mod tests {
     fn test_add_fragment() {
         let mut piece = Piece {
             length: 30,
-            fragments: vec![(0, 1), (3, 4), (8, 9), (11, 14), (18, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 4),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+            ],
         };
         piece.add_fragment(5, 5);
         let expect = Piece {
             length: 30,
-            fragments: vec![(0, 1), (3, 5), (8, 9), (11, 14), (18, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 5),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+            ],
         };
         assert_eq!(piece, expect);
 
         let mut piece = Piece {
             length: 30,
-            fragments: vec![(0, 1), (3, 4), (8, 9), (11, 14), (18, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 4),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+            ],
         };
         piece.add_fragment(7, 7);
         let expect = Piece {
             length: 30,
-            fragments: vec![(0, 1), (3, 4), (7, 9), (11, 14), (18, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 4),
+                Fragment::new(7, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+            ],
         };
         assert_eq!(piece, expect);
 
         let mut piece = Piece {
             length: 30,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (11, 14), (18, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+            ],
         };
         piece.add_fragment(10, 10);
         let expect = Piece {
             length: 30,
-            fragments: vec![(0, 1), (3, 6), (8, 14), (18, 21), (24, 29)],
-        };
-        assert_eq!(piece, expect);
-
-        let mut piece = Piece {
-            length: 50,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (11, 14), (18, 21), (24, 29)],
-        };
-        piece.add_fragment(31, 35);
-        let expect = Piece {
-            length: 50,
             fragments: vec![
-                (0, 1),
-                (3, 6),
-                (8, 9),
-                (11, 14),
-                (18, 21),
-                (24, 29),
-                (31, 35),
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
             ],
         };
         assert_eq!(piece, expect);
 
         let mut piece = Piece {
             length: 50,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (11, 14), (18, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+            ],
+        };
+        piece.add_fragment(31, 35);
+        let expect = Piece {
+            length: 50,
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+                Fragment::new(31, 35),
+            ],
+        };
+        assert_eq!(piece, expect);
+
+        let mut piece = Piece {
+            length: 50,
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+            ],
         };
         piece.add_fragment(30, 35);
         let expect = Piece {
             length: 50,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (11, 14), (18, 21), (24, 35)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 35),
+            ],
         };
         assert_eq!(piece, expect);
 
         let mut piece = Piece {
             length: 50,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (11, 14), (18, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+            ],
         };
         piece.add_fragment(11, 14);
         let expect = Piece {
             length: 50,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (11, 14), (18, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+            ],
         };
         assert_eq!(piece, expect);
 
         let mut piece = Piece {
             length: 50,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (11, 14), (18, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+            ],
         };
         piece.add_fragment(11, 21);
         let expect = Piece {
             length: 50,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (11, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(11, 21),
+                Fragment::new(24, 29),
+            ],
         };
         assert_eq!(piece, expect);
 
         let mut piece = Piece {
             length: 50,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (11, 14), (18, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+            ],
         };
         piece.add_fragment(7, 19);
         let expect = Piece {
             length: 50,
-            fragments: vec![(0, 1), (3, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 21),
+                Fragment::new(24, 29),
+            ],
         };
         assert_eq!(piece, expect);
 
         let mut piece = Piece {
             length: 50,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (11, 14), (18, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+            ],
         };
         piece.add_fragment(7, 31);
         let expect = Piece {
             length: 50,
-            fragments: vec![(0, 1), (3, 31)],
+            fragments: vec![Fragment::new(0, 1), Fragment::new(3, 31)],
         };
         assert_eq!(piece, expect);
 
         let mut piece = Piece {
             length: 50,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (11, 14), (18, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+            ],
         };
         piece.add_fragment(0, 31);
         let expect = Piece {
             length: 50,
-            fragments: vec![(0, 31)],
+            fragments: vec![Fragment::new(0, 31)],
         };
         assert_eq!(piece, expect);
 
         let mut piece = Piece {
             length: 50,
-            fragments: vec![(1, 29)],
+            fragments: vec![Fragment::new(1, 29)],
         };
         piece.add_fragment(0, 31);
         let expect = Piece {
             length: 50,
-            fragments: vec![(0, 31)],
+            fragments: vec![Fragment::new(0, 31)],
         };
         assert_eq!(piece, expect);
 
         let mut piece = Piece {
             length: 50,
-            fragments: vec![(1, 50)],
+            fragments: vec![Fragment::new(1, 50)],
         };
         piece.add_fragment(0, 31);
         let expect = Piece {
             length: 50,
-            fragments: vec![(0, 50)],
+            fragments: vec![Fragment::new(0, 50)],
         };
         assert_eq!(piece, expect);
 
         let mut piece = Piece {
             length: 50,
-            fragments: vec![(1, 40)],
+            fragments: vec![Fragment::new(1, 40)],
         };
         piece.add_fragment(0, 45);
         let expect = Piece {
             length: 50,
-            fragments: vec![(0, 45)],
+            fragments: vec![Fragment::new(0, 45)],
         };
         assert_eq!(piece, expect);
 
         let mut piece = Piece {
             length: 50,
-            fragments: vec![(1, 40)],
+            fragments: vec![Fragment::new(1, 40)],
         };
         piece.add_fragment(1, 45);
         let expect = Piece {
             length: 50,
-            fragments: vec![(1, 45)],
+            fragments: vec![Fragment::new(1, 45)],
         };
         assert_eq!(piece, expect);
 
         let mut piece = Piece {
             length: 50,
-            fragments: vec![(2, 40)],
+            fragments: vec![Fragment::new(2, 40)],
         };
         piece.add_fragment(1, 40);
         let expect = Piece {
             length: 50,
-            fragments: vec![(1, 40)],
+            fragments: vec![Fragment::new(1, 40)],
         };
         assert_eq!(piece, expect);
     }
@@ -583,44 +857,58 @@ mod tests {
     fn test_next_fragment() {
         let piece = Piece {
             length: 50,
-            fragments: vec![(0, 1), (3, 6), (8, 9), (11, 14), (18, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(0, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+            ],
         };
-        assert_eq!(piece.get_next_fragment(1), Some((2, 2)));
+        assert_eq!(piece.get_next_fragment(1), Some(Fragment::new(2, 2)));
 
         let piece = Piece {
             length: 50,
-            fragments: vec![(24, 29)],
+            fragments: vec![Fragment::new(24, 29)],
         };
-        assert_eq!(piece.get_next_fragment(5), Some((0, 4)));
+        assert_eq!(piece.get_next_fragment(5), Some(Fragment::new(0, 4)));
 
         let piece = Piece {
             length: 50,
-            fragments: vec![(24, 29)],
+            fragments: vec![Fragment::new(24, 29)],
         };
-        assert_eq!(piece.get_next_fragment(30), Some((0, 23)));
+        assert_eq!(piece.get_next_fragment(30), Some(Fragment::new(0, 23)));
 
         let piece = Piece {
             length: 50,
-            fragments: vec![(0, 29)],
+            fragments: vec![Fragment::new(0, 29)],
         };
-        assert_eq!(piece.get_next_fragment(30), Some((30, 49)));
+        assert_eq!(piece.get_next_fragment(30), Some(Fragment::new(30, 49)));
 
         let piece = Piece {
             length: 50,
             fragments: vec![],
         };
-        assert_eq!(piece.get_next_fragment(100), Some((0, 49)));
+        assert_eq!(piece.get_next_fragment(100), Some(Fragment::new(0, 49)));
 
         let piece = Piece {
             length: 50,
             fragments: vec![],
         };
-        assert_eq!(piece.get_next_fragment(30), Some((0, 29)));
+        assert_eq!(piece.get_next_fragment(30), Some(Fragment::new(0, 29)));
 
         let piece = Piece {
             length: 50,
-            fragments: vec![(1, 1), (3, 6), (8, 9), (11, 14), (18, 21), (24, 29)],
+            fragments: vec![
+                Fragment::new(1, 1),
+                Fragment::new(3, 6),
+                Fragment::new(8, 9),
+                Fragment::new(11, 14),
+                Fragment::new(18, 21),
+                Fragment::new(24, 29),
+            ],
         };
-        assert_eq!(piece.get_next_fragment(1), Some((0, 0)));
+        assert_eq!(piece.get_next_fragment(1), Some(Fragment::new(0, 0)));
     }
 }

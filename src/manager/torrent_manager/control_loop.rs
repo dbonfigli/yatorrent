@@ -21,6 +21,7 @@ use crate::{
         torrent_manager::{TorrentManager, file_manager_state::FileManagerResponse, pex::PexEvent},
     },
     tracker,
+    util::HostAndPort,
 };
 
 const TICK_INTERVAL: Duration = Duration::from_secs(1);
@@ -85,7 +86,7 @@ impl TorrentManager {
         }
     }
 
-    async fn handle_peer_error(&mut self, peer_addr: String, error_type: PeerError) {
+    async fn handle_peer_error(&mut self, peer_addr: HostAndPort, error_type: PeerError) {
         log::debug!("removing errored peer {peer_addr}");
         if error_type == PeerError::HandshakeError {
             // todo: understand other error cases that are not recoverable and should stop trying again on this peer
@@ -94,7 +95,7 @@ impl TorrentManager {
         self.remove_peer(peer_addr).await;
     }
 
-    fn handle_piece_block_request_fulfilled(&mut self, peer_addr: String) {
+    fn handle_piece_block_request_fulfilled(&mut self, peer_addr: HostAndPort) {
         if let Some(peer) = self.peers_state.peers.get_mut(&peer_addr) {
             peer.decrease_outstanding_incoming_piece_block_requests();
         }

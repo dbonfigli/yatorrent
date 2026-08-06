@@ -9,10 +9,10 @@ use crate::manager::metadata_handler::MetadataHandler;
 use crate::manager::peer::{
     METADATA_MESSAGE_DATA, METADATA_MESSAGE_REJECT, METADATA_MESSAGE_REQUEST, MetadataMessage, Peer,
 };
-use crate::manager::peer_handler::{PeerAddr, ToNewIncomingPeersHandlerMsg};
+use crate::manager::peer_handler::ToNewIncomingPeersHandlerMsg;
 use crate::manager::torrent_manager::TorrentManager;
 use crate::metadata::infodict::{self, ParsedInfodict};
-use crate::util::FileEntry;
+use crate::util::{FileEntry, HostAndPort};
 
 enum MetadataMessageHandlingOutcome {
     MetadataComplete {
@@ -59,7 +59,7 @@ impl MetadataState {
         self.metadata_handler.total_metadata_pieces_downloaded()
     }
 
-    pub(super) async fn send_metadata_reqs(&mut self, peers: &mut HashMap<PeerAddr, Peer>) {
+    pub(super) async fn send_metadata_reqs(&mut self, peers: &mut HashMap<HostAndPort, Peer>) {
         if self.metadata_handler.full_metadata_known() {
             return;
         }
@@ -79,9 +79,9 @@ impl MetadataState {
     async fn handle_receive_extended_message_ut_metadata(
         &mut self,
         value: Value,
-        peer_addr: String,
+        peer_addr: HostAndPort,
         additional_data: Vec<u8>,
-        peers: &mut HashMap<PeerAddr, Peer>,
+        peers: &mut HashMap<HostAndPort, Peer>,
     ) -> MetadataMessageHandlingOutcome {
         let d = match value {
             Dict(d, _, _) => d,
@@ -253,7 +253,7 @@ impl TorrentManager {
     pub(super) async fn handle_receive_extended_message_ut_metadata(
         &mut self,
         value: Value,
-        peer_addr: String,
+        peer_addr: HostAndPort,
         additional_data: Vec<u8>,
     ) {
         let outcome = self

@@ -12,6 +12,7 @@ use crate::{
         torrent_manager::pex::PexEvent,
     },
     torrent_protocol::wire_protocol::{BlockRequest, Message},
+    util::HostAndPort,
 };
 use tokio::sync::mpsc::{
     Sender,
@@ -39,7 +40,7 @@ pub enum MetadataMessage {
 }
 
 pub struct Peer {
-    peer_addr: String,
+    peer_addr: HostAndPort,
     am_choking: bool,
     am_choking_since: SystemTime,
     am_interested: bool,
@@ -66,7 +67,7 @@ pub struct Peer {
 
 impl Peer {
     pub fn new(
-        peer_addr: String,
+        peer_addr: HostAndPort,
         num_pieces: Option<usize>,
         to_peer_tx: Sender<ToPeerMsg>,
         to_peer_cancel_tx: Sender<ToPeerCancelMsg>,
@@ -99,7 +100,7 @@ impl Peer {
         }
     }
 
-    pub fn get_peer_addr(&self) -> String {
+    pub fn get_peer_addr(&self) -> HostAndPort {
         self.peer_addr.clone()
     }
 
@@ -246,7 +247,11 @@ impl Peer {
         self.last_pex_message_sent
     }
 
-    pub async fn send_pex_extension_message(&mut self, added: Vec<String>, dropped: Vec<String>) {
+    pub async fn send_pex_extension_message(
+        &mut self,
+        added: Vec<HostAndPort>,
+        dropped: Vec<HostAndPort>,
+    ) {
         let mut h = HashMap::new();
         if added.len() > 0 {
             h.insert(
@@ -395,7 +400,7 @@ impl Peer {
     pub async fn send_pex_extension_message_for_latest_peer_events(
         &mut self,
         latest_pex_update: SystemTime,
-        added_dropped_peer_events: &Vec<(SystemTime, String, PexEvent)>,
+        added_dropped_peer_events: &Vec<(SystemTime, HostAndPort, PexEvent)>,
     ) {
         if !self.support_pex_extension() {
             return;
@@ -430,7 +435,7 @@ impl Peer {
     }
 }
 
-fn ip_port_list_to_compact_format(addrs: Vec<String>) -> Vec<u8> {
+fn ip_port_list_to_compact_format(addrs: Vec<HostAndPort>) -> Vec<u8> {
     let mut compact_format: Vec<u8> = Vec::new();
     for addr in addrs {
         let ip_port: Vec<_> = addr.split(':').collect();
