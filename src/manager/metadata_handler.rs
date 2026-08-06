@@ -33,6 +33,11 @@ pub struct MetadataHandler {
     raw_metadata_size: Option<i64>,
 }
 
+pub struct MetadataPieceReqResponse {
+    pub piece: Vec<u8>,
+    pub raw_metadata_size: i64,
+}
+
 fn metadata_pieces_from_size(size: i64, default_value: bool) -> Vec<MetadataPieceDownloadStatus> {
     if size > METADATA_BIG_WARN_THRESHOLD {
         log::warn!(
@@ -134,7 +139,7 @@ impl MetadataHandler {
         &self.raw_metadata
     }
 
-    pub fn get_piece(&self, piece_idx: usize) -> Option<(Vec<u8>, i64)> {
+    pub fn generate_piece_req_response(&self, piece_idx: usize) -> Option<MetadataPieceReqResponse> {
         if !self.full_metadata_known() {
             return None;
         }
@@ -155,7 +160,10 @@ impl MetadataHandler {
                 .expect("we know we have the metadata size since the full metadata is known")
                 [piece_data_start..piece_data_end]
                 .to_vec();
-            return Some((piece, raw_metadata_size));
+            return Some(MetadataPieceReqResponse {
+                piece,
+                raw_metadata_size,
+            });
         }
         return None;
     }

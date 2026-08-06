@@ -5,7 +5,9 @@ use anyhow::Error;
 use sha1::{Digest, Sha1};
 
 use crate::bencoding::Value::{self, Dict, Int};
-use crate::manager::metadata_handler::{MetadataHandler, MetadataPieceRequest};
+use crate::manager::metadata_handler::{
+    MetadataHandler, MetadataPieceReqResponse, MetadataPieceRequest,
+};
 use crate::manager::peer::{
     METADATA_MESSAGE_DATA, METADATA_MESSAGE_REJECT, METADATA_MESSAGE_REQUEST, MetadataMessage, Peer,
 };
@@ -158,7 +160,10 @@ impl MetadataState {
         peer: &mut Peer,
         piece_idx: i64,
     ) {
-        match self.metadata_handler.get_piece(piece_idx as usize) {
+        match self
+            .metadata_handler
+            .generate_piece_req_response(piece_idx as usize)
+        {
             None => {
                 log::debug!(
                     "rejecting metadata message request for {piece_idx} piece from {}: full metadata not yet known or requested pieces is out of range",
@@ -167,7 +172,10 @@ impl MetadataState {
                 peer.send_metadata_extension_message(MetadataMessage::Reject(piece_idx as u64))
                     .await
             }
-            Some((piece, raw_metadata_size)) => {
+            Some(MetadataPieceReqResponse {
+                piece,
+                raw_metadata_size,
+            }) => {
                 peer.send_metadata_extension_message(MetadataMessage::Data(
                     piece_idx as u64,
                     raw_metadata_size as u64,
