@@ -1,5 +1,7 @@
 use crate::{
-    bencoding::Value, metadata::infodict::ParsedInfodict, util::{FileEntry, HostAndPort, pretty_info_hash},
+    bencoding::Value,
+    metadata::infodict::ParsedInfodict,
+    util::{FileEntry, HostAndPort, pretty_info_hash},
 };
 use anyhow::{Result, bail};
 use sha1::{Digest, Sha1};
@@ -47,7 +49,7 @@ impl fmt::Display for Metainfo {
 impl Metainfo {
     pub fn new(v: &Value, source: &Vec<u8>) -> Result<Self> {
         let torrent_map = match v {
-            Value::Dict(m, _, _) => m,
+            Value::Dict { dict: m, .. } => m,
             _ => bail!("The .torrent file is invalid: it does not contain a dict"),
         };
 
@@ -177,7 +179,11 @@ impl Metainfo {
 
         // info dict
         let (info_dict, info_hash, raw_metadata) = match torrent_map.get(&b"info".to_vec()) {
-            Some(Value::Dict(a, s, e)) => (
+            Some(Value::Dict {
+                dict: a,
+                start: s,
+                end: e,
+            }) => (
                 a,
                 Sha1::digest(&source[*s..*e]).into(),
                 source[*s..*e].to_vec(),

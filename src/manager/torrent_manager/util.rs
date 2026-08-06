@@ -1,11 +1,15 @@
-use crate::{manager::{
-    peer_handler::{
-        MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER, ToNewIncomingPeersHandlerMsg,
+use crate::{
+    manager::{
+        peer_handler::{
+            MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER, ToNewIncomingPeersHandlerMsg,
+        },
+        torrent_manager::{
+            FileManagerState, PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY, TorrentManager,
+            pex::PexEvent,
+        },
     },
-    torrent_manager::{
-        FileManagerState, PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY, TorrentManager, pex::PexEvent,
-    },
-}, util::HostAndPort};
+    util::HostAndPort,
+};
 
 pub(super) fn should_choke(
     peers_to_torrent_manager_channel_capacity: usize,

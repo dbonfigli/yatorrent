@@ -62,22 +62,22 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
             h.insert(b"q".to_vec(), Value::Str(b"ping".to_vec()));
             h.insert(
                 b"a".to_vec(),
-                Value::Dict(
-                    HashMap::from([(b"id".to_vec(), Value::Str(id.to_vec()))]),
-                    0, // this is discarded when creating hashmap bencoded values
-                    0, // this is discarded when creating hashmap bencoded values
-                ),
+                Value::Dict {
+                    dict: HashMap::from([(b"id".to_vec(), Value::Str(id.to_vec()))]),
+                    start: 0, // this is discarded when creating hashmap bencoded values
+                    end: 0,   // this is discarded when creating hashmap bencoded values
+                },
             );
         }
         KRPCMessage::PingOrAnnouncePeerResp(id) => {
             h.insert(b"y".to_vec(), Value::Str(b"r".to_vec()));
             h.insert(
                 b"r".to_vec(),
-                Value::Dict(
-                    HashMap::from([(b"id".to_vec(), Value::Str(id.to_vec()))]),
-                    0, // this is discarded when creating hashmap bencoded values
-                    0, // this is discarded when creating hashmap bencoded values
-                ),
+                Value::Dict {
+                    dict: HashMap::from([(b"id".to_vec(), Value::Str(id.to_vec()))]),
+                    start: 0, // this is discarded when creating hashmap bencoded values
+                    end: 0,   // this is discarded when creating hashmap bencoded values
+                },
             );
         }
         KRPCMessage::FindNodeReq(querying_node_id, target_node_id) => {
@@ -85,14 +85,14 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
             h.insert(b"q".to_vec(), Value::Str(b"find_node".to_vec()));
             h.insert(
                 b"a".to_vec(),
-                Value::Dict(
-                    HashMap::from([
+                Value::Dict {
+                    dict: HashMap::from([
                         (b"id".to_vec(), Value::Str(querying_node_id.to_vec())),
                         (b"target".to_vec(), Value::Str(target_node_id.to_vec())),
                     ]),
-                    0, // this is discarded when creating hashmap bencoded values
-                    0, // this is discarded when creating hashmap bencoded values
-                ),
+                    start: 0, // this is discarded when creating hashmap bencoded values
+                    end: 0,   // this is discarded when creating hashmap bencoded values
+                },
             );
         }
         KRPCMessage::GetPeersReq(querying_node_id, target_infohash) => {
@@ -100,14 +100,14 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
             h.insert(b"q".to_vec(), Value::Str(b"get_peers".to_vec()));
             h.insert(
                 b"a".to_vec(),
-                Value::Dict(
-                    HashMap::from([
+                Value::Dict {
+                    dict: HashMap::from([
                         (b"id".to_vec(), Value::Str(querying_node_id.to_vec())),
                         (b"info_hash".to_vec(), Value::Str(target_infohash.to_vec())),
                     ]),
-                    0, // this is discarded when creating hashmap bencoded values
-                    0, // this is discarded when creating hashmap bencoded values
-                ),
+                    start: 0, // this is discarded when creating hashmap bencoded values
+                    end: 0,   // this is discarded when creating hashmap bencoded values
+                },
             );
         }
         KRPCMessage::GetPeersOrFindNodeResp(resp_data) => {
@@ -140,15 +140,22 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
             }
 
             h.insert(b"y".to_vec(), Value::Str(b"r".to_vec()));
-            h.insert(b"r".to_vec(), Value::Dict(r, 0, 0));
+            h.insert(
+                b"r".to_vec(),
+                Value::Dict {
+                    dict: r,
+                    start: 0,
+                    end: 0,
+                },
+            );
         }
         KRPCMessage::AnnouncePeerReq(querying_node_id, info_hash, port, token, implied_port) => {
             h.insert(b"y".to_vec(), Value::Str(b"q".to_vec()));
             h.insert(b"q".to_vec(), Value::Str(b"announce_peer".to_vec()));
             h.insert(
                 b"a".to_vec(),
-                Value::Dict(
-                    HashMap::from([
+                Value::Dict {
+                    dict: HashMap::from([
                         (b"id".to_vec(), Value::Str(querying_node_id.to_vec())),
                         (
                             b"implied_port".to_vec(),
@@ -162,9 +169,9 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
                         (b"port".to_vec(), Value::Int(port as i64)),
                         (b"token".to_vec(), Value::Str(token)),
                     ]),
-                    0, // this is discarded when creating hashmap bencoded values
-                    0, // this is discarded when creating hashmap bencoded values
-                ),
+                    start: 0, // this is discarded when creating hashmap bencoded values
+                    end: 0,   // this is discarded when creating hashmap bencoded values
+                },
             );
         }
         KRPCMessage::Error(error_type, error_msg) => {
@@ -179,7 +186,12 @@ pub fn encode_krpc_message(transaction_id: Vec<u8>, msg: KRPCMessage) -> Vec<u8>
         }
     }
 
-    Value::Dict(h, 0, 0).encode()
+    Value::Dict {
+        dict: h,
+        start: 0,
+        end: 0,
+    }
+    .encode()
 }
 
 pub fn decode_krpc_message(data: Vec<u8>) -> Result<(Vec<u8> /* transaction id */, KRPCMessage)> {
@@ -191,7 +203,7 @@ pub fn decode_krpc_message(data: Vec<u8>) -> Result<(Vec<u8> /* transaction id *
         Value::Str(_) | Value::Int(_) | Value::List(_) => {
             bail!("got krpc message that is not a dict")
         }
-        Value::Dict(h, _, _) => {
+        Value::Dict { dict: h, .. } => {
             // check transaction id
             if let Some(t_id) = h.get(&b"t".to_vec()) {
                 if let Value::Str(t_id_str) = t_id {
@@ -243,7 +255,7 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
 
     // check "a" is a dict
     let a_h = match a {
-        Value::Dict(a_h, _, _) => a_h,
+        Value::Dict { dict: a_h, .. } => a_h,
         _ => bail!("got krpc message that is a query (y=q) with \"a\" key that is not a dict"),
     };
 
@@ -431,7 +443,7 @@ fn parse_response_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
 
     // check r is a dict
     let r_h = match r {
-        Value::Dict(r_h, _, _) => r_h,
+        Value::Dict { dict: r_h, .. } => r_h,
         _ => {
             bail!("got krpc message that is a response (y=r) but but r key is not a bencoded dict")
         }

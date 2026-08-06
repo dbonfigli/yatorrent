@@ -49,7 +49,11 @@ impl TorrentManager {
                 self.handle_receive_request_message(peer_addr, block_request)
                     .await
             }
-            Message::Piece(piece_idx, begin, data) => {
+            Message::Piece {
+                piece_idx,
+                begin,
+                data,
+            } => {
                 self.handle_receive_piece_message(peer_addr, piece_idx, begin, data)
                     .await
             }
@@ -81,7 +85,11 @@ impl TorrentManager {
                 self.handle_allow_fast_message(peer_addr, piece_idx as usize)
                     .await;
             }
-            Message::Extended(extension_id, extended_message, additional_data) => {
+            Message::Extended {
+                extension_protocol_id: extension_id,
+                bencoded_message: extended_message,
+                additional_raw_data: additional_data,
+            } => {
                 self.handle_receive_extended_message(
                     peer_addr,
                     extension_id,
@@ -360,7 +368,7 @@ impl TorrentManager {
         };
 
         // retrieve reqq, if provided
-        if let Dict(d, _, _) = extended_message.clone() {
+        if let Dict { dict: d, .. } = extended_message.clone() {
             let client_version = if let Some(Value::Str(v)) = d.get(&(b"v".to_vec())) {
                 force_string(v)
             } else {
@@ -410,7 +418,10 @@ impl TorrentManager {
         peer_addr: HostAndPort,
     ) {
         let extended_message_dict = match extended_message {
-            Dict(extended_message_dict, _, _) => extended_message_dict,
+            Dict {
+                dict: extended_message_dict,
+                ..
+            } => extended_message_dict,
             _ => {
                 log::debug!(
                     "got an ut_metadata extension handshake but data was not a dict, ignoring this message"
@@ -419,7 +430,7 @@ impl TorrentManager {
             }
         };
         let m = match extended_message_dict.get(&b"m".to_vec()) {
-            Some(Dict(m, _, _)) => m,
+            Some(Dict { dict: m, .. }) => m,
             _ => {
                 log::debug!(
                     "got an ut_metadata extension handshake but \"m\" entry was not found in dict or was not a dict itself, ignoring this message"

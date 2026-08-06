@@ -72,7 +72,7 @@ pub(super) fn handle_receive_extended_message_ut_pex(
     advertised_peers: Arc<Mutex<HashMap<HostAndPort, (tracker::Peer, SystemTime)>>>,
 ) {
     let d = match extended_message {
-        Dict(d, _, _) => d,
+        Dict { dict: d, .. } => d,
         _ => {
             log::debug!(
                 "got a PEX message from {peer_addr}, it was a bencoded value but not a dict, ignoring it"

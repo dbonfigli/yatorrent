@@ -88,7 +88,7 @@ impl MetadataState {
         peers: &mut HashMap<HostAndPort, Peer>,
     ) -> MetadataMessageHandlingOutcome {
         let d = match value {
-            Dict(d, _, _) => d,
+            Dict { dict: d, .. } => d,
             _ => {
                 log::debug!(
                     "got an ut_metadataextension message from {peer_addr}, it was a bencoded value but not a dict dict, ignoring it"
@@ -176,11 +176,11 @@ impl MetadataState {
                 piece,
                 raw_metadata_size,
             }) => {
-                peer.send_metadata_extension_message(MetadataMessage::Data(
-                    piece_idx as u64,
-                    raw_metadata_size as u64,
-                    piece,
-                ))
+                peer.send_metadata_extension_message(MetadataMessage::Data {
+                    piece_idx: piece_idx as u64,
+                    metadata_total_size: raw_metadata_size as u64,
+                    data: piece,
+                })
                 .await
             }
         }
@@ -224,7 +224,9 @@ impl MetadataState {
         }
 
         let info_dict = match Value::new(raw_metadata) {
-            Dict(info_dict, _, _) => info_dict,
+            Dict {
+                dict: info_dict, ..
+            } => info_dict,
             _ => {
                 self.corrupted_metadata(Error::msg("not a bencoded dict"));
                 return MetadataMessageHandlingOutcome::Other;
@@ -297,15 +299,17 @@ impl TorrentManager {
             // update new incoming peers handler with new data info
             self.peers_state
                 .to_new_incoming_peers_handler_tx
-                .send(ToNewIncomingPeersHandlerMsg::TorrentDataInitialized((
-                    self.metadata_state
+                .send(ToNewIncomingPeersHandlerMsg::TorrentDataInitialized {
+                    metadata_size: self
+                        .metadata_state
                         .raw_metadata_size()
                         .expect("it must exist, full metadata is known"),
-                    self.torrent_data_status
+                    piece_completion_status: self
+                        .torrent_data_status
                         .as_ref()
                         .expect("initialized few lines above")
                         .current_piece_completion_status(),
-                )))
+                })
                 .await
                 .expect("to_new_incoming_peers_handler_tx receiver half closed");
 

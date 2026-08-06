@@ -5,7 +5,10 @@ use std::{
 
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
-use crate::{dht::dht_manager::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMsg}, util::HostAndPort};
+use crate::{
+    dht::dht_manager::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMsg},
+    util::HostAndPort,
+};
 
 const DHT_BOOTSTRAP_TIME: Duration = Duration::from_secs(5);
 const DHT_NEW_PEER_COOL_OFF_PERIOD: Duration = Duration::from_secs(15);

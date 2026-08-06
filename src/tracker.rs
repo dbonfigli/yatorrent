@@ -295,7 +295,7 @@ impl TrackerClient {
         };
 
         let response_map = match Value::new(&body) {
-            Value::Dict(m, _, _) => m,
+            Value::Dict { dict: m, .. } => m,
             _ => bail!("The server response was not a valid bencoded map"),
         };
 
@@ -560,7 +560,7 @@ fn get_peers_with_dict_model(peers_values: &Vec<Value>) -> Result<Vec<Peer>> {
     let mut peers_list: Vec<Peer> = Vec::new();
     for v in peers_values {
         match v {
-            Value::Dict(peer_dic, _, _) => {
+            Value::Dict { dict: peer_dic, .. } => {
                 // peer id
                 let peer_id = match peer_dic.get(&b"peer id".to_vec()) {
                     Some(Value::Str(peer_id_vec)) => match str::from_utf8(&peer_id_vec) {

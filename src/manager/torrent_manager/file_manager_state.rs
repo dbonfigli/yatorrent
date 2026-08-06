@@ -274,11 +274,11 @@ impl TorrentManager {
 
             Ok(data) => {
                 let data_len = data.len() as u64;
-                peer.send(ToPeerMsg::Send(Message::Piece(
-                    read_piece_block_response.request.piece_idx as u32,
-                    read_piece_block_response.request.block_begin as u32,
+                peer.send(ToPeerMsg::Send(Message::Piece {
+                    piece_idx: read_piece_block_response.request.piece_idx as u32,
+                    begin: read_piece_block_response.request.block_begin as u32,
                     data,
-                )))
+                }))
                 .await;
                 peer.get_bandwidth_tracker_mut()
                     .add_uploaded_bytes(data_len);

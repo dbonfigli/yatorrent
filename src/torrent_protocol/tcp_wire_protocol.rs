@@ -8,8 +8,10 @@ use tokio::{
 };
 
 use crate::{
-    bencoding::Value, torrent_protocol::wire_protocol::{
-        BlockRequest, Handshake, Message, Protocol, ProtocolError, ProtocolReadHalf, ProtocolWriteHalf,
+    bencoding::Value,
+    torrent_protocol::wire_protocol::{
+        BlockRequest, Handshake, Message, Protocol, ProtocolError, ProtocolReadHalf,
+        ProtocolWriteHalf,
     },
 };
 
@@ -178,7 +180,11 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                     Ok(())
                 }
             }
-            Message::Piece(index, begin, block) => {
+            Message::Piece {
+                piece_idx: index,
+                begin,
+                data: block,
+            } => {
                 let mut buf = vec![0; 13 + block.len()];
                 buf[0..4].copy_from_slice(&(9 + block.len() as u32).to_be_bytes());
                 buf[4] = 7;
@@ -270,7 +276,11 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                     Ok(())
                 }
             }
-            Message::Extended(id, value, additional_data) => {
+            Message::Extended {
+                extension_protocol_id: id,
+                bencoded_message: value,
+                additional_raw_data: additional_data,
+            } => {
                 let encoded_value = value.encode();
                 let mut buf = vec![0; 6 + encoded_value.len() + additional_data.len()];
                 buf[0..4].copy_from_slice(
@@ -372,11 +382,11 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                 if let Err(e) = self.read_exact(&mut block_buf).await {
                     return Err(e.into());
                 }
-                Ok(Message::Piece(
-                    u32::from_be_bytes(index_buf),
-                    u32::from_be_bytes(begin_buf),
-                    block_buf,
-                ))
+                Ok(Message::Piece {
+                    piece_idx: u32::from_be_bytes(index_buf),
+                    begin: u32::from_be_bytes(begin_buf),
+                    data: block_buf,
+                })
             }
             // cancel
             8 => {
@@ -462,11 +472,11 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                     return Err(e.into());
                 }
                 let (extended_message, dict_size) = Value::new_with_size(&buf);
-                Ok(Message::Extended(
-                    extended_message_id,
-                    extended_message,
-                    buf[dict_size..].to_vec(),
-                ))
+                Ok(Message::Extended {
+                    extension_protocol_id: extended_message_id,
+                    bencoded_message: extended_message,
+                    additional_raw_data: buf[dict_size..].to_vec(),
+                })
             }
             unknown_message_id => Err(ProtocolError::new(
                 format!("could not parse message type id: {}", unknown_message_id).to_string(),

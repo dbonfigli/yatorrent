@@ -86,7 +86,7 @@ pub fn parse_infodict(info_dict: &HashMap<Vec<u8>, Value>) -> Result<ParsedInfod
         let mut files = Vec::new();
         for f in files_list {
             let entry = match f {
-                Value::Dict(a, _, _) => a,
+                Value::Dict { dict: a, .. } => a,
                 _ => {
                     bail!("The .torrent file \"info.files\" kv has an entry that is not a dict")
                 }

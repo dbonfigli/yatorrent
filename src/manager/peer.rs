@@ -34,9 +34,13 @@ const KEEP_ALIVE_FREQ: Duration = Duration::from_secs(90);
 const PEX_MESSAGE_COOL_OFF_PERIOD: Duration = Duration::from_secs(60);
 
 pub enum MetadataMessage {
-    Request(u64),            // piece
-    Data(u64, u64, Vec<u8>), // piece, total_size, data (16 kb or less if last piece)
-    Reject(u64),             // piece
+    Request(u64), // piece idx
+    Data {
+        piece_idx: u64,
+        metadata_total_size: u64,
+        data: Vec<u8>, // 16 kb or less if last piece
+    },
+    Reject(u64), // piece idx
 }
 
 pub struct Peer {
@@ -267,7 +271,15 @@ impl Peer {
         }
         self.last_pex_message_sent = SystemTime::now();
         if h.len() > 0 {
-            let pex_msg = Message::Extended(self.ut_pex_id, Dict(h, 0, 0), Vec::new());
+            let pex_msg = Message::Extended {
+                extension_protocol_id: self.ut_pex_id,
+                bencoded_message: Dict {
+                    dict: h,
+                    start: 0,
+                    end: 0,
+                },
+                additional_raw_data: Vec::new(),
+            };
             log::trace!("sending pex message to peer {}: {pex_msg}", self.peer_addr);
             self.send(ToPeerMsg::Send(pex_msg)).await;
         }
@@ -299,21 +311,40 @@ impl Peer {
                     (b"msg_type".to_vec(), Int(METADATA_MESSAGE_REQUEST)),
                     (b"piece".to_vec(), Int(piece as i64)),
                 ]);
-                let metadata_msg =
-                    Message::Extended(self.ut_metadata_id, Dict(h, 0, 0), Vec::new());
+                let metadata_msg = Message::Extended {
+                    extension_protocol_id: self.ut_metadata_id,
+                    bencoded_message: Dict {
+                        dict: h,
+                        start: 0,
+                        end: 0,
+                    },
+                    additional_raw_data: Vec::new(),
+                };
                 log::trace!(
                     "sending metadata request message to peer {}: {metadata_msg}",
                     self.peer_addr
                 );
                 self.send(ToPeerMsg::Send(metadata_msg)).await;
             }
-            MetadataMessage::Data(piece, metadata_size, data) => {
+            MetadataMessage::Data {
+                piece_idx,
+                metadata_total_size,
+                data,
+            } => {
                 let h = HashMap::from([
                     (b"msg_type".to_vec(), Int(METADATA_MESSAGE_DATA)),
-                    (b"piece".to_vec(), Int(piece as i64)),
-                    (b"total_size".to_vec(), Int(metadata_size as i64)),
+                    (b"piece".to_vec(), Int(piece_idx as i64)),
+                    (b"total_size".to_vec(), Int(metadata_total_size as i64)),
                 ]);
-                let metadata_msg = Message::Extended(self.ut_metadata_id, Dict(h, 0, 0), data);
+                let metadata_msg = Message::Extended {
+                    extension_protocol_id: self.ut_metadata_id,
+                    bencoded_message: Dict {
+                        dict: h,
+                        start: 0,
+                        end: 0,
+                    },
+                    additional_raw_data: data,
+                };
                 log::trace!(
                     "sending metadata data message to peer {}: {metadata_msg}",
                     self.peer_addr
@@ -325,8 +356,15 @@ impl Peer {
                     (b"msg_type".to_vec(), Int(METADATA_MESSAGE_REJECT)),
                     (b"piece".to_vec(), Int(piece as i64)),
                 ]);
-                let metadata_msg =
-                    Message::Extended(self.ut_metadata_id, Dict(h, 0, 0), Vec::new());
+                let metadata_msg = Message::Extended {
+                    extension_protocol_id: self.ut_metadata_id,
+                    bencoded_message: Dict {
+                        dict: h,
+                        start: 0,
+                        end: 0,
+                    },
+                    additional_raw_data: Vec::new(),
+                };
                 log::trace!(
                     "sending metadata reject message to peer {}: {metadata_msg}",
                     self.peer_addr

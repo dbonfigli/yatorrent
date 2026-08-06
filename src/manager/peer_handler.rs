@@ -148,7 +148,10 @@ pub async fn connect_to_new_peer(
 pub enum ToNewIncomingPeersHandlerMsg {
     OkToAcceptConnection(bool),
     PieceCompleted(usize),
-    TorrentDataInitialized((i64, Vec<bool>)), // metadata size, piece completion status
+    TorrentDataInitialized {
+        metadata_size: i64,
+        piece_completion_status: Vec<bool>,
+    },
 }
 
 pub async fn run_new_incoming_peers_handler(
@@ -189,7 +192,10 @@ pub async fn run_new_incoming_peers_handler(
                             }
                             drop(piece_completion_status_for_rcv_lock);
                         },
-                        ToNewIncomingPeersHandlerMsg::TorrentDataInitialized((new_metadata_size, new_piece_completion_status)) => {
+                        ToNewIncomingPeersHandlerMsg::TorrentDataInitialized {
+                            metadata_size: new_metadata_size,
+                            piece_completion_status: new_piece_completion_status
+                        } => {
                             log::trace!("got message to update piece_completion_status, new metadata size: {new_metadata_size}, new piece completion status len: {}", new_piece_completion_status.len());
                             let mut metadata_size_for_rcv_lock = metadata_size_for_rcv.lock().await;
                             *metadata_size_for_rcv_lock = Some(new_metadata_size);
@@ -383,17 +389,17 @@ async fn handshake(
         let mut handshake_dict = HashMap::from([
             (
                 b"m".to_vec(),
-                Value::Dict(
-                    HashMap::from([
+                Value::Dict {
+                    dict: HashMap::from([
                         (b"ut_pex".to_vec(), Value::Int(UT_PEX_EXTENSION_ID)),
                         (
                             b"ut_metadata".to_vec(),
                             Value::Int(UT_METADATA_EXTENSION_ID),
                         ),
                     ]),
-                    0,
-                    0,
-                ),
+                    start: 0,
+                    end: 0,
+                },
             ),
             (
                 b"reqq".to_vec(),
@@ -404,9 +410,17 @@ async fn handshake(
         if let Some(metadata_size) = metadata_size {
             handshake_dict.insert(b"metadata_size".to_vec(), Value::Int(metadata_size));
         }
-        let extension_handshake = Value::Dict(handshake_dict, 0, 0);
+        let extension_handshake = Value::Dict {
+            dict: handshake_dict,
+            start: 0,
+            end: 0,
+        };
         write
-            .send(Message::Extended(0, extension_handshake, Vec::new()))
+            .send(Message::Extended {
+                extension_protocol_id: 0,
+                bencoded_message: extension_handshake,
+                additional_raw_data: Vec::new(),
+            })
             .await?;
         log::trace!("extension handshake sent to peer {peer_addr}");
     }
@@ -473,7 +487,7 @@ async fn rate_limit(proto_msg: &Message, rate_limiter: &Option<Arc<Mutex<RateLim
         // at the moment the rate limiter just counts on the actual data downloaded from blocks,
         // ignoring the message headers other type of messages, dht messages, transport protocol headers...
         // for now this is acceptable
-        if let Message::Piece(_, _, data) = proto_msg {
+        if let Message::Piece { data, .. } = proto_msg {
             loop {
                 // many small data requests could starve large ones, but in practice the probability
                 // is really low since most of the time we ask / get requests for a max size block
@@ -514,7 +528,12 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                 let mut is_sending_piece = false;
 
                 // avoid sending data if the request has already been canceled by the peer
-                if let Message::Piece(piece_idx, begin, data) = &proto_msg {
+                if let Message::Piece {
+                    piece_idx,
+                    begin,
+                    data,
+                } = &proto_msg
+                {
                     is_sending_piece = true;
 
                     // receive pending cancellations

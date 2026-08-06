@@ -21,15 +21,23 @@ pub enum Message {
     Have(u32),           // piece index
     Bitfield(Vec<bool>), // the high bit in the first byte corresponds to piece index 0
     Request(BlockRequest),
-    Piece(u32, u32, Vec<u8>), // index, begin, block of data
+    Piece {
+        piece_idx: u32,
+        begin: u32,
+        data: Vec<u8>,
+    },
     Cancel(BlockRequest),
     Port(u16),    // port number
     Suggest(u32), // piece index
     HaveAll,
     HaveNone,
     Reject(BlockRequest),
-    AllowerdFast(u32),            // piece index
-    Extended(u8, Value, Vec<u8>), // Extension Protocol id, bencoded message, additional raw data (optional, can be 0)
+    AllowerdFast(u32), // piece index
+    Extended {
+        extension_protocol_id: u8,
+        bencoded_message: Value,
+        additional_raw_data: Vec<u8>, // optional, can be 0
+    },
 }
 
 impl fmt::Display for Message {
@@ -70,7 +78,11 @@ impl fmt::Display for Message {
                     block_request.piece_idx, block_request.block_begin, block_request.data_len
                 )
             }
-            Message::Piece(piece_idx, begin, data) => {
+            Message::Piece {
+                piece_idx,
+                begin,
+                data,
+            } => {
                 write!(
                     f,
                     "piece: piece idx: {piece_idx}, begin: {begin}, data len: {}",
@@ -107,7 +119,11 @@ impl fmt::Display for Message {
             Message::AllowerdFast(piece_idx) => {
                 write!(f, "allowed fast piece id {piece_idx}")
             }
-            Message::Extended(id, value, additional_data) => {
+            Message::Extended {
+                extension_protocol_id: id,
+                bencoded_message: value,
+                additional_raw_data: additional_data,
+            } => {
                 write!(
                     f,
                     "extension message: extension id: {id}, value: {value}, additional data len: {}",

@@ -60,7 +60,7 @@ fn generate_transaction_id() -> [u8; 10] {
 
 pub enum ToDhtManagerMsg {
     GetNewPeers([u8; 20]), // info hash
-    NewNode(HostAndPort),     // host:port of new node
+    NewNode(HostAndPort),  // host:port of new node
     ConnectedToNewPeer([u8; 20], Ipv4Addr, u16),
 }
 
@@ -108,7 +108,7 @@ struct MessageSender {
     inflight_requests: HashMap<
         Vec<u8>,
         (
-            HostAndPort,         // dest addr
+            HostAndPort,      // dest addr
             SystemTime,       // req time
             KRPCMessage,      // message
             Option<[u8; 20]>, // optional request id (info hash or random id the request related to) in case it was a get_peers or find_node request

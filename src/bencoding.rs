@@ -29,7 +29,11 @@ pub enum Value {
     Str(Vec<u8>),
     Int(i64),
     List(Vec<Value>),
-    Dict(HashMap<Vec<u8>, Value>, usize, usize), //hash, startIndex, endIndex (index of next char not comprising the dict, similar to range)
+    Dict {
+        dict: HashMap<Vec<u8>, Value>,
+        start: usize, // start index
+        end: usize,   // index of next char not comprising the dict, similar to range
+    },
 }
 
 impl fmt::Display for Value {
@@ -52,7 +56,7 @@ impl fmt::Display for Value {
                         .join(", ")
                 )
             }
-            Value::Dict(h, _, _) => {
+            Value::Dict { dict: h, .. } => {
                 write!(
                     f,
                     "{{ {} }}",
@@ -73,7 +77,7 @@ impl Value {
             Value::Str(v) => encode_str(v),
             Value::Int(v) => encode_int(v),
             Value::List(v) => encode_list(v),
-            Value::Dict(v, _, _) => encode_dict(v),
+            Value::Dict { dict: v, .. } => encode_dict(v),
         }
     }
 
@@ -276,7 +280,14 @@ fn parse_dict(source: &Vec<u8>, index: usize) -> (Value, usize) {
         }
     }
 
-    (Value::Dict(d, start, index), index)
+    (
+        Value::Dict {
+            dict: d,
+            start,
+            end: index,
+        },
+        index,
+    )
 }
 
 #[cfg(test)]
@@ -290,7 +301,11 @@ mod tests {
     #[test]
     fn encode_value() {
         let val_l = Value::List(vec![
-            Value::Dict(HashMap::from([(b"k1".to_vec(), Value::Int(1))]), 0, 0),
+            Value::Dict {
+                dict: HashMap::from([(b"k1".to_vec(), Value::Int(1))]),
+                start: 0,
+                end: 0,
+            },
             Value::Int(2),
             Value::Int(3),
             Value::Str(b"bye".to_vec()),
@@ -354,7 +369,11 @@ mod tests {
     #[test]
     fn decode_list3() {
         let val_l = Value::List(vec![
-            Value::Dict(HashMap::from([(b"k1".to_vec(), Value::Int(1))]), 1, 10),
+            Value::Dict {
+                dict: HashMap::from([(b"k1".to_vec(), Value::Int(1))]),
+                start: 1,
+                end: 10,
+            },
             Value::Int(2),
             Value::Int(3),
             Value::Str(b"bye".to_vec()),
@@ -370,21 +389,21 @@ mod tests {
 
     #[test]
     fn decode_hash() {
-        let val_l = Value::Dict(
-            HashMap::from([
+        let val_l = Value::Dict {
+            dict: HashMap::from([
                 (b"k1".to_vec(), Value::Str(b"e2".to_vec())),
                 (b"k3".to_vec(), Value::Str(b"e3".to_vec())),
             ]),
-            0,
-            18,
-        );
+            start: 0,
+            end: 18,
+        };
         assert_eq!(Value::new(&b"d2:k12:e22:k32:e3e".to_vec()), val_l);
     }
 
     #[test]
     fn decode_hash2() {
-        let val_l = Value::Dict(
-            HashMap::from([
+        let val_l = Value::Dict {
+            dict: HashMap::from([
                 (
                     b"k1".to_vec(),
                     Value::List(vec![
@@ -395,9 +414,9 @@ mod tests {
                 ),
                 (b"k2".to_vec(), Value::Str(b"e3".to_vec())),
             ]),
-            0,
-            28,
-        );
+            start: 0,
+            end: 28,
+        };
         assert_eq!(Value::new(&b"d2:k1li0e5:hello0:e2:k22:e3e".to_vec()), val_l);
     }
 }

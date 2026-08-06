@@ -139,7 +139,10 @@ impl MetadataHandler {
         &self.raw_metadata
     }
 
-    pub fn generate_piece_req_response(&self, piece_idx: usize) -> Option<MetadataPieceReqResponse> {
+    pub fn generate_piece_req_response(
+        &self,
+        piece_idx: usize,
+    ) -> Option<MetadataPieceReqResponse> {
         if !self.full_metadata_known() {
             return None;
         }
