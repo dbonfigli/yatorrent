@@ -103,7 +103,7 @@ impl Piece {
             if self.fragments[0].begin == 0 {
                 let begin = self.fragments[0].end + 1;
                 let end_with_max_fragment_size = begin + max_fragment_size - 1;
-                let end_with_next_fragment = begin + self.fragments[1].begin - 1;
+                let end_with_next_fragment = self.fragments[1].begin - 1;
                 let end = cmp::min(end_with_max_fragment_size, end_with_next_fragment);
                 Some(Fragment::new(begin, end))
             } else {
