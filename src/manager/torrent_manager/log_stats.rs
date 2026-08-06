@@ -13,7 +13,7 @@ const TIME_TO_CONSIDER_DOWNLOAD_STALLED: Duration = Duration::from_secs(15);
 impl TorrentManager {
     pub(super) fn log_stats(&self) {
         let advertised_peers_lock = self
-            .peers_state
+            .peers_ctx
             .advertised_peers
             .lock()
             .expect("another user panicked while holding the lock");
@@ -36,13 +36,13 @@ impl TorrentManager {
                 .as_ref()
                 .map(|f| f.num_pieces().to_string())
                 .unwrap_or("?".to_string()),
-            metadata_pieces = match self.metadata_state.total_metadata_pieces() {
+            metadata_pieces = match self.metadata_handler.total_metadata_pieces() {
                 0 => format!(
                     ", metadata pieces: {}/?",
-                    self.metadata_state.total_metadata_pieces_downloaded()
+                    self.metadata_handler.total_metadata_pieces_downloaded()
                 ),
                 total_metadata_pieces => {
-                    let total_downloaded = self.metadata_state.total_metadata_pieces_downloaded();
+                    let total_downloaded = self.metadata_handler.total_metadata_pieces_downloaded();
                     if total_metadata_pieces == total_downloaded {
                         "".to_string()
                     } else {
@@ -64,10 +64,10 @@ impl TorrentManager {
                 ),
             },
             known_peers = advertised_peers_len,
-            bad_peers = self.peers_state.bad_peers.len(),
-            connected_peers = self.peers_state.peers.len(),
+            bad_peers = self.peers_ctx.bad_peers.len(),
+            connected_peers = self.peers_ctx.peers.len(),
             unchoked_peers =
-                self.peers_state
+                self.peers_ctx
                     .peers
                     .iter()
                     .fold(0, |acc, (_, p)| if !p.is_peer_choking() {
@@ -76,10 +76,10 @@ impl TorrentManager {
                         acc
                     }),
             cur_ch_cap = PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY
-                - self.peers_state.peers_to_torrent_manager_tx.capacity(),
-            read_reqs = self.file_manager_state.inflight_read_reqs(),
-            inflight_read_ops = self.file_manager_state.outstanding_read_ops(),
-            write_reqs = self.file_manager_state.inflight_write_reqs(),
+                - self.peers_ctx.peers_to_torrent_manager_tx.capacity(),
+            read_reqs = self.file_manager_handler.inflight_read_reqs(),
+            inflight_read_ops = self.file_manager_handler.outstanding_read_ops(),
+            write_reqs = self.file_manager_handler.inflight_write_reqs(),
         );
     }
 
@@ -88,7 +88,7 @@ impl TorrentManager {
             return;
         }
 
-        for (peer_addr, peer) in self.peers_state.peers.iter() {
+        for (peer_addr, peer) in self.peers_ctx.peers.iter() {
             let pending_block_requests = self
                 .piece_requestor
                 .get_pending_block_requests_for_peer(peer_addr);

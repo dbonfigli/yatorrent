@@ -25,48 +25,48 @@ enum MetadataMessageHandlingOutcome {
     Other,
 }
 
-pub(super) struct MetadataState {
+pub(super) struct MetadataHandler {
     torrent_info_hash: [u8; 20],
-    metadata_handler: MetadataStore,
+    metadata_store: MetadataStore,
 }
 
-impl MetadataState {
+impl MetadataHandler {
     pub(super) fn new(
         raw_metadata_size: Option<i64>,
         raw_metadata: Option<Vec<u8>>,
         torrent_info_hash: [u8; 20],
     ) -> Self {
-        MetadataState {
+        MetadataHandler {
             torrent_info_hash,
-            metadata_handler: MetadataStore::new(raw_metadata_size, raw_metadata),
+            metadata_store: MetadataStore::new(raw_metadata_size, raw_metadata),
         }
     }
 
     pub(super) fn update_raw_metadata_size(&mut self, metadata_size: i64) {
-        if self.metadata_handler.raw_metadata_size().is_none() {
+        if self.metadata_store.raw_metadata_size().is_none() {
             // we do not know the metadata size yet, take notes
-            self.metadata_handler = MetadataStore::new(Some(metadata_size), None);
+            self.metadata_store = MetadataStore::new(Some(metadata_size), None);
         }
     }
 
     pub(super) fn raw_metadata_size(&self) -> Option<i64> {
-        self.metadata_handler.raw_metadata_size()
+        self.metadata_store.raw_metadata_size()
     }
 
     pub(super) fn total_metadata_pieces(&self) -> usize {
-        self.metadata_handler.total_metadata_pieces()
+        self.metadata_store.total_metadata_pieces()
     }
 
     pub(super) fn total_metadata_pieces_downloaded(&self) -> usize {
-        self.metadata_handler.total_metadata_pieces_downloaded()
+        self.metadata_store.total_metadata_pieces_downloaded()
     }
 
     pub(super) async fn send_metadata_reqs(&mut self, peers: &mut HashMap<HostAndPort, Peer>) {
-        if self.metadata_handler.full_metadata_known() {
+        if self.metadata_store.full_metadata_known() {
             return;
         }
         // we still have to download the metadata, ask metadata pieces to peers
-        let new_medatada_piece_requests = self.metadata_handler.generate_metadata_piece_reqs(peers);
+        let new_medatada_piece_requests = self.metadata_store.generate_metadata_piece_reqs(peers);
         for MetadataPieceRequest {
             destination_peer,
             piece_index,
@@ -161,7 +161,7 @@ impl MetadataState {
         piece_idx: i64,
     ) {
         match self
-            .metadata_handler
+            .metadata_store
             .generate_metadata_piece_req_response(piece_idx as usize)
         {
             None => {
@@ -192,26 +192,26 @@ impl MetadataState {
         piece_idx: i64,
         piece_data: Vec<u8>,
     ) -> MetadataMessageHandlingOutcome {
-        if self.metadata_handler.full_metadata_known() || piece_idx < 0 {
+        if self.metadata_store.full_metadata_known() || piece_idx < 0 {
             // we are not interested in this message
             return MetadataMessageHandlingOutcome::Other;
         }
 
-        if self.metadata_handler.raw_metadata_size().is_none() {
+        if self.metadata_store.raw_metadata_size().is_none() {
             // we do not know the metadata size yet, take notes
-            self.metadata_handler = MetadataStore::new(Some(raw_metadata_size), None);
+            self.metadata_store = MetadataStore::new(Some(raw_metadata_size), None);
         }
 
-        self.metadata_handler
+        self.metadata_store
             .insert_piece(piece_idx as usize, piece_data);
 
         // check if metadata is complete
-        if !self.metadata_handler.full_metadata_known() {
+        if !self.metadata_store.full_metadata_known() {
             return MetadataMessageHandlingOutcome::Other;
         }
 
         let raw_metadata = self
-            .metadata_handler
+            .metadata_store
             .get_raw_metadata()
             .as_ref()
             .expect("it must exist, full metadata is known");
@@ -257,7 +257,7 @@ impl MetadataState {
             "downloaded metadata is corrupted ({}), starting over its download...",
             error
         );
-        self.metadata_handler = MetadataStore::new(None, None);
+        self.metadata_store = MetadataStore::new(None, None);
     }
 }
 
@@ -269,12 +269,12 @@ impl TorrentManager {
         additional_data: Vec<u8>,
     ) {
         let outcome = self
-            .metadata_state
+            .metadata_handler
             .handle_receive_extended_message_ut_metadata(
                 value,
                 peer_addr,
                 additional_data,
-                &mut self.peers_state.peers,
+                &mut self.peers_ctx.peers,
             )
             .await;
 
@@ -289,7 +289,7 @@ impl TorrentManager {
             );
 
             // start file manager
-            self.torrent_data_status = Some(self.file_manager_state.start(
+            self.torrent_data_status = Some(self.file_manager_handler.start(
                 self.torrent_manager_config.base_path.as_path(),
                 file_list,
                 piece_length,
@@ -297,11 +297,11 @@ impl TorrentManager {
             ));
 
             // update new incoming peers handler with new data info
-            self.peers_state
+            self.peers_ctx
                 .to_new_incoming_peers_handler_tx
                 .send(ToNewIncomingPeersHandlerMsg::TorrentDataInitialized {
                     metadata_size: self
-                        .metadata_state
+                        .metadata_handler
                         .raw_metadata_size()
                         .expect("it must exist, full metadata is known"),
                     piece_completion_status: self
@@ -322,18 +322,18 @@ impl TorrentManager {
                 "resetting current connected peers to retrieve which block each peer has..."
             );
             let mut advertised_peers_mg = self
-                .peers_state
+                .peers_ctx
                 .advertised_peers
                 .lock()
                 .expect("another user panicked while holding the lock");
-            for (peer_addr, _) in self.peers_state.peers.iter() {
+            for (peer_addr, _) in self.peers_ctx.peers.iter() {
                 if let Some((advertised_peer, _)) = advertised_peers_mg.remove(peer_addr) {
                     advertised_peers_mg
                         .insert(peer_addr.clone(), (advertised_peer, SystemTime::UNIX_EPOCH));
                 }
             }
             drop(advertised_peers_mg);
-            self.peers_state.peers = HashMap::new();
+            self.peers_ctx.peers = HashMap::new();
         }
     }
 }

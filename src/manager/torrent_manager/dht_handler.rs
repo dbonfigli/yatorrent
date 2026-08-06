@@ -15,7 +15,7 @@ const DHT_NEW_PEER_COOL_OFF_PERIOD: Duration = Duration::from_secs(15);
 const TO_DHT_MANAGER_CHANNEL_CAPACITY: usize = 1000;
 const DHT_MANAGER_TO_TORRENT_MANAGER_CAPACITY: usize = 1000;
 
-pub(super) struct DhtState {
+pub(super) struct DhtHandler {
     torrent_info_hash: [u8; 20],
     dht_nodes: Vec<HostAndPort>,
     // internal channels, we store them here to avoid passing them around in nested calls
@@ -24,11 +24,11 @@ pub(super) struct DhtState {
     last_get_peers_requested_time: SystemTime,
 }
 
-impl DhtState {
+impl DhtHandler {
     pub(super) fn new(dht_nodes: Vec<HostAndPort>, torrent_info_hash: [u8; 20]) -> Self {
         let (to_dht_manager_tx, to_dht_manager_rx) = mpsc::channel(TO_DHT_MANAGER_CHANNEL_CAPACITY);
 
-        DhtState {
+        DhtHandler {
             torrent_info_hash,
             dht_nodes,
             to_dht_manager_tx,

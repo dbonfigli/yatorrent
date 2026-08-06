@@ -27,10 +27,10 @@ impl TorrentManager {
         self.check_endgame_status().await;
         self.request_new_peers_to_dht_manager().await;
         self.pex_handler
-            .send_pex_messages(&mut self.peers_state.peers)
+            .send_pex_messages(&mut self.peers_ctx.peers)
             .await;
-        self.metadata_state
-            .send_metadata_reqs(&mut self.peers_state.peers)
+        self.metadata_handler
+            .send_metadata_reqs(&mut self.peers_ctx.peers)
             .await;
 
         self.send_pieces_reqs().await;
@@ -38,16 +38,16 @@ impl TorrentManager {
 
     fn update_bandwidth_stats(&mut self) {
         self.bandwidth_tracker.update();
-        for (_, peer) in self.peers_state.peers.iter_mut() {
+        for (_, peer) in self.peers_ctx.peers.iter_mut() {
             peer.get_bandwidth_tracker_mut().update();
         }
     }
 
     async fn connect_to_new_peers(&mut self) {
-        let current_peers_n = self.peers_state.peers.len();
+        let current_peers_n = self.peers_ctx.peers.len();
         if current_peers_n < self.torrent_manager_config.max_connected_peers {
             let possible_peers_mg = self
-                .peers_state
+                .peers_ctx
                 .advertised_peers
                 .lock()
                 .expect("another user panicked while holding the lock");
@@ -58,9 +58,9 @@ impl TorrentManager {
                 .iter()
                 .filter(|(k, (_, last_connection_attempt))| {
                     // avoid selecting peers we are already connected to
-                    !self.peers_state.peers.contains_key(*k)
+                    !self.peers_ctx.peers.contains_key(*k)
                     // avoid selecting peers we know are bad
-                    && !self.peers_state.bad_peers.contains(*k)
+                    && !self.peers_ctx.bad_peers.contains(*k)
                     // use peers we didn't try to connect to recently
                     // this cool-off time is also important to avoid new connections to peers we attempted few secs ago
                     // and for which a connection attempt is still inflight
@@ -90,13 +90,13 @@ impl TorrentManager {
                     self.torrent_data_status
                         .as_ref()
                         .map(|f| f.current_piece_completion_status()),
-                    self.metadata_state.raw_metadata_size(),
-                    self.peers_state.peers_to_torrent_manager_tx.clone(),
+                    self.metadata_handler.raw_metadata_size(),
+                    self.peers_ctx.peers_to_torrent_manager_tx.clone(),
                 ));
             }
             // update last connection attempt
             let mut possible_peers_mg = self
-                .peers_state
+                .peers_ctx
                 .advertised_peers
                 .lock()
                 .expect("another user panicked while holding the lock");
@@ -111,24 +111,24 @@ impl TorrentManager {
     }
 
     async fn send_keep_alives(&mut self) {
-        for (_, peer) in self.peers_state.peers.iter_mut() {
+        for (_, peer) in self.peers_ctx.peers.iter_mut() {
             peer.send_keepalive().await;
         }
     }
 
     async fn unchoke_peers(&mut self) {
         let now = SystemTime::now();
-        for (_, peer) in self.peers_state.peers.iter_mut() {
+        for (_, peer) in self.peers_ctx.peers.iter_mut() {
             if peer.get_am_choking()
                 && now
                     .duration_since(peer.get_am_choking_since())
                     .unwrap_or_default()
                     > MIN_CHOKE_TIME
                 && !should_choke(
-                    self.peers_state.peers_to_torrent_manager_tx.capacity(),
+                    self.peers_ctx.peers_to_torrent_manager_tx.capacity(),
                     peer.get_outstanding_incoming_piece_block_requests(),
                     self.torrent_data_status.is_some(),
-                    &self.file_manager_state,
+                    &self.file_manager_handler,
                 )
             {
                 peer.set_am_choking(false);
@@ -154,8 +154,8 @@ impl TorrentManager {
     }
 
     async fn request_new_peers_to_dht_manager(&mut self) {
-        if self.peers_state.peers.len() < MAX_CONNECTED_PEERS_TO_ASK_DHT_FOR_MORE {
-            self.dht_state.request_new_peers_to_dht_manager().await;
+        if self.peers_ctx.peers.len() < MAX_CONNECTED_PEERS_TO_ASK_DHT_FOR_MORE {
+            self.dht_handler.request_new_peers_to_dht_manager().await;
         }
     }
 
@@ -170,14 +170,14 @@ impl TorrentManager {
         // most probably they have been silently dropped by the peer even if it is still alive
         let expired_piece_blocks_requests = self
             .piece_requestor
-            .remove_stale_requests(self.request_timeout, &self.peers_state.peers);
+            .remove_stale_requests(self.request_timeout, &self.peers_ctx.peers);
 
         if self.request_timeout != ENDGAME_REQUEST_TIMEOUT {
             // during endgame we shorten the timeout, we cannot really affort canceling requests since they could come later with such short timeout
             // todo: this is really bad, in theory "cancel" exists basically to avoid being horribly inefficent during the endgame, we are really misbheaving here
             // we should find a way to play nicer here
             for (peer_addr, req) in expired_piece_blocks_requests {
-                if let Some(peer) = self.peers_state.peers.get_mut(&peer_addr) {
+                if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
                     peer.send(ToPeerMsg::Send(Message::Cancel(req))).await;
                 }
             }
@@ -186,11 +186,11 @@ impl TorrentManager {
         // compute requests from piece requestor
         let reqs_to_send = self
             .piece_requestor
-            .generate_requests_to_send(&self.peers_state.peers, torrent_data_status);
+            .generate_requests_to_send(&self.peers_ctx.peers, torrent_data_status);
 
         // finally send requests
         for (peer_addr, block_requests) in reqs_to_send {
-            if let Some(peer) = self.peers_state.peers.get_mut(&peer_addr) {
+            if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
                 for block_request in block_requests {
                     peer.send(ToPeerMsg::Send(Message::Request(block_request)))
                         .await;
@@ -205,9 +205,9 @@ impl TorrentManager {
     }
 
     async fn send_status_to_tracker(&mut self) {
-        self.tracker_state
+        self.tracker_requestor
             .async_update_to_tracker(
-                self.peers_state.advertised_peers.clone(),
+                self.peers_ctx.advertised_peers.clone(),
                 self.torrent_data_status.as_ref().map(|f| f.bytes_left()),
                 (
                     self.bandwidth_tracker.uploaded_bytes(),
