@@ -445,7 +445,7 @@ impl TorrentManager {
             .peers
             .keys()
             .filter(|k| peer_addr != **k)
-            .map(|k| k.clone())
+            .cloned()
             .collect::<Vec<_>>();
         let peer = match self.peers_ctx.peers.get_mut(&peer_addr) {
             Some(peer) => peer,

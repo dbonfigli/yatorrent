@@ -502,7 +502,12 @@ fn decode_bitfield(buf: Vec<u8>) -> Vec<bool> {
 }
 
 fn encode_bitfield(bitfield: Vec<bool>) -> Vec<u8> {
-    let bitfield_bytes = (bitfield.len() / 8) + if bitfield.len() % 8 != 0 { 1 } else { 0 };
+    let bitfield_bytes = (bitfield.len() / 8)
+        + if !bitfield.len().is_multiple_of(8) {
+            1
+        } else {
+            0
+        };
     let mut buf = vec![0; 5 + bitfield_bytes];
     let bitfield_bytes_u32: u32 = bitfield_bytes
         .try_into()

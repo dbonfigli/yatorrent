@@ -153,7 +153,7 @@ impl Peer {
     }
 
     pub fn have_piece(&self, piece_idx: usize) -> bool {
-        self.haves.as_ref().map_or(false, |haves| haves[piece_idx])
+        self.haves.as_ref().is_some_and(|haves| haves[piece_idx])
     }
 
     pub fn set_haves(&mut self, haves: Option<Vec<bool>>) {

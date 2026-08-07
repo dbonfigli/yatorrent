@@ -955,8 +955,7 @@ impl DhtManager {
         // response
         match self.known_peers.get(&info_hash) {
             Some(peers) => {
-                let mut resp_peers_info: Vec<(Ipv4Addr, u16)> =
-                    peers.iter().map(|(k, _v)| *k).collect();
+                let mut resp_peers_info: Vec<(Ipv4Addr, u16)> = peers.keys().copied().collect();
                 resp_peers_info.truncate(8000); // do not overflow a single udp packet. todo: do a better calculation
                 self.msg_sender
                     .do_req(

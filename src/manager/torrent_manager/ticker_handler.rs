@@ -38,7 +38,7 @@ impl TorrentManager {
 
     fn update_bandwidth_stats(&mut self) {
         self.bandwidth_tracker.update();
-        for (_, peer) in self.peers_ctx.peers.iter_mut() {
+        for peer in self.peers_ctx.peers.values_mut() {
             peer.get_bandwidth_tracker_mut().update();
         }
     }
@@ -110,14 +110,14 @@ impl TorrentManager {
     }
 
     async fn send_keep_alives(&mut self) {
-        for (_, peer) in self.peers_ctx.peers.iter_mut() {
+        for peer in self.peers_ctx.peers.values_mut() {
             peer.send_keepalive().await;
         }
     }
 
     async fn unchoke_peers(&mut self) {
         let now = SystemTime::now();
-        for (_, peer) in self.peers_ctx.peers.iter_mut() {
+        for peer in self.peers_ctx.peers.values_mut() {
             if peer.get_am_choking()
                 && now
                     .duration_since(peer.get_am_choking_since())

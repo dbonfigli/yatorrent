@@ -237,7 +237,7 @@ impl MetadataStore {
             .map(|(peer_addr, _)| {
                 let outstanding_req = inflight_metadata_piece_requests_per_peer
                     .get(peer_addr)
-                    .map(|reqs| *reqs)
+                    .copied()
                     .unwrap_or_default();
                 (outstanding_req, peer_addr.clone())
             })

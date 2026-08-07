@@ -333,7 +333,7 @@ impl TorrentManager {
                 .advertised_peers
                 .lock()
                 .expect("another user panicked while holding the lock");
-            for (peer_addr, _) in self.peers_ctx.peers.iter() {
+            for peer_addr in self.peers_ctx.peers.keys() {
                 if let Some((advertised_peer, _)) = advertised_peers_mg.remove(peer_addr) {
                     advertised_peers_mg
                         .insert(peer_addr.clone(), (advertised_peer, SystemTime::UNIX_EPOCH));

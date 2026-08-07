@@ -209,7 +209,7 @@ impl TorrentManager {
                         .send(ToNewIncomingPeersHandlerMsg::PieceCompleted(piece_idx))
                         .await;
 
-                    for (_, peer) in self.peers_ctx.peers.iter_mut() {
+                    for peer in self.peers_ctx.peers.values_mut() {
                         // send "have" to all peers.
                         // it can happen on very fast downloads that "have" messages overwhelm the channel,
                         // discard the message in those cases to not block the loop

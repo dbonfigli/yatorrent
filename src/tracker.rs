@@ -113,10 +113,7 @@ impl TrackerClient {
     pub fn new(peer_id: String, trackers_url: Vec<Vec<String>>, listening_port: u16) -> Self {
         let mut randomized_tiers: Vec<Vec<String>> = Vec::new();
         for tier in trackers_url {
-            let randomized_tier = tier
-                .sample(&mut rand::rng(), tier.len())
-                .map(|e| e.clone())
-                .collect();
+            let randomized_tier = tier.sample(&mut rand::rng(), tier.len()).cloned().collect();
             randomized_tiers.push(randomized_tier);
         }
         TrackerClient {
@@ -602,7 +599,7 @@ fn get_peers_with_dict_model(peers_values: &Vec<Value>) -> Result<Vec<Peer>> {
 }
 
 fn get_peers_with_binary_model(peers_bytes: &Vec<u8>) -> Result<Vec<Peer>> {
-    if peers_bytes.len() % 6 != 0 {
+    if !peers_bytes.len().is_multiple_of(6) {
         bail!("Peers list is provided in binary model but it is not aligned to 6 bytes");
     }
     let mut peers_list: Vec<Peer> = Vec::new();

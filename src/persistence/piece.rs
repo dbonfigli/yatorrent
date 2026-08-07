@@ -199,14 +199,14 @@ mod tests {
             ],
         };
 
-        assert_eq!(piece.complete(), false);
+        assert!(!piece.complete());
 
         let piece = Piece {
             length: 10,
             fragments: vec![Fragment::new(0, 9)],
         };
 
-        assert_eq!(piece.complete(), true);
+        assert!(piece.complete());
     }
 
     #[test]
