@@ -246,11 +246,10 @@ impl TorrentManager {
 
         // start incoming peer connections handler
         peer_handler::run_new_incoming_peers_handler(
-            self.torrent_manager_config.info_hash.clone(),
+            self.torrent_manager_config.info_hash,
             self.torrent_manager_config.own_peer_id.clone(),
             self.torrent_manager_config
-                .listening_torrent_wire_protocol_port
-                .clone(),
+                .listening_torrent_wire_protocol_port,
             self.torrent_data_status
                 .as_ref()
                 .map(|f| f.current_piece_completion_status()),

@@ -78,7 +78,7 @@ impl Bucket {
     }
 
     pub fn get_mut(&mut self, node_id: &[u8; 20]) -> Option<&mut Node> {
-        let fake_requesting_node = Node::new_fake(node_id.clone());
+        let fake_requesting_node = Node::new_fake(*node_id);
         match &mut self.content {
             BucketContent::Buckets(lb, rb) => {
                 if fake_requesting_node.id <= lb.to {
@@ -117,7 +117,7 @@ impl Bucket {
     }
 
     pub fn closest_nodes(&self, node_id: &[u8; 20]) -> Vec<Node> {
-        let fake_requesting_node = Node::new_fake(node_id.clone());
+        let fake_requesting_node = Node::new_fake(*node_id);
         self.closest_nodes_by_node(&fake_requesting_node)
     }
 

@@ -88,7 +88,7 @@ impl TrackerRequestor {
         let tracker_client = tracker_client_mg.clone();
         drop(tracker_client_mg);
         let tracker_client_arc = self.tracker_client.clone();
-        let info_hash = self.info_hash.clone();
+        let info_hash = self.info_hash;
         tokio::spawn(async move {
             if let Ok((updated_tracker_client, latest_advertised_peers)) = request_to_tracker(
                 tracker_client,

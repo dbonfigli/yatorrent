@@ -146,7 +146,7 @@ impl TrackerClient {
                         info_hash,
                         uploaded,
                         downloaded,
-                        left.clone(),
+                        left,
                         event.clone(),
                     )
                     .await

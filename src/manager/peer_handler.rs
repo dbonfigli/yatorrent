@@ -108,7 +108,7 @@ pub async fn connect_to_new_peer(
                 DEFAULT_TIMEOUT,
                 handshake(
                     tcp_stream,
-                    info_hash.clone(),
+                    info_hash,
                     own_peer_id.clone(),
                     listening_dht_port,
                     piece_completion_status,
@@ -228,7 +228,7 @@ pub async fn run_new_incoming_peers_handler(
                 }
             };
             let ok_to_accept_connection_lock = ok_to_accept_connection.lock().await;
-            let ok_to_accept_connection = ok_to_accept_connection_lock.clone();
+            let ok_to_accept_connection = *ok_to_accept_connection_lock;
             drop(ok_to_accept_connection_lock);
             if !ok_to_accept_connection {
                 log::trace!(
@@ -248,7 +248,7 @@ pub async fn run_new_incoming_peers_handler(
                 let pcs = pcs_lock.clone();
                 drop(pcs_lock);
                 let metadata_size_lock = metadata_size_for_spawn.lock().await;
-                let metadata_size = metadata_size_lock.clone();
+                let metadata_size = *metadata_size_lock;
                 drop(metadata_size_lock);
                 let remote_addr = addr_or_unknown(&stream);
                 match timeout(

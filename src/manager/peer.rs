@@ -432,7 +432,7 @@ impl Peer {
         }
         let mut latencies = Duration::ZERO;
         for s in self.rtt_samples.iter() {
-            latencies += s.clone();
+            latencies += *s;
         }
         let rtt = latencies.div_f64(self.rtt_samples.len() as f64);
         self.rtt = Some(rtt);

@@ -932,7 +932,7 @@ impl DhtManager {
         // this is out of official spec of bep05 but we do this to accumulate more nodes in the routing table, todo maybe remove this
         if added {
             // find_node for a random node near the new one
-            let mut random_close_node_id = queried_node_id.clone();
+            let mut random_close_node_id = queried_node_id;
             random_close_node_id[19] ^= rand::random::<u8>();
             self.find_node(
                 to_addr_string(&remote_ipv4addr, remote_port),
