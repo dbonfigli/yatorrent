@@ -46,21 +46,21 @@ impl TrackerRequestor {
             .expect("another user panicked while holding the lock");
         let tracker_request_interval = tracker_client_mg.tracker_request_interval;
         drop(tracker_client_mg);
-        if let Ok(elapsed) = SystemTime::now().duration_since(self.last_tracker_request_time) {
-            if elapsed > tracker_request_interval {
-                let event = if self.last_tracker_request_time == SystemTime::UNIX_EPOCH {
-                    Event::Started
-                } else {
-                    Event::None
-                };
-                self.async_request_to_tracker(
-                    event,
-                    advertised_peers,
-                    bytes_left,
-                    uploaded_downloaded_bytes,
-                )
-                .await;
-            }
+        if let Ok(elapsed) = SystemTime::now().duration_since(self.last_tracker_request_time)
+            && elapsed > tracker_request_interval
+        {
+            let event = if self.last_tracker_request_time == SystemTime::UNIX_EPOCH {
+                Event::Started
+            } else {
+                Event::None
+            };
+            self.async_request_to_tracker(
+                event,
+                advertised_peers,
+                bytes_left,
+                uploaded_downloaded_bytes,
+            )
+            .await;
         }
     }
 

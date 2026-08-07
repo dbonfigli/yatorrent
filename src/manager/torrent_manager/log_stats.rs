@@ -127,8 +127,7 @@ impl TorrentManager {
     }
 
     fn peer_download_stalled(&self, peer: &Peer) -> bool {
-        self
-            .piece_requestor
+        self.piece_requestor
             .get_pending_block_requests_for_peer(&peer.get_peer_addr())
             > 0
             && SystemTime::now()

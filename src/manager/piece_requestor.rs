@@ -49,8 +49,7 @@ impl PieceRequestor {
     }
 
     pub fn outstanding_piece_block_request_count_for_peer(&self, peer_addr: &HostAndPort) -> usize {
-        self
-            .outstanding_piece_block_requests
+        self.outstanding_piece_block_requests
             .get(peer_addr)
             .map_or(0, |reqs| reqs.len())
     }
@@ -121,16 +120,15 @@ impl PieceRequestor {
 
     fn remove_assigments_to_choked(&mut self, peers: &HashMap<HostAndPort, Peer>) {
         let mut peers_to_remove = Vec::new();
-        for (peer_addr, _) in self.requested_pieces.iter() {
-            if let Some(peer) = peers.get(peer_addr) {
-                if peer.is_peer_choking()
-                    && SystemTime::now()
-                        .duration_since(peer.peer_choking_since())
-                        .unwrap_or_default()
-                        > CHOKED_PEER_ASSIGMENTS_GRACE_PERIOD
-                {
-                    peers_to_remove.push(peer_addr.clone());
-                }
+        for peer_addr in self.requested_pieces.keys() {
+            if let Some(peer) = peers.get(peer_addr)
+                && peer.is_peer_choking()
+                && SystemTime::now()
+                    .duration_since(peer.peer_choking_since())
+                    .unwrap_or_default()
+                    > CHOKED_PEER_ASSIGMENTS_GRACE_PERIOD
+            {
+                peers_to_remove.push(peer_addr.clone());
             }
         }
         for peer_addr in peers_to_remove {
@@ -223,10 +221,10 @@ impl PieceRequestor {
 
         // 2. assign incomplete pieces if not assigned yet
         for (piece_idx, piece) in torrent_data_status.incomplete_pieces().iter() {
-            if !self.outstanding_piece_assignments.contains_key(piece_idx) {
-                if let Some((peer_addr, reqs)) = self.assign_piece_reqs(*piece_idx, peers, piece) {
-                    requests_to_send.push((peer_addr, reqs));
-                }
+            if !self.outstanding_piece_assignments.contains_key(piece_idx)
+                && let Some((peer_addr, reqs)) = self.assign_piece_reqs(*piece_idx, peers, piece)
+            {
+                requests_to_send.push((peer_addr, reqs));
             }
         }
 

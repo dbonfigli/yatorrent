@@ -95,14 +95,14 @@ impl Metainfo {
             ),
         }
 
-        if announces.is_empty() {
-            if let Some(Value::Str(announce_vec)) = torrent_map.get(&b"announce".to_vec()) {
-                match str::from_utf8(announce_vec) {
-                    Ok(a) => announces.push(vec![a.to_string()]),
-                    _ => bail!("The .torrent file \"announce\" is not an UTF8 string"),
-                }
-            };
-        }
+        if announces.is_empty()
+            && let Some(Value::Str(announce_vec)) = torrent_map.get(&b"announce".to_vec())
+        {
+            match str::from_utf8(announce_vec) {
+                Ok(a) => announces.push(vec![a.to_string()]),
+                _ => bail!("The .torrent file \"announce\" is not an UTF8 string"),
+            }
+        };
 
         let mut url_list = Vec::new();
         match torrent_map.get(&b"url-list".to_vec()) {

@@ -138,16 +138,17 @@ impl TorrentManager {
 
     async fn check_endgame_status(&mut self) {
         // check endgame status a decrease request timeout if needed
-        if let Some(torrent_data_status) = &self.torrent_data_status {
-            if !torrent_data_status.completed() && self.request_timeout != ENDGAME_REQUEST_TIMEOUT {
-                let completed_pieces = torrent_data_status.completed_pieces();
-                let total_pieces = torrent_data_status.num_pieces();
-                if (completed_pieces as f64) / (total_pieces as f64) * 100.
-                    > ENDGAME_START_AT_COMPLETION_PERCENTAGE
-                {
-                    log::warn!("entering endgame phase");
-                    self.request_timeout = ENDGAME_REQUEST_TIMEOUT;
-                }
+        if let Some(torrent_data_status) = &self.torrent_data_status
+            && !torrent_data_status.completed()
+            && self.request_timeout != ENDGAME_REQUEST_TIMEOUT
+        {
+            let completed_pieces = torrent_data_status.completed_pieces();
+            let total_pieces = torrent_data_status.num_pieces();
+            if (completed_pieces as f64) / (total_pieces as f64) * 100.
+                > ENDGAME_START_AT_COMPLETION_PERCENTAGE
+            {
+                log::warn!("entering endgame phase");
+                self.request_timeout = ENDGAME_REQUEST_TIMEOUT;
             }
         }
     }

@@ -161,10 +161,10 @@ impl Peer {
     }
 
     pub fn set_have(&mut self, piece_idx: usize) {
-        if let Some(haves) = &mut self.haves {
-            if piece_idx < haves.len() {
-                haves[piece_idx] = true;
-            }
+        if let Some(haves) = &mut self.haves
+            && piece_idx < haves.len()
+        {
+            haves[piece_idx] = true;
         }
     }
 
@@ -207,10 +207,10 @@ impl Peer {
     }
 
     pub async fn send_keepalive(&mut self) {
-        if let Ok(elapsed) = SystemTime::now().duration_since(self.last_sent) {
-            if elapsed > KEEP_ALIVE_FREQ {
-                self.send(ToPeerMsg::Send(Message::KeepAlive)).await;
-            }
+        if let Ok(elapsed) = SystemTime::now().duration_since(self.last_sent)
+            && elapsed > KEEP_ALIVE_FREQ
+        {
+            self.send(ToPeerMsg::Send(Message::KeepAlive)).await;
         }
     }
 

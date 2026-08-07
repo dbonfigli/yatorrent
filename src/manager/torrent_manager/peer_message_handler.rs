@@ -260,15 +260,15 @@ impl TorrentManager {
     }
 
     async fn handle_suggest_message(&mut self, peer_addr: HostAndPort, _piece_idx: u32) {
-        if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
-            if !peer.supports_fast_extension() {
-                log::debug!(
-                    "removing peer {peer_addr}: we received a \"suggest\" fast track message but the peer did not advertise its support"
-                );
-                peer.send(ToPeerMsg::Disconnect()).await;
-                self.remove_peer(peer_addr).await;
-                return;
-            }
+        if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr)
+            && !peer.supports_fast_extension()
+        {
+            log::debug!(
+                "removing peer {peer_addr}: we received a \"suggest\" fast track message but the peer did not advertise its support"
+            );
+            peer.send(ToPeerMsg::Disconnect()).await;
+            self.remove_peer(peer_addr).await;
+            return;
         }
         // todo: at the moment we ignore these suggestions
         log::trace!("received a suggest from {peer_addr}");
@@ -331,29 +331,29 @@ impl TorrentManager {
         peer_addr: HostAndPort,
         _block_request: BlockRequest,
     ) {
-        if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
-            if !peer.supports_fast_extension() {
-                log::debug!(
-                    "removing peer {peer_addr}: we received a \"reject\" fast track message but the peer did not advertise its support"
-                );
-                peer.send(ToPeerMsg::Disconnect()).await;
-                self.remove_peer(peer_addr).await;
-            }
-            // for the moment we will ignore this and let the normal fast expiration work after choke
+        if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr)
+            && !peer.supports_fast_extension()
+        {
+            log::debug!(
+                "removing peer {peer_addr}: we received a \"reject\" fast track message but the peer did not advertise its support"
+            );
+            peer.send(ToPeerMsg::Disconnect()).await;
+            self.remove_peer(peer_addr).await;
         }
+        // for the moment we will ignore this and let the normal fast expiration work after choke
     }
 
     async fn handle_allow_fast_message(&mut self, peer_addr: HostAndPort, _piece_idx: usize) {
-        if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
-            if !peer.supports_fast_extension() {
-                log::debug!(
-                    "removing peer {peer_addr}: we received an \"allow fast\" fast track message but the peer did not advertise its support"
-                );
-                peer.send(ToPeerMsg::Disconnect()).await;
-                self.remove_peer(peer_addr).await;
-            }
-            // for the moment we ignore allow fast messages
+        if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr)
+            && !peer.supports_fast_extension()
+        {
+            log::debug!(
+                "removing peer {peer_addr}: we received an \"allow fast\" fast track message but the peer did not advertise its support"
+            );
+            peer.send(ToPeerMsg::Disconnect()).await;
+            self.remove_peer(peer_addr).await;
         }
+        // for the moment we ignore allow fast messages
     }
 
     async fn handle_receive_extended_message(

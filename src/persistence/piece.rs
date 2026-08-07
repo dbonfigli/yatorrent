@@ -59,14 +59,12 @@ impl Piece {
             self.fragments[idx] = Fragment::new(begin, cmp::max(end, self.fragments[idx + 1].end));
             self.fragments.remove(idx + 1);
         }
-        if idx != 0 {
-            if begin <= self.fragments[idx - 1].end + 1 {
-                self.fragments[idx] = Fragment::new(
-                    cmp::min(begin, self.fragments[idx - 1].begin),
-                    self.fragments[idx].end,
-                );
-                self.fragments.remove(idx - 1);
-            }
+        if idx != 0 && begin <= self.fragments[idx - 1].end + 1 {
+            self.fragments[idx] = Fragment::new(
+                cmp::min(begin, self.fragments[idx - 1].begin),
+                self.fragments[idx].end,
+            );
+            self.fragments.remove(idx - 1);
         }
     }
 

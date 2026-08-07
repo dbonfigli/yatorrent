@@ -75,19 +75,17 @@ impl MetadataStore {
                         Size::from_bytes(s).format().with_style(Style::Abbreviated)
                     );
                 }
-                if s > METADATA_BIG_REJECT_THRESHOLD {
-                    if raw_metadata.is_none() {
-                        // return an error only in case we don't know the full metadata yet:
-                        // * if we know it, it means it is coming from the torrent file passed by the user, so we trust the user that he really want this torrent, albeit strange
-                        // * if we don't know it yet, it means we are about to download it from peers via magnet and maybe some bad peer has maliciously injected such large size
-                        bail!(
-                            "the metadata size is suspiciously big: {}. Metadata is fully kept in memory. Rejecting it. If needed, increase METADATA_BIG_REJECT_THRESHOLD (currently: {})",
-                            Size::from_bytes(s).format().with_style(Style::Abbreviated),
-                            Size::from_bytes(METADATA_BIG_REJECT_THRESHOLD)
-                                .format()
-                                .with_style(Style::Abbreviated),
-                        );
-                    }
+                if s > METADATA_BIG_REJECT_THRESHOLD && raw_metadata.is_none() {
+                    // return an error only in case we don't know the full metadata yet:
+                    // * if we know it, it means it is coming from the torrent file passed by the user, so we trust the user that he really want this torrent, albeit strange
+                    // * if we don't know it yet, it means we are about to download it from peers via magnet and maybe some bad peer has maliciously injected such large size
+                    bail!(
+                        "the metadata size is suspiciously big: {}. Metadata is fully kept in memory. Rejecting it. If needed, increase METADATA_BIG_REJECT_THRESHOLD (currently: {})",
+                        Size::from_bytes(s).format().with_style(Style::Abbreviated),
+                        Size::from_bytes(METADATA_BIG_REJECT_THRESHOLD)
+                            .format()
+                            .with_style(Style::Abbreviated),
+                    );
                 }
 
                 metadata_pieces_from_size(s, raw_metadata.is_some())

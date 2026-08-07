@@ -416,10 +416,10 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
         };
 
         let mut implied_port = false;
-        if let Some(Value::Int(implied_port_int)) = a_h.get(&b"implied_port".to_vec()) {
-            if *implied_port_int != 0 {
-                implied_port = true;
-            }
+        if let Some(Value::Int(implied_port_int)) = a_h.get(&b"implied_port".to_vec())
+            && *implied_port_int != 0
+        {
+            implied_port = true;
         }
 
         Ok(KRPCMessage::AnnouncePeerReq(
