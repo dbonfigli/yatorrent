@@ -184,7 +184,15 @@ fn parse_str(source: &Vec<u8>, index: usize) -> (Value, usize) {
     if string_len == 0 {
         return (Value::Str(Vec::new()), index);
     }
-    let end_string_index = index + string_len;
+    let end_string_index = match index.checked_add(string_len) {
+        Some(end_string_index) => end_string_index,
+        None => {
+            return (
+                Value::new_error(ErrorElem::Str, start_string_len_index),
+                index,
+            );
+        }
+    };
     if end_string_index > source.len() {
         return (
             Value::new_error(ErrorElem::Str, start_string_len_index),
