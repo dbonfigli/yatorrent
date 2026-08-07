@@ -172,10 +172,9 @@ fn update_tracker_client_and_advertised_peers(
         .lock()
         .expect("another user panicked while holding the lock");
     latest_advertised_peers.iter().for_each(|p| {
-        advertised_peers.insert(
-            format!("{}:{}", p.ip, p.port),
-            (p.clone(), SystemTime::UNIX_EPOCH),
-        );
+        advertised_peers
+            .entry(format!("{}:{}", p.ip, p.port))
+            .or_insert((p.clone(), SystemTime::UNIX_EPOCH));
     });
     drop(advertised_peers);
 }

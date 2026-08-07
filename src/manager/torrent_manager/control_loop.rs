@@ -79,7 +79,7 @@ impl TorrentManager {
                 Some(DhtToTorrentManagerMsg::NewPeer(ip, port)) = dht_to_torrent_manager_rx.recv() => {
                     let p = tracker::Peer{peer_id: None, ip: ip.to_string(), port};
                     let mut advertised_peers_mg = self.peers_ctx.advertised_peers.lock().expect("another user panicked while holding the lock");
-                    advertised_peers_mg.insert(format!("{ip}:{port}"), (p, SystemTime::UNIX_EPOCH));
+                    advertised_peers_mg.entry(format!("{ip}:{port}")).or_insert((p, SystemTime::UNIX_EPOCH));
                     drop(advertised_peers_mg);
                 }
                 else => break,

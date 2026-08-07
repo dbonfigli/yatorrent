@@ -111,7 +111,9 @@ pub fn handle_receive_extended_message_ut_pex(
             let mut advertised_peers_mg = advertised_peers
                 .lock()
                 .expect("another user panicked while holding the lock");
-            advertised_peers_mg.insert(format!("{ip}:{port}"), (p, SystemTime::UNIX_EPOCH));
+            advertised_peers_mg
+                .entry(format!("{ip}:{port}"))
+                .or_insert((p, SystemTime::UNIX_EPOCH));
             drop(advertised_peers_mg);
         }
     }
