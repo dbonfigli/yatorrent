@@ -99,7 +99,7 @@ impl MetadataHandler {
                 return MetadataMessageHandlingOutcome::Other;
             }
         };
-        let msg_type = match d.get(&b"msg_type".to_vec()) {
+        let msg_type = match d.get(b"msg_type".as_slice()) {
             Some(Int(msg_type)) => msg_type,
             _ => {
                 log::debug!(
@@ -108,7 +108,7 @@ impl MetadataHandler {
                 return MetadataMessageHandlingOutcome::Other;
             }
         };
-        let piece = match d.get(&b"piece".to_vec()) {
+        let piece = match d.get(b"piece".as_slice()) {
             Some(Int(piece)) => piece,
             _ => {
                 log::debug!(
@@ -127,7 +127,7 @@ impl MetadataHandler {
                     .await;
             }
             METADATA_MESSAGE_DATA => {
-                let metadata_size = match d.get(&b"total_size".to_vec()) {
+                let metadata_size = match d.get(b"total_size".as_slice()) {
                     Some(Int(metadata_size)) => metadata_size,
                     _ => {
                         log::debug!(

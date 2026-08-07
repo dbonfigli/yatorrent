@@ -81,7 +81,7 @@ pub fn handle_receive_extended_message_ut_pex(
         }
     };
     // todo: should we also use the dropped list? atm we are eager to hoard all possible peers so we ignore it
-    if let Some(Str(compact_contacts_info)) = d.get(&b"added".to_vec()) {
+    if let Some(Str(compact_contacts_info)) = d.get(b"added".as_slice()) {
         // we don't support flags, dropped or ipv6 fields ATM
         if compact_contacts_info.len() % 6 != 0 {
             log::debug!(

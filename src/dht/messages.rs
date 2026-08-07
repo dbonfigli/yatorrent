@@ -205,7 +205,7 @@ pub fn decode_krpc_message(data: Vec<u8>) -> Result<(Vec<u8> /* transaction id *
         }
         Value::Dict { dict: h, .. } => {
             // check transaction id
-            if let Some(t_id) = h.get(&b"t".to_vec()) {
+            if let Some(t_id) = h.get(b"t".as_slice()) {
                 if let Value::Str(t_id_str) = t_id {
                     transaction_id = t_id_str.clone();
                 } else {
@@ -216,7 +216,7 @@ pub fn decode_krpc_message(data: Vec<u8>) -> Result<(Vec<u8> /* transaction id *
             }
 
             // check y key existence
-            let y = match h.get(&b"y".to_vec()) {
+            let y = match h.get(b"y".as_slice()) {
                 Some(y) => y,
                 None => bail!("got krpc message that does not contain a y key"),
             };

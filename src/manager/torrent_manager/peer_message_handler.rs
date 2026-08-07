@@ -370,12 +370,12 @@ impl TorrentManager {
 
         // retrieve reqq, if provided
         if let Dict { dict: d, .. } = extended_message.clone() {
-            let client_version = if let Some(Value::Str(v)) = d.get(&(b"v".to_vec())) {
+            let client_version = if let Some(Value::Str(v)) = d.get(b"v".as_slice()) {
                 force_string(v)
             } else {
                 "unknown".to_string()
             };
-            if let Some(Value::Int(reqq)) = d.get(&(b"reqq".to_vec())) {
+            if let Some(Value::Int(reqq)) = d.get(b"reqq".as_slice()) {
                 peer.set_reqq(*reqq as usize);
                 log::debug!("{peer_addr} (version: {client_version}) has reqq: {reqq}");
             }
@@ -430,7 +430,7 @@ impl TorrentManager {
                 return;
             }
         };
-        let m = match extended_message_dict.get(&b"m".to_vec()) {
+        let m = match extended_message_dict.get(b"m".as_slice()) {
             Some(Dict { dict: m, .. }) => m,
             _ => {
                 log::debug!(
@@ -462,7 +462,7 @@ impl TorrentManager {
         if let Some(Int(ut_metadata_id)) = m.get(&b"ut_metadata".to_vec()) {
             // this peer supports the ut_metadata extension, registered at number ut_metadata_id
             peer.set_ut_metadata_id(*ut_metadata_id as u8);
-            if let Some(Int(metadata_size)) = extended_message_dict.get(&b"metadata_size".to_vec())
+            if let Some(Int(metadata_size)) = extended_message_dict.get(b"metadata_size".as_slice())
             {
                 if *metadata_size <= 0 {
                     log::debug!(

@@ -299,7 +299,7 @@ impl TrackerClient {
             _ => bail!("The server response was not a valid bencoded map"),
         };
 
-        if let Some(Value::Str(failure_reason_vec)) = response_map.get(&b"failure reason".to_vec())
+        if let Some(Value::Str(failure_reason_vec)) = response_map.get(b"failure reason".as_slice())
         {
             if let Ok(f) = str::from_utf8(failure_reason_vec) {
                 return Ok(Response::Failure(f.to_string()));
@@ -311,7 +311,7 @@ impl TrackerClient {
         }
 
         // warning message
-        let warning_message = match response_map.get(&b"warning message".to_vec()) {
+        let warning_message = match response_map.get(b"warning message".as_slice()) {
             Some(Value::Str(warning_message_vec)) => match str::from_utf8(warning_message_vec) {
                 Ok(w) => Some(w.to_string()),
                 _ => bail!(
@@ -322,7 +322,7 @@ impl TrackerClient {
         };
 
         // interval
-        let interval = match response_map.get(&b"interval".to_vec()) {
+        let interval = match response_map.get(b"interval".as_slice()) {
             Some(Value::Int(i)) => *i,
             _ => bail!(
                 "Interval key not provided in bencoded dict response or provided but it is not a number"
@@ -330,13 +330,13 @@ impl TrackerClient {
         };
 
         // min interval
-        let min_interval = match response_map.get(&b"min interval".to_vec()) {
+        let min_interval = match response_map.get(b"min interval".as_slice()) {
             Some(Value::Int(i)) => Some(*i),
             _ => None,
         };
 
         // tracker id
-        let tracker_id = match response_map.get(&b"tracker id".to_vec()) {
+        let tracker_id = match response_map.get(b"tracker id".as_slice()) {
             Some(Value::Str(tracker_id_vec)) => match str::from_utf8(tracker_id_vec) {
                 Ok(w) => Some(w.to_string()),
                 _ => bail!(
@@ -347,7 +347,7 @@ impl TrackerClient {
         };
 
         // complete
-        let complete = match response_map.get(&b"complete".to_vec()) {
+        let complete = match response_map.get(b"complete".as_slice()) {
             Some(Value::Int(i)) => *i,
             _ => bail!(
                 "Complete key not provided in bencoded dict response or provided but it is not a number"
@@ -355,7 +355,7 @@ impl TrackerClient {
         };
 
         // incomplete
-        let incomplete = match response_map.get(&b"incomplete".to_vec()) {
+        let incomplete = match response_map.get(b"incomplete".as_slice()) {
             Some(Value::Int(i)) => *i,
             _ => bail!(
                 "Incomplete key not provided in bencoded dict response or provided but it is not a number"
@@ -363,7 +363,7 @@ impl TrackerClient {
         };
 
         // peers
-        let peers = match response_map.get(&b"peers".to_vec()) {
+        let peers = match response_map.get(b"peers".as_slice()) {
             Some(Value::List(peers_list)) => get_peers_with_dict_model(peers_list)?,
             Some(Value::Str(peers_bytes)) => get_peers_with_binary_model(peers_bytes)?,
             _ => bail!(
