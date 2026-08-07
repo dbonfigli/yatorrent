@@ -49,10 +49,10 @@ impl PieceRequestor {
     }
 
     pub fn outstanding_piece_block_request_count_for_peer(&self, peer_addr: &HostAndPort) -> usize {
-        return self
+        self
             .outstanding_piece_block_requests
             .get(peer_addr)
-            .map_or(0, |reqs| reqs.len());
+            .map_or(0, |reqs| reqs.len())
     }
 
     pub fn remove_assigments_to_peer(&mut self, peer_addr: &HostAndPort) {
@@ -87,7 +87,7 @@ impl PieceRequestor {
                         "we received block {:?} from {peer_addr} but request was expired",
                         block_request
                     );
-                    return None;
+                    None
                 }
                 Some(t) => {
                     let now = SystemTime::now();
@@ -97,9 +97,9 @@ impl PieceRequestor {
                                 "requested block from {peer_addr} arrived after {latency:#?}",
                             );
                         }
-                        return Some(latency);
+                        Some(latency)
                     } else {
-                        return None;
+                        None
                     }
                 }
             }
@@ -153,7 +153,7 @@ impl PieceRequestor {
                 outstanding_block_requests_for_peer.retain(
                     |block_request, req_time| {
                         if now.duration_since(*req_time).unwrap_or_default() < request_timeout {
-                            return true;
+                            true
                         } else {
                             log::debug!("removed stale request to peer: {}: (piece idx: {}, block begin: {}, length: {})",
                                 *peer_addr, block_request.piece_idx, block_request.block_begin, block_request.data_len);
@@ -163,8 +163,8 @@ impl PieceRequestor {
                                 requested_pieces_for_peer.remove(&(block_request.piece_idx as usize));
                             }
                             self.outstanding_piece_assignments.remove(&(block_request.piece_idx as usize));
-                            return false;
-                        };
+                            false
+                        }
                     },
                 );
             },
@@ -293,7 +293,7 @@ impl PieceRequestor {
         peers_ready_for_new_requests.shuffle(&mut rand::rng());
 
         peers_ready_for_new_requests.sort_by(|a, b| {
-            return if a.2 < b.2 {
+            if a.2 < b.2 {
                 // prefer lower concurrent_requested_pieces_count
                 Ordering::Less
             } else if a.2 > b.2 {
@@ -307,7 +307,7 @@ impl PieceRequestor {
                 Ordering::Greater
             } else {
                 Ordering::Equal
-            };
+            }
         });
 
         if !peers_ready_for_new_requests.is_empty() {
@@ -323,7 +323,7 @@ impl PieceRequestor {
         }
 
         // no candidate for new request found
-        return Option::None;
+        Option::None
     }
 
     fn peer_can_allocate_requests(
@@ -490,5 +490,5 @@ fn max_outstanding_reqs(peer: &Peer) -> usize {
         MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT,
     );
 
-    return min(min_reqs, max_reqs);
+    min(min_reqs, max_reqs)
 }

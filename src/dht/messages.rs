@@ -233,10 +233,10 @@ pub fn decode_krpc_message(data: Vec<u8>) -> Result<(Vec<u8> /* transaction id *
                 Ok((transaction_id, msg))
             } else if y_str == b"r" {
                 let msg = parse_response_message(&h)?;
-                return Ok((transaction_id, msg));
+                Ok((transaction_id, msg))
             } else if y_str == b"e" {
                 let msg = parse_error_message(&h)?;
-                return Ok((transaction_id, msg));
+                Ok((transaction_id, msg))
             } else {
                 bail!("got krpc message that contains a y key that is neither a \"q\" or a \"r\"");
             }
@@ -325,7 +325,7 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
             .try_into()
             .expect("target string already validated, should fit 20b array");
 
-        return Ok(KRPCMessage::FindNodeReq(id_arr, target_arr));
+        Ok(KRPCMessage::FindNodeReq(id_arr, target_arr))
     } else if q_str == b"get_peers" {
         // check a contains info_hash
         let info_hash = match a_h.get(&b"info_hash".to_vec()) {
@@ -351,7 +351,7 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
             .try_into()
             .expect("info hash string already validated, should fit 20b array");
 
-        return Ok(KRPCMessage::GetPeersReq(id_arr, info_hash_arr));
+        Ok(KRPCMessage::GetPeersReq(id_arr, info_hash_arr))
     } else if q_str == b"announce_peer" {
         // check a contains info_hash
         let info_hash = match a_h.get(&b"info_hash".to_vec()) {
@@ -422,13 +422,13 @@ fn parse_req_message(h: &HashMap<Vec<u8>, Value>) -> Result<KRPCMessage> {
             }
         }
 
-        return Ok(KRPCMessage::AnnouncePeerReq(
+        Ok(KRPCMessage::AnnouncePeerReq(
             id_arr,
             info_hash_arr,
             port_int,
             token_str.clone(),
             implied_port,
-        ));
+        ))
     } else {
         bail!("got krpc message that is a query (y=q) but but could not recognize query type");
     }

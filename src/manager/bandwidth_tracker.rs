@@ -139,7 +139,7 @@ impl BandwidthTracker {
             .poll_time
             .duration_since(back.poll_time)
             .unwrap_or(Duration::from_secs(1)); // avoid division by zero, but this should not be possible
-        return tot_down / poll_interval.as_secs_f64();
+        tot_down / poll_interval.as_secs_f64()
     }
 
     pub fn avg_bandwidth_up(&self) -> f64 {
@@ -167,7 +167,7 @@ impl BandwidthTracker {
             .poll_time
             .duration_since(back.poll_time)
             .unwrap_or(Duration::from_secs(1)); // avoid division by zero, but this should not be possible
-        return tot_up / poll_interval.as_secs_f64();
+        tot_up / poll_interval.as_secs_f64()
     }
 }
 

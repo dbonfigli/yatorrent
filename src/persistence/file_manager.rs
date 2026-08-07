@@ -72,11 +72,11 @@ impl ReadFileHandles {
             let f = File::options().read(true).open(file_path)?;
             self.file_handles.insert(file_path.clone(), Arc::new(f));
         }
-        return Ok(self
+        Ok(self
             .file_handles
             .get(file_path)
             .expect("file is present since we fetched it or inserted if missing")
-            .clone());
+            .clone())
     }
 }
 
@@ -104,11 +104,11 @@ impl WriteFileHandles {
                 .open(file_path)?;
             self.file_handles.insert(file_path.clone(), Arc::new(f));
         }
-        return Ok(self
+        Ok(self
             .file_handles
             .get(file_path)
             .expect("file is present since we fetched it or inserted if missing")
-            .clone());
+            .clone())
     }
 }
 
@@ -302,11 +302,11 @@ pub fn start_file_manager(
         })
     });
 
-    return TorrentDataStatus::new(
+    TorrentDataStatus::new(
         piece_completion_status,
         normal_piece_length,
         last_piece_length,
-    );
+    )
 }
 
 fn read_data(

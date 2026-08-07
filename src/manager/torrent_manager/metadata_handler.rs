@@ -246,15 +246,15 @@ impl MetadataHandler {
                 piece_hashes,
                 metainfo_file,
             }) => {
-                return MetadataMessageHandlingOutcome::MetadataComplete {
+                MetadataMessageHandlingOutcome::MetadataComplete {
                     piece_length,
                     piece_hashes,
                     file_list: infodict::get_files(&metainfo_file),
-                };
+                }
             }
             Err(e) => {
                 self.corrupted_metadata(e);
-                return MetadataMessageHandlingOutcome::Other;
+                MetadataMessageHandlingOutcome::Other
             }
         }
     }

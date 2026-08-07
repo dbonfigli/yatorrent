@@ -196,7 +196,7 @@ impl MetadataStore {
                 raw_metadata_size,
             });
         }
-        return None;
+        None
     }
 
     pub fn generate_metadata_piece_reqs(

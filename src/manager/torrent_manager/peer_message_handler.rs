@@ -338,7 +338,6 @@ impl TorrentManager {
                 );
                 peer.send(ToPeerMsg::Disconnect()).await;
                 self.remove_peer(peer_addr).await;
-                return;
             }
             // for the moment we will ignore this and let the normal fast expiration work after choke
         }
@@ -352,7 +351,6 @@ impl TorrentManager {
                 );
                 peer.send(ToPeerMsg::Disconnect()).await;
                 self.remove_peer(peer_addr).await;
-                return;
             }
             // for the moment we ignore allow fast messages
         }

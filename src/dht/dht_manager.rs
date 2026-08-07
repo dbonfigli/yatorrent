@@ -564,7 +564,6 @@ impl DhtManager {
                     imply_port,
                 )
                 .await;
-                return;
             }
 
             KRPCMessage::Error(error_type, msg) => {
@@ -581,7 +580,6 @@ impl DhtManager {
                         "got a error resp from {remote_addr} for an unknown or expired transaction id ({}) we didn't perform, ignoring it",
                         force_string(&transaction_id.to_vec())
                     );
-                    return;
                 }
             }
         }
@@ -821,7 +819,6 @@ impl DhtManager {
             // search is over, let's gather results
             self.end_find_node_search(&original_request_id).await;
         }
-        return;
     }
 
     async fn handle_announce_peer_req(
