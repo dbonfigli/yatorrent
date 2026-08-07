@@ -28,7 +28,7 @@ impl TorrentManager {
     pub(super) async fn remove_peer(&mut self, peer_addr: HostAndPort) {
         self.pex_handler
             .new_pex_event(peer_addr.clone(), PexEvent::Dropped);
-        if let Some(_) = self.peers_ctx.peers.remove(&peer_addr) {
+        if self.peers_ctx.peers.remove(&peer_addr).is_some() {
             self.piece_requestor.remove_assigments_to_peer(&peer_addr);
         }
         if self.peers_ctx.peers.len() < self.torrent_manager_config.max_connected_peers {

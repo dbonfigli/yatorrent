@@ -1,5 +1,4 @@
 use anyhow::{Result, bail};
-use percent_encoding;
 
 use crate::util::HostAndPort;
 
@@ -69,7 +68,7 @@ impl Magnet {
                 None => bail!("Invalid peer address format (missing port): {}", addr),
                 Some((_, port_str)) => {
                     // Validate that port is a valid u16
-                    if let Err(_) = port_str.parse::<u16>() {
+                    if port_str.parse::<u16>().is_err() {
                         bail!("Invalid port number in peer address: {}", addr);
                     }
                 }

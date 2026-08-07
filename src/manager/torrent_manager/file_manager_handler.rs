@@ -235,7 +235,7 @@ impl TorrentManager {
                 log::error!("cannot write block received from {}: {e}", peer_addr);
 
                 // keep track of corruptions, remove if too many
-                if let Some(_) = e.downcast_ref::<ShaCorruptedError>() {
+                if e.downcast_ref::<ShaCorruptedError>().is_some() {
                     let peer = match self.peers_ctx.peers.get_mut(&peer_addr) {
                         Some(peer) => peer,
                         None => return,

@@ -359,7 +359,7 @@ impl PieceRequestor {
                     requests_to_send.push(request.clone());
                     self.outstanding_piece_block_requests
                         .entry(peer_addr.clone())
-                        .or_insert(HashMap::new())
+                        .or_default()
                         .insert(request, SystemTime::now());
                     incomplete_piece.add_fragment(begin, end);
                 }
@@ -369,7 +369,7 @@ impl PieceRequestor {
         if !requests_to_send.is_empty() {
             self.requested_pieces
                 .entry(peer_addr.clone())
-                .or_insert(HashMap::new())
+                .or_default()
                 .insert(
                     piece_idx,
                     (incomplete_piece.clone(), incomplete_piece.complete()),

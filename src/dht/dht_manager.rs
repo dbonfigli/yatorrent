@@ -762,19 +762,19 @@ impl DhtManager {
             original_request.total_discovered_nodes += 1;
 
             // ping newly discovered nodes to eventually put them in the routing table
-            if let None = self.routing_table.get_mut(&node_id) {
-                if !original_request.probed_nodes.contains(&node_id) {
-                    original_request.probed_nodes.insert(node_id);
-                    self.msg_sender
-                        .do_req(
-                            socket,
-                            to_addr_string(&addr, port),
-                            KRPCMessage::PingReq(self.own_node_id),
-                            None,
-                            0,
-                        )
-                        .await;
-                }
+            if self.routing_table.get_mut(&node_id).is_none()
+                && !original_request.probed_nodes.contains(&node_id)
+            {
+                original_request.probed_nodes.insert(node_id);
+                self.msg_sender
+                    .do_req(
+                        socket,
+                        to_addr_string(&addr, port),
+                        KRPCMessage::PingReq(self.own_node_id),
+                        None,
+                        0,
+                    )
+                    .await;
             }
 
             // avoid sending find_node to a node we already asked
@@ -1031,7 +1031,7 @@ impl DhtManager {
 
         // if we don't have it in the routing table, ping this node to eventually put it in the routing table:
         // it could be a new node bootstrapping that is trying to let himself know
-        if let None = self.routing_table.get_mut(&querying_node_id) {
+        if self.routing_table.get_mut(&querying_node_id).is_none() {
             self.msg_sender
                 .do_req(
                     socket,
@@ -1046,5 +1046,5 @@ impl DhtManager {
 }
 
 fn to_addr_string(addr: &Ipv4Addr, port: u16) -> HostAndPort {
-    format!("{}:{port}", addr.to_string())
+    format!("{}:{port}", addr)
 }

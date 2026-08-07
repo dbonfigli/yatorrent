@@ -48,7 +48,7 @@ impl TorrentDataStatus {
     }
 
     pub fn piece_is_completed(&self, idx: usize) -> bool {
-        self.missing_pieces.get(&idx).is_none()
+        !self.missing_pieces.contains(&idx)
     }
 
     pub fn num_pieces(&self) -> usize {
@@ -61,7 +61,7 @@ impl TorrentDataStatus {
 
     pub fn bytes_left(&self) -> u64 {
         let mut left = self.missing_pieces.len() as u64 * self.normal_piece_length;
-        if self.missing_pieces.get(&(self.total_pieces - 1)).is_some() {
+        if self.missing_pieces.contains(&(self.total_pieces - 1)) {
             // last piece yet to be downloaded, adjust its size
             left = left - self.normal_piece_length + self.last_piece_length;
         }
@@ -83,9 +83,9 @@ impl TorrentDataStatus {
     }
     pub fn piece_length(&self, piece_idx: usize) -> u64 {
         if piece_idx == self.total_pieces - 1 {
-            return self.last_piece_length as u64;
+            return self.last_piece_length;
         }
-        return self.normal_piece_length as u64;
+        self.normal_piece_length
     }
 
     pub fn update(&mut self, write_piece_block_response: &WritePieceBlockResponse) {

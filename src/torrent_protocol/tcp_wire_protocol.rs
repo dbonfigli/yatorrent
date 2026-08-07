@@ -82,12 +82,12 @@ impl Protocol for TcpStream {
                 }
 
                 log::trace!("peer {}: full handshake received", peer_addr);
-                return Ok(Handshake {
+                Ok(Handshake {
                     pstr,
                     reserved: reserved_buf,
                     info_hash: info_hash_buf,
                     peer_id,
-                });
+                })
             }
         );
 

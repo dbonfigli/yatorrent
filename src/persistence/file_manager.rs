@@ -44,9 +44,9 @@ struct PieceSizer {
 impl PieceSizer {
     fn piece_length(&self, piece_idx: usize) -> u64 {
         if piece_idx == self.total_pieces - 1 {
-            self.last_piece_length as u64
+            self.last_piece_length
         } else {
-            self.normal_piece_length as u64
+            self.normal_piece_length
         }
     }
 
@@ -100,6 +100,7 @@ impl WriteFileHandles {
                 .read(true)
                 .write(true)
                 .create(true)
+                .truncate(false)
                 .open(file_path)?;
             self.file_handles.insert(file_path.clone(), Arc::new(f));
         }
@@ -787,8 +788,7 @@ fn get_file_list_with_completion_status(
             if file_list_with_completion_status[cur_file_idx].0 != *piece_fragment_file_path {
                 cur_file_idx += 1;
             }
-            file_list_with_completion_status[cur_file_idx].2 =
-                file_list_with_completion_status[cur_file_idx].2 & piece_completion_status[idx];
+            file_list_with_completion_status[cur_file_idx].2 &= piece_completion_status[idx];
         }
     }
 

@@ -162,10 +162,10 @@ impl TrackerClient {
                     }
                     Ok(Response::Ok(response)) => {
                         // update tracker id
-                        if let None = self.tracker_id {
-                            if let Some(id) = response.tracker_id.clone() {
-                                self.tracker_id = Some(id);
-                            }
+                        if self.tracker_id.is_none()
+                            && let Some(id) = response.tracker_id.clone()
+                        {
+                            self.tracker_id = Some(id);
                         }
                         // update order of trackers with the good one first
                         if tracker_idx != 0 {

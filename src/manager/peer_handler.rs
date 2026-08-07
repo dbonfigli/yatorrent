@@ -357,7 +357,7 @@ async fn handshake(
     let peer_addr = addr_or_unknown(&stream);
     let (read, mut write) = tokio::io::split(stream);
 
-    let supports_fast_extension = if reserved[7] & 4u8 != 0 { true } else { false };
+    let supports_fast_extension = reserved[7] & 4u8 != 0;
 
     if let Some(pcs) = piece_completion_status {
         let have_count = pcs.iter().filter(|status| **status).count();
