@@ -41,7 +41,7 @@ pub(super) enum FileManagerResponse {
 }
 
 pub(super) struct FileManagerHandler {
-    outstanding_read_ops: usize,
+    outstanding_read_ops: usize, // these are the read requests enqueued in read_requests channel + the ones being concurrently handled (up to MAX_CONCURRENT_READ_OPS) + the ones enqueued on read_responses still to be read by the torrent manager
 
     read_requests_tx: Sender<ReadPieceBlockRequest>,
     read_requests_rx: Option<Receiver<ReadPieceBlockRequest>>, // optional bc we will move it to the file manager handler at start

@@ -20,7 +20,7 @@ impl TorrentManager {
         let advertised_peers_len = advertised_peers_lock.len();
         drop(advertised_peers_lock);
         log::info!(
-            "left: {left}, pieces: {completed_pieces}/{total_pieces}{metadata_pieces} | {bandwidth_tracker}{wasted} | known peers: {known_peers} (bad: {bad_peers}), connected: {connected_peers}, unchoked: {unchoked_peers} | pending msgs: peers_to_torrent_manager {cur_ch_cap}; read_reqs {read_reqs} (inflight read ops: {inflight_read_ops}); write_reqs {write_reqs}",
+            "left: {left}, pieces: {completed_pieces}/{total_pieces}{metadata_pieces} | {bandwidth_tracker}{wasted} | known peers: {known_peers} (bad: {bad_peers}), connected: {connected_peers}, unchoked: {unchoked_peers} | pending msgs: peers_to_torrent_manager {cur_ch_cap}; read_reqs {read_reqs} (inflight: {inflight_read_ops}); write_reqs {write_reqs}",
             left = self
                 .torrent_data_status
                 .as_ref()
