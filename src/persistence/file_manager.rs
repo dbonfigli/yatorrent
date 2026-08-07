@@ -2,7 +2,9 @@ use anyhow::{Result, bail};
 use sha1::{Digest, Sha1};
 use size::Size;
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::fs::File;
+use std::hash::Hash;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -282,6 +284,7 @@ pub fn start_file_manager(
         handle.block_on(async move {
             let mut file_handles = WriteFileHandles::new();
             let mut incomplete_pieces = HashMap::new();
+            let mut write_cache = WriteCache::new();
             loop {
                 tokio::select! {
                     Some(write_piece_block_request) = write_requests_rx.recv() => {
@@ -293,7 +296,8 @@ pub fn start_file_manager(
                         &file_paths_for_pieces,
                         &mut file_handles,
                         &piece_hashes,
-                        &mut incomplete_pieces
+                        &mut incomplete_pieces,
+                        &mut write_cache
                         );
                     }
                     else => break,
@@ -460,6 +464,155 @@ fn get_files_for_piece_for_r(
     Ok(file_handles_for_piece)
 }
 
+struct WriteCache {
+    cache: HashMap<usize, Vec<u8>>,
+    max_cachable_pieces: usize,
+}
+
+impl WriteCache {
+    fn new() -> Self {
+        WriteCache {
+            cache: HashMap::new(),
+            max_cachable_pieces: 100000,
+        }
+    }
+
+    fn write(
+        &mut self,
+        piece_idx: usize,
+        piece_size: u64,
+        block_begin: u64,
+        data_len: u64,
+        data: Vec<u8>,
+        file_paths_for_pieces: &FilePathsForPieces,
+        write_file_handles: &mut WriteFileHandles,
+        piece: &mut Piece,
+        piece_hashes: &PieceHashes,
+        piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
+        piece_sizer: &PieceSizer,
+    ) -> Result<()> {
+        match self.cache.get_mut(&piece_idx) {
+            Some(cached_piece) => {
+                cached_piece[block_begin as usize..block_begin as usize + data_len as usize]
+                    .copy_from_slice(&data);
+            }
+            None => {
+                if !piece.is_empty() || self.cache.len() > self.max_cachable_pieces {
+                    self.disk_write(
+                        piece_idx,
+                        block_begin,
+                        data_len,
+                        data,
+                        file_paths_for_pieces,
+                        write_file_handles,
+                    )?;
+
+                    read_piece_block_pre_checks(
+                        piece_completion_status.clone(),
+                        piece_sizer,
+                        piece_idx,
+                        0,
+                        piece_size,
+                        false,
+                    )?;
+
+                    let file_handles_for_piece = get_files_for_piece_for_w(
+                        file_paths_for_pieces,
+                        write_file_handles,
+                        piece_idx,
+                    )?;
+                    let read_piece_data = match read_data(file_handles_for_piece, 0, piece_size) {
+                        Ok(data) => data,
+                        Err(error) => bail!(ShaCheckReadError { piece_idx, error }),
+                    };
+
+                    let piece_sha: [u8; 20] = Sha1::digest(read_piece_data).into();
+                    if piece_sha != piece_hashes[piece_idx] {
+                        bail!(ShaCorruptedError { piece_idx });
+                    } else {
+                        let mut piece_completion_status_mg = piece_completion_status
+                            .lock()
+                            .expect("another user panicked while holding the lock");
+                        piece_completion_status_mg[piece_idx] = true;
+                        drop(piece_completion_status_mg);
+                    }
+
+                    return Ok(());
+                }
+                let mut cached_piece = vec![0; piece_size as usize];
+                cached_piece[block_begin as usize..block_begin as usize + data_len as usize]
+                    .copy_from_slice(&data);
+                self.cache.insert(piece_idx, cached_piece);
+            }
+        }
+
+        piece.add_fragment(block_begin, block_begin + data_len - 1);
+        if piece.complete()
+            && let Some(cached_piece) = self.cache.remove(&piece_idx)
+        {
+            let piece_sha: [u8; 20] = Sha1::digest(cached_piece.clone()).into();
+            if piece_sha != piece_hashes[piece_idx] {
+                bail!(ShaCorruptedError { piece_idx });
+            } else {
+                let mut piece_completion_status_mg = piece_completion_status
+                    .lock()
+                    .expect("another user panicked while holding the lock");
+                piece_completion_status_mg[piece_idx] = true;
+                drop(piece_completion_status_mg);
+            }
+
+            self.disk_write(
+                piece_idx,
+                0,
+                piece_size,
+                cached_piece,
+                file_paths_for_pieces,
+                write_file_handles,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn disk_write(
+        &mut self,
+        piece_idx: usize,
+        block_begin: u64,
+        data_len: u64,
+        data: Vec<u8>,
+        file_paths_for_pieces: &FilePathsForPieces,
+        write_file_handles: &mut WriteFileHandles,
+    ) -> Result<()> {
+        let mut data_cursor: u64 = 0;
+        let mut data_still_to_be_written = data_len;
+        let mut piece_cursor_to_begin = 0;
+        for (file_path, file_start, file_end) in file_paths_for_pieces[piece_idx].iter() {
+            if data_still_to_be_written == 0 {
+                break;
+            }
+            let mut file_start = *file_start;
+            let file_end = *file_end;
+            if block_begin - piece_cursor_to_begin < file_end - file_start {
+                file_start += block_begin - piece_cursor_to_begin;
+                piece_cursor_to_begin = block_begin;
+            } else {
+                piece_cursor_to_begin += file_end - file_start;
+                continue;
+            }
+            let data_to_write = cmp::min(file_end - file_start, data_still_to_be_written);
+            let file = write_file_handles.get_file(file_path)?;
+            write_at(
+                &file,
+                &data[data_cursor as usize..(data_cursor + data_to_write) as usize],
+                file_start,
+            )?;
+            data_cursor += data_to_write;
+            data_still_to_be_written -= data_to_write;
+        }
+        Ok(())
+    }
+}
+
 fn get_files_for_piece_for_w(
     file_paths_for_pieces: &FilePathsForPieces,
     write_file_handles: &mut WriteFileHandles,
@@ -483,6 +636,7 @@ fn handle_write_piece_block(
     write_file_handles: &mut WriteFileHandles,
     piece_hashes: &PieceHashes,
     incomplete_pieces: &mut HashMap<usize, Piece>,
+    write_cache: &mut WriteCache,
 ) {
     let result = write_piece_block(
         write_piece_block_request.piece_idx,
@@ -494,6 +648,7 @@ fn handle_write_piece_block(
         write_file_handles,
         piece_hashes,
         incomplete_pieces,
+        write_cache,
     );
     _ = writes_file_manager_to_torrent_manager_tx.send(WritePieceBlockResponse {
         request: WritePieceBlockRequestReference {
@@ -515,6 +670,7 @@ fn write_piece_block(
     write_file_handles: &mut WriteFileHandles,
     piece_hashes: &PieceHashes,
     incomplete_pieces: &mut HashMap<usize, Piece>,
+    write_cache: &mut WriteCache,
 ) -> Result<TorrentDataStatusUpdates> {
     if piece_idx >= piece_sizer.total_pieces() {
         bail!(
@@ -564,65 +720,52 @@ fn write_piece_block(
     }
 
     // finally write this block
-    let mut data_cursor: u64 = 0;
-    let mut data_still_to_be_written = data_len;
-    let mut piece_cursor_to_begin = 0;
-    for (file_path, file_start, file_end) in file_paths_for_pieces[piece_idx].iter() {
-        if data_still_to_be_written == 0 {
-            break;
-        }
-        let mut file_start = *file_start;
-        let file_end = *file_end;
-        if block_begin - piece_cursor_to_begin < file_end - file_start {
-            file_start += block_begin - piece_cursor_to_begin;
-            piece_cursor_to_begin = block_begin;
-        } else {
-            piece_cursor_to_begin += file_end - file_start;
-            continue;
-        }
-        let data_to_write = cmp::min(file_end - file_start, data_still_to_be_written);
-        let file = write_file_handles.get_file(file_path)?;
-        write_at(
-            &file,
-            &data[data_cursor as usize..(data_cursor + data_to_write) as usize],
-            file_start,
-        )?;
-        data_cursor += data_to_write;
-        data_still_to_be_written -= data_to_write;
-    }
+    write_cache.write(
+        piece_idx,
+        piece_sizer.piece_length(piece_idx),
+        block_begin,
+        data_len,
+        data,
+        file_paths_for_pieces,
+        write_file_handles,
+        piece,
+        piece_hashes,
+        piece_completion_status,
+        piece_sizer,
+    )?;
 
-    piece.add_fragment(block_begin, block_begin + data_len - 1);
+    // piece.add_fragment(block_begin, block_begin + data_len - 1);
 
     // check if piece is completed
     if piece.complete() {
         incomplete_pieces.remove(&piece_idx);
 
-        read_piece_block_pre_checks(
-            piece_completion_status.clone(),
-            piece_sizer,
-            piece_idx,
-            0,
-            piece_len,
-            false,
-        )?;
+        // read_piece_block_pre_checks(
+        //     piece_completion_status.clone(),
+        //     piece_sizer,
+        //     piece_idx,
+        //     0,
+        //     piece_len,
+        //     false,
+        // )?;
 
-        let file_handles_for_piece =
-            get_files_for_piece_for_w(file_paths_for_pieces, write_file_handles, piece_idx)?;
-        let read_piece_data = match read_data(file_handles_for_piece, 0, piece_len) {
-            Ok(data) => data,
-            Err(error) => bail!(ShaCheckReadError { piece_idx, error }),
-        };
+        // let file_handles_for_piece =
+        //     get_files_for_piece_for_w(file_paths_for_pieces, write_file_handles, piece_idx)?;
+        // let read_piece_data = match read_data(file_handles_for_piece, 0, piece_len) {
+        //     Ok(data) => data,
+        //     Err(error) => bail!(ShaCheckReadError { piece_idx, error }),
+        // };
 
-        let piece_sha: [u8; 20] = Sha1::digest(read_piece_data).into();
-        if piece_sha != piece_hashes[piece_idx] {
-            bail!(ShaCorruptedError { piece_idx });
-        } else {
-            let mut piece_completion_status_mg = piece_completion_status
-                .lock()
-                .expect("another user panicked while holding the lock");
-            piece_completion_status_mg[piece_idx] = true;
-            drop(piece_completion_status_mg);
-        }
+        // let piece_sha: [u8; 20] = Sha1::digest(read_piece_data).into();
+        // if piece_sha != piece_hashes[piece_idx] {
+        //     bail!(ShaCorruptedError { piece_idx });
+        // } else {
+        //     let mut piece_completion_status_mg = piece_completion_status
+        //         .lock()
+        //         .expect("another user panicked while holding the lock");
+        //     piece_completion_status_mg[piece_idx] = true;
+        //     drop(piece_completion_status_mg);
+        // }
         Ok(TorrentDataStatusUpdates {
             piece_is_completed: true,
             wasted_bytes: 0,

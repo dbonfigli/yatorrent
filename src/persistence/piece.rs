@@ -26,6 +26,10 @@ impl Piece {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.fragments.is_empty()
+    }
+
     pub fn contains(&self, begin: u64, end: u64) -> bool {
         assert!(begin <= end && end < self.length);
         match self.get_fragment_idx_containing_value(begin) {
