@@ -72,7 +72,7 @@ impl TorrentDataStatus {
     }
 
     pub fn completed(&self) -> bool {
-        self.missing_pieces.len() == 0
+        self.missing_pieces.is_empty()
     }
 
     pub fn incomplete_pieces(&self) -> &HashMap<usize, Piece> {

@@ -671,7 +671,7 @@ impl DhtManager {
         // act on response: nodes
         if let Some(nodes) = resp_data.nodes {
             let mut max_distance_for_new_req = BigUint::from(2u8).pow(160) - BigUint::from(1u8);
-            if original_request.replying_nodes.len() != 0 {
+            if !original_request.replying_nodes.is_empty() {
                 max_distance_for_new_req = distance(
                     &info_hash,
                     &original_request.replying_nodes
@@ -704,7 +704,7 @@ impl DhtManager {
 
         // act on response: peers
         if let Some(peers) = resp_data.values {
-            if peers.len() > 0 {
+            if !peers.is_empty() {
                 original_request.replying_nodes_with_peers += 1;
             }
 

@@ -187,7 +187,7 @@ impl TrackerClient {
                 }
             }
         }
-        if error_message.len() == 0 {
+        if error_message.is_empty() {
             bail!(NoTrackerError);
         }
         bail!(error_message.join("; "));

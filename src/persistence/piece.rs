@@ -41,7 +41,7 @@ impl Piece {
 
     pub fn add_fragment(&mut self, begin: u64, end: u64) {
         assert!(begin <= end && end < self.length);
-        if self.fragments.len() == 0 {
+        if self.fragments.is_empty() {
             self.fragments.push(Fragment::new(begin, end));
             return;
         }
@@ -85,7 +85,7 @@ impl Piece {
         assert!(max_fragment_size > 0);
         if self.complete() {
             None
-        } else if self.fragments.len() == 0 {
+        } else if self.fragments.is_empty() {
             let begin = 0;
             let end = cmp::min(max_fragment_size - 1, self.length - 1);
             Some(Fragment::new(begin, end))
@@ -140,7 +140,7 @@ impl Piece {
     }
 
     fn get_fragment_idx_containing_value(&self, value: u64) -> Option<usize> {
-        if self.fragments.len() == 0 {
+        if self.fragments.is_empty() {
             return None;
         }
         self.get_fragment_idx_containing_value_in_slice(value, 0, self.fragments.len() - 1)
@@ -177,7 +177,7 @@ impl Piece {
     }
 
     fn get_closest_fragment_idx_containing_value(&self, value: u64) -> usize {
-        if self.fragments.len() == 0 {
+        if self.fragments.is_empty() {
             return 0;
         }
         self.get_closest_fragment_idx_containing_value_in_slice(value, 0, self.fragments.len() - 1)

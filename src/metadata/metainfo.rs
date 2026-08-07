@@ -77,7 +77,7 @@ impl Metainfo {
                                 );
                             }
                         }
-                        if tier_list.len() == 0 {
+                        if tier_list.is_empty() {
                             bail!(
                                 "The .torrent file \"announce-list\" has a tier list without elements"
                             );
@@ -95,7 +95,7 @@ impl Metainfo {
             ),
         }
 
-        if announces.len() == 0 {
+        if announces.is_empty() {
             match torrent_map.get(&b"announce".to_vec()) {
                 Some(Value::Str(announce_vec)) => match str::from_utf8(&announce_vec) {
                     Ok(a) => announces.push(vec![a.to_string()]),

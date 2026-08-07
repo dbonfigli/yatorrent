@@ -310,7 +310,7 @@ impl PieceRequestor {
             };
         });
 
-        if peers_ready_for_new_requests.len() > 0 {
+        if !peers_ready_for_new_requests.is_empty() {
             let peer_addr = peers_ready_for_new_requests[0].0;
             let request_count = max_outstanding_reqs(peers_ready_for_new_requests[0].1);
             let reqs = self.generate_requests_to_send_for_piece(

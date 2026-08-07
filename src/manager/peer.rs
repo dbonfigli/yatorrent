@@ -259,20 +259,20 @@ impl Peer {
         dropped: Vec<HostAndPort>,
     ) {
         let mut h = HashMap::new();
-        if added.len() > 0 {
+        if !added.is_empty() {
             h.insert(
                 b"added".to_vec(),
                 Str(ip_port_list_to_compact_format(added)),
             );
         }
-        if dropped.len() > 0 {
+        if !dropped.is_empty() {
             h.insert(
                 b"dropped".to_vec(),
                 Str(ip_port_list_to_compact_format(dropped)),
             );
         }
         self.last_pex_message_sent = SystemTime::now();
-        if h.len() > 0 {
+        if !h.is_empty() {
             let pex_msg = Message::Extended {
                 extension_protocol_id: self.ut_pex_id,
                 bencoded_message: Dict {

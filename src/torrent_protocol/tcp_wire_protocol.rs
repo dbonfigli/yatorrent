@@ -22,14 +22,14 @@ const MAX_MESSAGE_SIZE_B: u32 = 16384 * 8; // 128KB, i.e. the size of 8 blocks
 impl Protocol for TcpStream {
     async fn handshake(&mut self, info_hash: [u8; 20], peer_id: [u8; 20]) -> Result<Handshake> {
         let peer_addr = self.peer_addr()?;
-        log::trace!("peer {}: performing handshake", &peer_addr);
+        log::trace!("peer {}: performing handshake", peer_addr);
 
         let (mut read, mut write) = tokio::io::split(self);
 
         let (write_result, read_result) = join!(
             //send
             async {
-                log::trace!("peer {}: sending handshake", &peer_addr);
+                log::trace!("peer {}: sending handshake", peer_addr);
                 let mut buf: [u8; 68] = [0; 68];
                 buf[0] = 19;
                 buf[1..20].copy_from_slice(b"BitTorrent protocol");
@@ -37,16 +37,16 @@ impl Protocol for TcpStream {
                 buf[27] = 0x1 | 0x04; // send support for DHT and support for Fast Extension
                 buf[28..48].copy_from_slice(&info_hash);
                 buf[48..68].copy_from_slice(&peer_id);
-                return if let Err(e) = write.write_all(&buf).await {
+                if let Err(e) = write.write_all(&buf).await {
                     Err(e)
                 } else {
-                    log::trace!("peer {}: full handshake sent", &peer_addr);
+                    log::trace!("peer {}: full handshake sent", peer_addr);
                     Ok(())
-                };
+                }
             },
             // receive
             async {
-                log::trace!("peer {}: receiving handshake", &peer_addr);
+                log::trace!("peer {}: receiving handshake", peer_addr);
 
                 let mut pstr_len_buf: [u8; 1] = [0; 1];
                 if let Err(e) = read.read_exact(&mut pstr_len_buf).await {
@@ -74,14 +74,14 @@ impl Protocol for TcpStream {
 
                 log::trace!(
                     "peer {}: first part of handshake received, receiving handshake peer id",
-                    &peer_addr
+                    peer_addr
                 );
                 let mut peer_id: [u8; 20] = [0; 20];
                 if let Err(e) = read.read_exact(&mut peer_id).await {
                     return Err(e);
                 }
 
-                log::trace!("peer {}: full handshake received", &peer_addr);
+                log::trace!("peer {}: full handshake received", peer_addr);
                 return Ok(Handshake {
                     pstr,
                     reserved: reserved_buf,
@@ -369,7 +369,7 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
             }
             // piece
             7 => {
-                if size_message - 9 <= 0 || size_message > MAX_MESSAGE_SIZE_B {
+                if size_message - 9 == 0 || size_message > MAX_MESSAGE_SIZE_B {
                     bail!("malformed size_message ({size_message}) on piece");
                 }
                 let mut index_buf: [u8; 4] = [0; 4];
@@ -461,7 +461,7 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
             }
             // extension message
             20 => {
-                if size_message - 2 <= 0 || size_message > MAX_MESSAGE_SIZE_B {
+                if size_message - 2 == 0 || size_message > MAX_MESSAGE_SIZE_B {
                     bail!("malformed size_message ({size_message}) on extension message");
                 }
                 let mut buf: [u8; 1] = [0; 1];
