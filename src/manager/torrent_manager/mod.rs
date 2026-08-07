@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::process;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use std::{iter, path::Path};
@@ -196,7 +197,7 @@ impl TorrentManager {
                 .map(|b| Arc::new(tokio::sync::Mutex::new(RateLimiter::new(b as u128)))),
         };
 
-        let metadata_handler = MetadataHandler::new(
+        let metadata_handler = match MetadataHandler::new(
             opts.storage_opts
                 .raw_metadata
                 .as_ref()
@@ -204,7 +205,13 @@ impl TorrentManager {
                 .or(None),
             opts.storage_opts.raw_metadata,
             opts.info_hash,
-        );
+        ) {
+            Ok(metadata_handler) => metadata_handler,
+            Err(e) => {
+                log::error!("initialization failed: {e}");
+                process::exit(1);
+            }
+        };
 
         let tracker_requestor = TrackerRequestor::new(
             own_peer_id,

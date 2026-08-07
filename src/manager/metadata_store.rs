@@ -4,6 +4,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use anyhow::{Result, bail};
 use rand::seq::SliceRandom;
 use size::{Size, Style};
 
@@ -13,7 +14,8 @@ const METADATA_PIECE_SIZE_B: usize = 16384;
 const PEER_METADATA_REQUEST_REJECTION_COOL_OFF_PERIOD: Duration = Duration::from_secs(30);
 const METADATA_PIECE_REQUEST_TIMEOUT: Duration = Duration::from_secs(15); // timeout for waiting a requested metadata piece
 const MAX_OUTSTANDING_METADATA_PIECE_REQUESTS_PER_PEER: i64 = 100;
-const METADATA_BIG_WARN_THRESHOLD: i64 = 200 * 1024 * 1024;
+const METADATA_BIG_WARN_THRESHOLD: i64 = 20 * 1024 * 1024;
+const METADATA_BIG_REJECT_THRESHOLD: i64 = 50 * 1024 * 1024;
 
 #[derive(Clone)]
 struct MetadataPieceDownloadStatus {
@@ -39,14 +41,6 @@ pub struct MetadataPieceReqResponse {
 }
 
 fn metadata_pieces_from_size(size: i64, default_value: bool) -> Vec<MetadataPieceDownloadStatus> {
-    if size > METADATA_BIG_WARN_THRESHOLD {
-        log::warn!(
-            "the metadata size is abnormally big: {} (metadata is fully kept in memory)",
-            Size::from_bytes(size)
-                .format()
-                .with_style(Style::Abbreviated)
-        );
-    }
     vec![
         MetadataPieceDownloadStatus {
             downloaded: default_value,
@@ -58,7 +52,7 @@ fn metadata_pieces_from_size(size: i64, default_value: bool) -> Vec<MetadataPiec
 }
 
 impl MetadataStore {
-    pub fn new(raw_metadata_size: Option<i64>, raw_metadata: Option<Vec<u8>>) -> Self {
+    pub fn new(raw_metadata_size: Option<i64>, raw_metadata: Option<Vec<u8>>) -> Result<Self> {
         // discard negative values
         let raw_metadata_size = raw_metadata_size.filter(|s| *s > 0);
 
@@ -74,7 +68,30 @@ impl MetadataStore {
                 };
                 1
             ],
-            Some(s) => metadata_pieces_from_size(s, raw_metadata.is_some()),
+            Some(s) => {
+                if s > METADATA_BIG_WARN_THRESHOLD {
+                    log::warn!(
+                        "the metadata size is abnormally big: {} (metadata is fully kept in memory)",
+                        Size::from_bytes(s).format().with_style(Style::Abbreviated)
+                    );
+                }
+                if s > METADATA_BIG_REJECT_THRESHOLD {
+                    if raw_metadata.is_none() {
+                        // return an error only in case we don't know the full metadata yet:
+                        // * if we know it, it means it is coming from the torrent file passed by the user, so we trust the user that he really want this torrent, albeit strange
+                        // * if we don't know it yet, it means we are about to download it from peers via magnet and maybe some bad peer has maliciously injected such large size
+                        bail!(
+                            "the metadata size is suspiciously big: {}. Metadata is fully kept in memory. Rejecting it. If needed, increase METADATA_BIG_REJECT_THRESHOLD (currently: {})",
+                            Size::from_bytes(s).format().with_style(Style::Abbreviated),
+                            Size::from_bytes(METADATA_BIG_REJECT_THRESHOLD)
+                                .format()
+                                .with_style(Style::Abbreviated),
+                        );
+                    }
+                }
+
+                metadata_pieces_from_size(s, raw_metadata.is_some())
+            }
         };
 
         let raw_metadata = match raw_metadata {
@@ -82,11 +99,11 @@ impl MetadataStore {
             None => raw_metadata_size.map(|metadata_size| vec![0; metadata_size as usize]),
         };
 
-        MetadataStore {
+        Ok(MetadataStore {
             metadata_piece_download_status,
             raw_metadata,
             raw_metadata_size,
-        }
+        })
     }
 
     pub fn full_metadata_known(&self) -> bool {

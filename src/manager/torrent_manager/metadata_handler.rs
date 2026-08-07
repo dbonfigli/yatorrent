@@ -15,6 +15,7 @@ use crate::manager::peer_handler::ToNewIncomingPeersHandlerMsg;
 use crate::manager::torrent_manager::TorrentManager;
 use crate::metadata::infodict::{self, ParsedInfodict};
 use crate::util::{FileEntry, HostAndPort};
+use anyhow::Result;
 
 enum MetadataMessageHandlingOutcome {
     MetadataComplete {
@@ -35,17 +36,19 @@ impl MetadataHandler {
         raw_metadata_size: Option<i64>,
         raw_metadata: Option<Vec<u8>>,
         torrent_info_hash: [u8; 20],
-    ) -> Self {
-        MetadataHandler {
+    ) -> Result<Self> {
+        Ok(MetadataHandler {
             torrent_info_hash,
-            metadata_store: MetadataStore::new(raw_metadata_size, raw_metadata),
-        }
+            metadata_store: MetadataStore::new(raw_metadata_size, raw_metadata)?,
+        })
     }
 
     pub(super) fn update_raw_metadata_size(&mut self, metadata_size: i64) {
         if self.metadata_store.raw_metadata_size().is_none() {
             // we do not know the metadata size yet, take notes
-            self.metadata_store = MetadataStore::new(Some(metadata_size), None);
+            if let Ok(metadata_store) = MetadataStore::new(Some(metadata_size), None) {
+                self.metadata_store = metadata_store;
+            }
         }
     }
 
@@ -199,7 +202,11 @@ impl MetadataHandler {
 
         if self.metadata_store.raw_metadata_size().is_none() {
             // we do not know the metadata size yet, take notes
-            self.metadata_store = MetadataStore::new(Some(raw_metadata_size), None);
+            if let Ok(metadata_store) = MetadataStore::new(Some(raw_metadata_size), None) {
+                self.metadata_store = metadata_store;
+            } else {
+                return MetadataMessageHandlingOutcome::Other;
+            }
         }
 
         self.metadata_store
@@ -257,7 +264,9 @@ impl MetadataHandler {
             "downloaded metadata is corrupted ({}), starting over its download...",
             error
         );
-        self.metadata_store = MetadataStore::new(None, None);
+        if let Ok(metadata_store) = MetadataStore::new(None, None) {
+            self.metadata_store = metadata_store;
+        };
     }
 }
 
