@@ -536,7 +536,7 @@ impl TorrentManager {
         // compute requests from piece requestor
         let reqs_to_send = self.piece_requestor.generate_requests_to_send_for_peer(
             &peer_addr,
-            &peer,
+            peer,
             torrent_data_status,
         );
 

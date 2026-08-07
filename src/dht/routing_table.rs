@@ -154,7 +154,7 @@ impl Bucket {
                 }
             }
             BucketContent::Nodes(n) => {
-                if let Ok(idx) = n.binary_search(&node) {
+                if let Ok(idx) = n.binary_search(node) {
                     n.remove(idx);
                 }
             }

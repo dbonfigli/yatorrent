@@ -64,7 +64,7 @@ impl Metainfo {
                         let mut tier_list = Vec::new();
                         for announce_url in announces_in_tier {
                             if let Value::Str(announce_vec) = announce_url {
-                                if let Ok(a) = str::from_utf8(&announce_vec) {
+                                if let Ok(a) = str::from_utf8(announce_vec) {
                                     tier_list.push(a.to_string());
                                 } else {
                                     bail!(
@@ -97,7 +97,7 @@ impl Metainfo {
 
         if announces.is_empty() {
             if let Some(Value::Str(announce_vec)) = torrent_map.get(&b"announce".to_vec()) {
-                match str::from_utf8(&announce_vec) {
+                match str::from_utf8(announce_vec) {
                     Ok(a) => announces.push(vec![a.to_string()]),
                     _ => bail!("The .torrent file \"announce\" is not an UTF8 string"),
                 }
@@ -110,7 +110,7 @@ impl Metainfo {
             Some(Value::List(l)) => {
                 for url_value in l {
                     if let Value::Str(url_v) = url_value {
-                        if let Ok(url) = str::from_utf8(&url_v) {
+                        if let Ok(url) = str::from_utf8(url_v) {
                             url_list.push(url.to_string());
                         } else {
                             bail!(
@@ -123,7 +123,7 @@ impl Metainfo {
                 }
             }
             Some(Value::Str(url_v)) => {
-                if let Ok(url) = str::from_utf8(&url_v) {
+                if let Ok(url) = str::from_utf8(url_v) {
                     url_list.push(url.to_string());
                 } else {
                     bail!(

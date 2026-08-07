@@ -314,7 +314,7 @@ impl PieceRequestor {
             let peer_addr = peers_ready_for_new_requests[0].0;
             let request_count = max_outstanding_reqs(peers_ready_for_new_requests[0].1);
             let reqs = self.generate_requests_to_send_for_piece(
-                &peer_addr,
+                peer_addr,
                 piece_idx,
                 incomplete_piece.clone(),
                 request_count,
@@ -445,7 +445,7 @@ impl PieceRequestor {
             if !peer.have_piece(*piece_idx) {
                 continue;
             }
-            if self.outstanding_piece_assignments.contains_key(&piece_idx) {
+            if self.outstanding_piece_assignments.contains_key(piece_idx) {
                 continue; // piece is already assigned, skip this
             }
             let reqs = &mut self.generate_requests_to_send_for_piece(

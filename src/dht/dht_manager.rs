@@ -383,7 +383,7 @@ impl DhtManager {
 
         self.msg_sender
             .do_req(
-                &socket,
+                socket,
                 to_addr,
                 KRPCMessage::FindNodeReq(self.own_node_id, node_id),
                 Some(random_id),
@@ -596,7 +596,7 @@ impl DhtManager {
                     self.msg_sender
                         .do_req(
                             socket,
-                            to_addr_string(&ip, *port),
+                            to_addr_string(ip, *port),
                             KRPCMessage::AnnouncePeerReq(
                                 self.own_node_id,
                                 *info_hash,
@@ -844,7 +844,7 @@ impl DhtManager {
                 );
                 self.msg_sender
                     .do_req(
-                        &socket,
+                        socket,
                         source_req_addr_port,
                         KRPCMessage::Error(
                             ErrorType::GenericError,
@@ -868,7 +868,7 @@ impl DhtManager {
             );
             self.msg_sender
                 .do_req(
-                    &socket,
+                    socket,
                     source_req_addr_port,
                     KRPCMessage::Error(ErrorType::GenericError, "wrong secret content".to_string()),
                     None,
@@ -896,7 +896,7 @@ impl DhtManager {
         // send ok
         self.msg_sender
             .do_req(
-                &socket,
+                socket,
                 source_req_addr_port,
                 KRPCMessage::PingOrAnnouncePeerResp(self.own_node_id),
                 None,

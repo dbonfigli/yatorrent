@@ -301,7 +301,7 @@ impl TrackerClient {
 
         if let Some(Value::Str(failure_reason_vec)) = response_map.get(&b"failure reason".to_vec())
         {
-            if let Ok(f) = str::from_utf8(&failure_reason_vec) {
+            if let Ok(f) = str::from_utf8(failure_reason_vec) {
                 return Ok(Response::Failure(f.to_string()));
             } else {
                 bail!(
@@ -312,7 +312,7 @@ impl TrackerClient {
 
         // warning message
         let warning_message = match response_map.get(&b"warning message".to_vec()) {
-            Some(Value::Str(warning_message_vec)) => match str::from_utf8(&warning_message_vec) {
+            Some(Value::Str(warning_message_vec)) => match str::from_utf8(warning_message_vec) {
                 Ok(w) => Some(w.to_string()),
                 _ => bail!(
                     "Warning message key provided in bencoded dict response but it is not an UTF8 string"
@@ -337,7 +337,7 @@ impl TrackerClient {
 
         // tracker id
         let tracker_id = match response_map.get(&b"tracker id".to_vec()) {
-            Some(Value::Str(tracker_id_vec)) => match str::from_utf8(&tracker_id_vec) {
+            Some(Value::Str(tracker_id_vec)) => match str::from_utf8(tracker_id_vec) {
                 Ok(w) => Some(w.to_string()),
                 _ => bail!(
                     "Tracker id key provided in bencoded dict response but it is not an UTF8 string"
@@ -563,7 +563,7 @@ fn get_peers_with_dict_model(peers_values: &Vec<Value>) -> Result<Vec<Peer>> {
             Value::Dict { dict: peer_dic, .. } => {
                 // peer id
                 let peer_id = match peer_dic.get(&b"peer id".to_vec()) {
-                    Some(Value::Str(peer_id_vec)) => match str::from_utf8(&peer_id_vec) {
+                    Some(Value::Str(peer_id_vec)) => match str::from_utf8(peer_id_vec) {
                         Ok(w) => Some(w.to_string()),
                         _ => bail!(
                             "Peer id key provided in list of peers in bencoded dict response but it is not an UTF8 string"
@@ -574,7 +574,7 @@ fn get_peers_with_dict_model(peers_values: &Vec<Value>) -> Result<Vec<Peer>> {
 
                 // ip
                 let ip = match peer_dic.get(&b"ip".to_vec()) {
-                    Some(Value::Str(ip_vec)) => match str::from_utf8(&ip_vec) {
+                    Some(Value::Str(ip_vec)) => match str::from_utf8(ip_vec) {
                         Ok(i) => i.to_string(),
                         _ => bail!(
                             "Ip key provided in list of peers in bencoded dict response but it is not an UTF8 string"

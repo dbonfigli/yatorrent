@@ -84,11 +84,11 @@ impl Value {
     }
 
     pub fn new(source: &Vec<u8>) -> Self {
-        from_char_vec(&source, 0, MAX_RECURSION_DEPTH).0
+        from_char_vec(source, 0, MAX_RECURSION_DEPTH).0
     }
 
     pub fn new_with_size(source: &Vec<u8>) -> (Value, usize) {
-        from_char_vec(&source, 0, MAX_RECURSION_DEPTH)
+        from_char_vec(source, 0, MAX_RECURSION_DEPTH)
     }
 
     fn new_error(elem: ErrorElem, index: IndexOfError) -> Self {
