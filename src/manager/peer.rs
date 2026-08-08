@@ -189,9 +189,10 @@ impl Peer {
     }
 
     pub fn try_send(&mut self, msg: ToPeerMsg) {
-        self.last_sent = SystemTime::now();
         match self.to_peer_tx.try_send(msg) {
-            Ok(_) => {}
+            Ok(_) => {
+                self.last_sent = SystemTime::now();
+            }
             Err(Full(o)) => {
                 log::debug!(
                     "no to_peer_tx capacity to {} on try_send, discarding {}",
