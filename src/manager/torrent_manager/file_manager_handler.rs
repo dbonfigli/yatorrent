@@ -206,8 +206,7 @@ impl TorrentManager {
                     let _ = self
                         .peers_ctx
                         .to_new_incoming_peers_handler_tx
-                        .send(ToNewIncomingPeersHandlerMsg::PieceCompleted(piece_idx))
-                        .await;
+                        .send(ToNewIncomingPeersHandlerMsg::PieceCompleted(piece_idx));
 
                     for peer in self.peers_ctx.peers.values_mut() {
                         // send "have" to all peers.
@@ -246,7 +245,7 @@ impl TorrentManager {
                             "removing peer {peer_addr} due to too many corrupted pieces received",
                         );
                         peer.send(ToPeerMsg::Disconnect()).await;
-                        self.remove_peer(peer_addr).await;
+                        self.remove_peer(peer_addr);
                     }
                 }
             }

@@ -9,7 +9,7 @@ use num_bigint::BigUint;
 use sha1::{Digest, Sha1};
 use tokio::{
     net::UdpSocket,
-    sync::mpsc::{Receiver, Sender},
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
     time::MissedTickBehavior,
 };
 
@@ -197,8 +197,8 @@ impl DhtManager {
 
     pub async fn start(
         &mut self,
-        mut to_dht_manager_rx: Receiver<ToDhtManagerMsg>,
-        dht_to_torrent_manager_tx: Sender<DhtToTorrentManagerMsg>,
+        mut to_dht_manager_rx: UnboundedReceiver<ToDhtManagerMsg>,
+        dht_to_torrent_manager_tx: UnboundedSender<DhtToTorrentManagerMsg>,
     ) {
         let mut ticker = tokio::time::interval(TICK_INTERVAL);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -438,7 +438,7 @@ impl DhtManager {
         socket: &UdpSocket,
         transaction_id: Vec<u8>,
         msg: KRPCMessage,
-        dht_to_torrent_manager_tx: &Sender<DhtToTorrentManagerMsg>,
+        dht_to_torrent_manager_tx: &UnboundedSender<DhtToTorrentManagerMsg>,
     ) {
         log::trace!(
             "got message from {remote_addr}: tid: {}, msg: {msg:?}",
@@ -643,7 +643,7 @@ impl DhtManager {
         original_request: &mut GetPeersRequest,
         call_depth: usize,
         resp_data: GetPeersOrFindNodeRespData,
-        dht_to_torrent_manager_tx: &Sender<DhtToTorrentManagerMsg>,
+        dht_to_torrent_manager_tx: &UnboundedSender<DhtToTorrentManagerMsg>,
     ) {
         // in case of get_peers request, we set the id of the request same as the infohash,
         // since we are not allowing multiple concurrent get_peers searches
@@ -710,9 +710,8 @@ impl DhtManager {
                 if !original_request.discovered_peers.contains(&p) {
                     original_request.discovered_peers.insert(p);
                     // immediately send discovered peer to torrent manager
-                    let _ = dht_to_torrent_manager_tx
-                        .send(DhtToTorrentManagerMsg::NewPeer(p.0, p.1))
-                        .await;
+                    let _ =
+                        dht_to_torrent_manager_tx.send(DhtToTorrentManagerMsg::NewPeer(p.0, p.1));
                 }
             }
             if original_request.inflight_requests == 0 {

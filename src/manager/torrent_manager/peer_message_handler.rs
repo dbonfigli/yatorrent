@@ -68,9 +68,7 @@ impl TorrentManager {
                 let peer_ip_addr = peer_addr.split(":").next().expect(
                     "peer_addr, taken from tcp_stream.peer_addr(), is always of format ip:port",
                 );
-                self.dht_handler
-                    .new_node_discovered(peer_ip_addr, port)
-                    .await;
+                self.dht_handler.new_node_discovered(peer_ip_addr, port);
             }
             Message::Suggest(piece_idx) => {
                 self.handle_suggest_message(peer_addr, piece_idx).await;
@@ -130,7 +128,7 @@ impl TorrentManager {
             );
             self.peers_ctx.bad_peers.insert(peer_addr.clone());
             peer.send(ToPeerMsg::Disconnect()).await;
-            self.remove_peer(peer_addr).await;
+            self.remove_peer(peer_addr);
         }
     }
 
@@ -154,7 +152,7 @@ impl TorrentManager {
             if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
                 peer.send(ToPeerMsg::Disconnect()).await;
             }
-            self.remove_peer(peer_addr).await;
+            self.remove_peer(peer_addr);
         } else if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
             // ignore bitfield if we don't have the torrent file yet, we cannot trust the bitfield from the peer
             if peer.get_haves().is_none() {
@@ -220,7 +218,7 @@ impl TorrentManager {
                 block_request.data_len
             );
             peer.send(ToPeerMsg::Disconnect()).await;
-            self.remove_peer(peer_addr).await;
+            self.remove_peer(peer_addr);
             return;
         }
 
@@ -267,7 +265,7 @@ impl TorrentManager {
                 "removing peer {peer_addr}: we received a \"suggest\" fast track message but the peer did not advertise its support"
             );
             peer.send(ToPeerMsg::Disconnect()).await;
-            self.remove_peer(peer_addr).await;
+            self.remove_peer(peer_addr);
             return;
         }
         // todo: at the moment we ignore these suggestions
@@ -286,7 +284,7 @@ impl TorrentManager {
                     "removing peer {peer_addr}: we received a \"have all\" fast track message but the peer did not advertise its support"
                 );
                 peer.send(ToPeerMsg::Disconnect()).await;
-                self.remove_peer(peer_addr).await;
+                self.remove_peer(peer_addr);
                 return;
             }
 
@@ -318,7 +316,7 @@ impl TorrentManager {
                     "removing peer {peer_addr}: we received a \"have none\" fast track message but the peer did not advertise its support"
                 );
                 peer.send(ToPeerMsg::Disconnect()).await;
-                self.remove_peer(peer_addr).await;
+                self.remove_peer(peer_addr);
                 return;
             }
 
@@ -338,7 +336,7 @@ impl TorrentManager {
                 "removing peer {peer_addr}: we received a \"reject\" fast track message but the peer did not advertise its support"
             );
             peer.send(ToPeerMsg::Disconnect()).await;
-            self.remove_peer(peer_addr).await;
+            self.remove_peer(peer_addr);
         }
         // for the moment we will ignore this and let the normal fast expiration work after choke
     }
@@ -351,7 +349,7 @@ impl TorrentManager {
                 "removing peer {peer_addr}: we received an \"allow fast\" fast track message but the peer did not advertise its support"
             );
             peer.send(ToPeerMsg::Disconnect()).await;
-            self.remove_peer(peer_addr).await;
+            self.remove_peer(peer_addr);
         }
         // for the moment we ignore allow fast messages
     }

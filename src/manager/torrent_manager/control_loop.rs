@@ -5,7 +5,7 @@ use std::{
 
 use tokio::{
     net::TcpStream,
-    sync::mpsc::{self, Receiver},
+    sync::mpsc::{self, UnboundedReceiver},
     time::MissedTickBehavior,
 };
 
@@ -38,7 +38,7 @@ const TO_PEER_CANCEL_CHANNEL_CAPACITY: usize =
 impl TorrentManager {
     pub(super) async fn control_loop(
         &mut self,
-        mut dht_to_torrent_manager_rx: Receiver<DhtToTorrentManagerMsg>,
+        mut dht_to_torrent_manager_rx: UnboundedReceiver<DhtToTorrentManagerMsg>,
     ) {
         let mut ticker = tokio::time::interval(TICK_INTERVAL);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -87,13 +87,13 @@ impl TorrentManager {
         }
     }
 
-    async fn handle_peer_error(&mut self, peer_addr: HostAndPort, error_type: PeerError) {
+    fn handle_peer_error(&mut self, peer_addr: HostAndPort, error_type: PeerError) {
         log::debug!("removing errored peer {peer_addr}");
         if error_type == PeerError::HandshakeError {
             // todo: understand other error cases that are not recoverable and should stop trying again on this peer
             self.peers_ctx.bad_peers.insert(peer_addr.clone());
         }
-        self.remove_peer(peer_addr).await;
+        self.remove_peer(peer_addr);
     }
 
     fn handle_piece_block_request_fulfilled(&mut self, peer_addr: HostAndPort) {
@@ -111,9 +111,7 @@ impl TorrentManager {
             Ok(s) => {
                 // send to dht manager the fact that we know a new good peer
                 if let IpAddr::V4(peer_addr) = s.ip() {
-                    self.dht_handler
-                        .new_peer_connected(peer_addr, s.port())
-                        .await
+                    self.dht_handler.new_peer_connected(peer_addr, s.port())
                 }
                 s.to_string()
             }
@@ -158,7 +156,6 @@ impl TorrentManager {
             self.peers_ctx
                 .to_new_incoming_peers_handler_tx
                 .send(ToNewIncomingPeersHandlerMsg::OkToAcceptConnection(false))
-                .await
                 .expect("to_new_incoming_peers_handler_tx receiver half closed");
         }
     }

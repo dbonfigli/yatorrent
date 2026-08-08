@@ -7,8 +7,8 @@ use anyhow::{Result, bail};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
-use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
 use tokio::time::{sleep, timeout};
 
 use crate::bencoding::Value;
@@ -159,7 +159,7 @@ pub async fn run_new_incoming_peers_handler(
     own_peer_id: String,
     tcp_wire_protocol_listening_port: u16,
     piece_completion_status: Option<Vec<bool>>,
-    mut to_new_incoming_peers_handler_rx: Receiver<ToNewIncomingPeersHandlerMsg>,
+    mut to_new_incoming_peers_handler_rx: UnboundedReceiver<ToNewIncomingPeersHandlerMsg>,
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
     raw_metadata_size: Option<i64>,
 ) {

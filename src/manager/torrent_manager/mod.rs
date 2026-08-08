@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime};
 use std::{iter, path::Path};
 
 use rand::RngExt;
-use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::mpsc::{self, Receiver, Sender, UnboundedReceiver, UnboundedSender};
 
 use crate::manager::bandwidth_tracker::BandwidthTracker;
 
@@ -41,8 +41,6 @@ const PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY: usize = 50000;
 // decreasing this will waste more bandwidth (needlessly requesting the same block again even if a peer sends it eventually) but will make retries for pieces requested to slow peers faster
 // eventually we should tune this respect to download spped from a peer and how many outstanding requests we made
 const BASE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
-
-const TO_NEW_INCOMING_PEERS_HANDLER_CHANNEL_CAPACITY: usize = 100;
 
 pub struct FilesData {
     pub file_list: Vec<FileEntry>,
@@ -99,8 +97,8 @@ struct PeersContext {
     peers: HashMap<HostAndPort, Peer>,
     advertised_peers: Arc<Mutex<HashMap<HostAndPort, (tracker::Peer, SystemTime)>>>, // peer addr -> (peer, last connection attempt)
     bad_peers: HashSet<HostAndPort>, // todo: remove old bad peers after a while?
-    to_new_incoming_peers_handler_tx: Sender<ToNewIncomingPeersHandlerMsg>,
-    to_new_incoming_peers_handler_rx: Option<Receiver<ToNewIncomingPeersHandlerMsg>>, // optional bc we will move it to the incoming peer handler at start, todo: should we move creation of this channel there?
+    to_new_incoming_peers_handler_tx: UnboundedSender<ToNewIncomingPeersHandlerMsg>,
+    to_new_incoming_peers_handler_rx: Option<UnboundedReceiver<ToNewIncomingPeersHandlerMsg>>, // optional bc we will move it to the incoming peer handler at start, todo: should we move creation of this channel there?
     peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
     peers_to_torrent_manager_rx: Receiver<PeersToManagerMsg>,
 }
@@ -173,7 +171,7 @@ impl TorrentManager {
         );
 
         let (to_new_incoming_peers_handler_tx, to_new_incoming_peers_handler_rx) =
-            mpsc::channel(TO_NEW_INCOMING_PEERS_HANDLER_CHANNEL_CAPACITY);
+            mpsc::unbounded_channel();
         let (peers_to_torrent_manager_tx, peers_to_torrent_manager_rx) =
             mpsc::channel::<PeersToManagerMsg>(PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY);
         let peers_ctx = PeersContext {

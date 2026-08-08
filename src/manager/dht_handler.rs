@@ -3,7 +3,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::{
     dht::dht_manager::{DhtManager, DhtToTorrentManagerMsg, ToDhtManagerMsg},
@@ -12,21 +12,19 @@ use crate::{
 
 const DHT_BOOTSTRAP_TIME: Duration = Duration::from_secs(5);
 const DHT_NEW_PEER_COOL_OFF_PERIOD: Duration = Duration::from_secs(15);
-const TO_DHT_MANAGER_CHANNEL_CAPACITY: usize = 1000;
-const DHT_MANAGER_TO_TORRENT_MANAGER_CAPACITY: usize = 1000;
 
 pub struct DhtHandler {
     torrent_info_hash: [u8; 20],
     dht_nodes: Vec<HostAndPort>,
     // internal channels, we store them here to avoid passing them around in nested calls
-    to_dht_manager_tx: Sender<ToDhtManagerMsg>,
-    to_dht_manager_rx: Option<Receiver<ToDhtManagerMsg>>, // optional bc we will move it to the dht manager at start, todo: should we move creation of this channel there?
+    to_dht_manager_tx: UnboundedSender<ToDhtManagerMsg>,
+    to_dht_manager_rx: Option<UnboundedReceiver<ToDhtManagerMsg>>, // optional bc we will move it to the dht manager at start, todo: should we move creation of this channel there?
     last_get_peers_requested_time: SystemTime,
 }
 
 impl DhtHandler {
     pub fn new(dht_nodes: Vec<HostAndPort>, torrent_info_hash: [u8; 20]) -> Self {
-        let (to_dht_manager_tx, to_dht_manager_rx) = mpsc::channel(TO_DHT_MANAGER_CHANNEL_CAPACITY);
+        let (to_dht_manager_tx, to_dht_manager_rx) = mpsc::unbounded_channel();
 
         DhtHandler {
             torrent_info_hash,
@@ -42,9 +40,8 @@ impl DhtHandler {
         &mut self,
         listening_torrent_wire_protocol_port: u16,
         listening_dht_port: u16,
-    ) -> Receiver<DhtToTorrentManagerMsg> {
-        let (dht_to_torrent_manager_tx, dht_to_torrent_manager_rx) =
-            mpsc::channel(DHT_MANAGER_TO_TORRENT_MANAGER_CAPACITY);
+    ) -> UnboundedReceiver<DhtToTorrentManagerMsg> {
+        let (dht_to_torrent_manager_tx, dht_to_torrent_manager_rx) = mpsc::unbounded_channel();
 
         let mut dht_manager = DhtManager::new(
             listening_torrent_wire_protocol_port,
@@ -65,7 +62,7 @@ impl DhtHandler {
         dht_to_torrent_manager_rx
     }
 
-    pub async fn request_new_peers_to_dht_manager(&mut self) {
+    pub fn request_new_peers_to_dht_manager(&mut self) {
         let now = SystemTime::now();
         if now
             .duration_since(self.last_get_peers_requested_time)
@@ -75,28 +72,25 @@ impl DhtHandler {
             self.last_get_peers_requested_time = now;
             self.to_dht_manager_tx
                 .send(ToDhtManagerMsg::GetNewPeers(self.torrent_info_hash))
-                .await
                 .expect("to_dht_manager_tx receiver half closed");
         }
     }
 
-    pub async fn new_node_discovered(&mut self, peer_ip_addr: &str, peer_port: u16) {
+    pub fn new_node_discovered(&mut self, peer_ip_addr: &str, peer_port: u16) {
         self.to_dht_manager_tx
             .send(ToDhtManagerMsg::NewNode(format!(
                 "{peer_ip_addr}:{peer_port}"
             )))
-            .await
             .expect("to_dht_manager_tx receiver half closed");
     }
 
-    pub async fn new_peer_connected(&mut self, peer_ip_addr: Ipv4Addr, peer_port: u16) {
+    pub fn new_peer_connected(&mut self, peer_ip_addr: Ipv4Addr, peer_port: u16) {
         self.to_dht_manager_tx
             .send(ToDhtManagerMsg::ConnectedToNewPeer(
                 self.torrent_info_hash,
                 peer_ip_addr,
                 peer_port,
             ))
-            .await
             .expect("to_dht_manager_tx receiver half closed");
     }
 }

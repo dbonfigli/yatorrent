@@ -317,7 +317,6 @@ impl TorrentManager {
                         .expect("initialized few lines above")
                         .current_piece_completion_status(),
                 })
-                .await
                 .expect("to_new_incoming_peers_handler_tx receiver half closed");
 
             // we finally have the metadata and can exchange files

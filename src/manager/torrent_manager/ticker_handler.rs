@@ -25,7 +25,7 @@ impl TorrentManager {
         self.send_status_to_tracker().await;
         self.unchoke_peers().await;
         self.check_endgame_status().await;
-        self.request_new_peers_to_dht_manager().await;
+        self.request_new_peers_to_dht_manager();
         self.pex_handler
             .send_pex_messages(&mut self.peers_ctx.peers)
             .await;
@@ -153,9 +153,9 @@ impl TorrentManager {
         }
     }
 
-    async fn request_new_peers_to_dht_manager(&mut self) {
+    fn request_new_peers_to_dht_manager(&mut self) {
         if self.peers_ctx.peers.len() < MAX_CONNECTED_PEERS_TO_ASK_DHT_FOR_MORE {
-            self.dht_handler.request_new_peers_to_dht_manager().await;
+            self.dht_handler.request_new_peers_to_dht_manager();
         }
     }
 

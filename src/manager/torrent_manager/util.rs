@@ -25,7 +25,7 @@ pub(super) fn should_choke(
 }
 
 impl TorrentManager {
-    pub(super) async fn remove_peer(&mut self, peer_addr: HostAndPort) {
+    pub(super) fn remove_peer(&mut self, peer_addr: HostAndPort) {
         self.pex_handler
             .new_pex_event(peer_addr.clone(), PexEvent::Dropped);
         if self.peers_ctx.peers.remove(&peer_addr).is_some() {
@@ -35,7 +35,6 @@ impl TorrentManager {
             self.peers_ctx
                 .to_new_incoming_peers_handler_tx
                 .send(ToNewIncomingPeersHandlerMsg::OkToAcceptConnection(true))
-                .await
                 .expect("to_new_incoming_peers_handler_tx receiver half closed");
         }
     }
