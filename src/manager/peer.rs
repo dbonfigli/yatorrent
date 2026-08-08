@@ -193,7 +193,7 @@ impl Peer {
         match self.to_peer_tx.try_send(msg) {
             Ok(_) => {}
             Err(Full(o)) => {
-                log::warn!(
+                log::debug!(
                     "no to_peer_tx capacity to {} on try_send, discarding {}",
                     self.peer_addr,
                     o
