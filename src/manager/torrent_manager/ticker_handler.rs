@@ -90,7 +90,7 @@ impl TorrentManager {
                         .as_ref()
                         .map(|f| f.current_piece_completion_status()),
                     self.metadata_handler.raw_metadata_size(),
-                    self.peers_ctx.peers_to_torrent_manager_tx.clone(),
+                    self.peers_ctx.peer_handler_to_torrent_manager_tx.clone(),
                 ));
             }
             // update last connection attempt
@@ -124,7 +124,7 @@ impl TorrentManager {
                     .unwrap_or_default()
                     > MIN_CHOKE_TIME
                 && !should_choke(
-                    self.peers_ctx.peers_to_torrent_manager_tx.capacity(),
+                    self.peers_ctx.incoming_peer_messages_tx.capacity(),
                     peer.get_outstanding_incoming_piece_block_requests(),
                     self.torrent_data_status.is_some(),
                     &self.file_manager_handler,

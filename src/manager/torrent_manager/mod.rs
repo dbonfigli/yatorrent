@@ -12,8 +12,8 @@ use crate::manager::bandwidth_tracker::BandwidthTracker;
 
 use crate::manager::dht_handler::DhtHandler;
 use crate::manager::peer::Peer;
-use crate::manager::peer_handler;
-use crate::manager::peer_handler::{PeersToManagerMsg, ToNewIncomingPeersHandlerMsg};
+use crate::manager::peer_handler::{self, PeerHandlerToManagerMsg};
+use crate::manager::peer_handler::{PeerMessage, ToNewIncomingPeersHandlerMsg};
 use crate::manager::pex_handler::PexHandler;
 use crate::manager::piece_requestor::PieceRequestor;
 use crate::manager::rate_limiter::RateLimiter;
@@ -36,7 +36,7 @@ mod util;
 // and downloaded blocks from peers, the latter in particular are holding the block buffers
 // if we are slow on writes, these will pile up and consume memory
 // for example, assuming 16kb blocks, 50000 blocks is 781MB
-const PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY: usize = 50000;
+const INCOMING_PEER_MESSAGES_CHANNEL_CAPACITY: usize = 50000;
 
 // decreasing this will waste more bandwidth (needlessly requesting the same block again even if a peer sends it eventually) but will make retries for pieces requested to slow peers faster
 // eventually we should tune this respect to download spped from a peer and how many outstanding requests we made
@@ -99,8 +99,10 @@ struct PeersContext {
     bad_peers: HashSet<HostAndPort>, // todo: remove old bad peers after a while?
     to_new_incoming_peers_handler_tx: UnboundedSender<ToNewIncomingPeersHandlerMsg>,
     to_new_incoming_peers_handler_rx: Option<UnboundedReceiver<ToNewIncomingPeersHandlerMsg>>, // optional bc we will move it to the incoming peer handler at start, todo: should we move creation of this channel there?
-    peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
-    peers_to_torrent_manager_rx: Receiver<PeersToManagerMsg>,
+    peer_handler_to_torrent_manager_tx: UnboundedSender<PeerHandlerToManagerMsg>,
+    peer_handler_to_torrent_manager_rx: UnboundedReceiver<PeerHandlerToManagerMsg>,
+    incoming_peer_messages_tx: Sender<PeerMessage>,
+    incoming_peer_messages_rx: Receiver<PeerMessage>,
 }
 
 struct GlobalRateLimiter {
@@ -172,16 +174,20 @@ impl TorrentManager {
 
         let (to_new_incoming_peers_handler_tx, to_new_incoming_peers_handler_rx) =
             mpsc::unbounded_channel();
+        let (peer_handler_to_torrent_manager_tx, peer_handler_to_torrent_manager_rx) =
+            mpsc::unbounded_channel();
         let (peers_to_torrent_manager_tx, peers_to_torrent_manager_rx) =
-            mpsc::channel::<PeersToManagerMsg>(PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY);
+            mpsc::channel::<PeerMessage>(INCOMING_PEER_MESSAGES_CHANNEL_CAPACITY);
         let peers_ctx = PeersContext {
             peers: HashMap::new(),
             advertised_peers,
             bad_peers: HashSet::new(),
             to_new_incoming_peers_handler_tx,
             to_new_incoming_peers_handler_rx: Some(to_new_incoming_peers_handler_rx),
-            peers_to_torrent_manager_tx,
-            peers_to_torrent_manager_rx,
+            peer_handler_to_torrent_manager_tx,
+            peer_handler_to_torrent_manager_rx,
+            incoming_peer_messages_tx: peers_to_torrent_manager_tx,
+            incoming_peer_messages_rx: peers_to_torrent_manager_rx,
         };
 
         let global_rate_limiter = GlobalRateLimiter {
@@ -255,7 +261,7 @@ impl TorrentManager {
                 .to_new_incoming_peers_handler_rx
                 .take()
                 .expect("no to_new_incoming_peers_handler_rx, has start been called twice?"),
-            self.peers_ctx.peers_to_torrent_manager_tx.clone(),
+            self.peers_ctx.peer_handler_to_torrent_manager_tx.clone(),
             self.metadata_handler.raw_metadata_size(),
         )
         .await;

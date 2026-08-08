@@ -225,7 +225,7 @@ impl TorrentManager {
         if !peer.get_am_choking()
             && util::should_choke(
                 // todo: choking algorithm is really naive, must improve it to avoid saturating upload
-                self.peers_ctx.peers_to_torrent_manager_tx.capacity(),
+                self.peers_ctx.incoming_peer_messages_tx.capacity(),
                 peer.get_outstanding_incoming_piece_block_requests(),
                 true,
                 &self.file_manager_handler,

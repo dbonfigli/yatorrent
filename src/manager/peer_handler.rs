@@ -7,8 +7,8 @@ use anyhow::{Result, bail};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
-use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
+use tokio::sync::mpsc::{Sender, UnboundedSender};
 use tokio::time::{sleep, timeout};
 
 use crate::bencoding::Value;
@@ -41,11 +41,15 @@ impl fmt::Display for ToPeerMsg {
 
 pub type FastExtensionSupport = bool;
 
-pub enum PeersToManagerMsg {
+pub enum PeerHandlerToManagerMsg {
     Error(HostAndPort, PeerError),
-    Receive(HostAndPort, Message),
     NewPeer(TcpStream, FastExtensionSupport),
     PieceBlockRequestFulfilled(HostAndPort),
+}
+
+pub struct PeerMessage {
+    pub peer_addr: HostAndPort,
+    pub message: Message,
 }
 
 #[derive(PartialEq)]
@@ -65,26 +69,24 @@ pub async fn connect_to_new_peer(
     listening_dht_port: u16,
     piece_completion_status: Option<Vec<bool>>,
     metadata_size: Option<i64>,
-    peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
+    peer_handler_to_torrent_manager_tx: UnboundedSender<PeerHandlerToManagerMsg>,
 ) {
     let dest = format!("{host}:{port}");
     log::trace!("initiating connection to peer: {dest}");
     match timeout(DEFAULT_TIMEOUT, TcpStream::connect(dest.clone())).await {
         Err(_elapsed) => {
             log::trace!("timed out connecting to peer {dest}");
-            send_to_torrent_manager(
-                &peers_to_torrent_manager_tx,
-                PeersToManagerMsg::Error(format!("{host}:{port}"), PeerError::HandshakeError),
-            )
-            .await;
+            send_handler_msg_to_torrent_manager(
+                &peer_handler_to_torrent_manager_tx,
+                PeerHandlerToManagerMsg::Error(format!("{host}:{port}"), PeerError::HandshakeError),
+            );
         }
         Ok(Err(e)) => {
             log::trace!("error initiating connection to peer {dest}: {e}");
-            send_to_torrent_manager(
-                &peers_to_torrent_manager_tx,
-                PeersToManagerMsg::Error(format!("{host}:{port}"), PeerError::HandshakeError),
-            )
-            .await;
+            send_handler_msg_to_torrent_manager(
+                &peer_handler_to_torrent_manager_tx,
+                PeerHandlerToManagerMsg::Error(format!("{host}:{port}"), PeerError::HandshakeError),
+            );
         }
         Ok(Ok(tcp_stream)) => {
             let peer_addr = match tcp_stream.peer_addr() {
@@ -93,14 +95,13 @@ pub async fn connect_to_new_peer(
                     log::trace!(
                         "connecting to new peer failed because we could not get peer addr: {e}"
                     );
-                    send_to_torrent_manager(
-                        &peers_to_torrent_manager_tx,
-                        PeersToManagerMsg::Error(
+                    send_handler_msg_to_torrent_manager(
+                        &peer_handler_to_torrent_manager_tx,
+                        PeerHandlerToManagerMsg::Error(
                             format!("{host}:{port}"),
                             PeerError::HandshakeError,
                         ),
-                    )
-                    .await;
+                    );
                     return;
                 }
             };
@@ -119,26 +120,23 @@ pub async fn connect_to_new_peer(
             {
                 Err(_elapsed) => {
                     log::trace!("timed out completing handshake with peer {dest}");
-                    send_to_torrent_manager(
-                        &peers_to_torrent_manager_tx,
-                        PeersToManagerMsg::Error(peer_addr, PeerError::HandshakeError),
-                    )
-                    .await;
+                    send_handler_msg_to_torrent_manager(
+                        &peer_handler_to_torrent_manager_tx,
+                        PeerHandlerToManagerMsg::Error(peer_addr, PeerError::HandshakeError),
+                    );
                 }
                 Ok(Err(e)) => {
                     log::trace!("error completing handshake with peer {peer_addr}: {e}");
-                    send_to_torrent_manager(
-                        &peers_to_torrent_manager_tx,
-                        PeersToManagerMsg::Error(peer_addr, PeerError::HandshakeError),
-                    )
-                    .await;
+                    send_handler_msg_to_torrent_manager(
+                        &peer_handler_to_torrent_manager_tx,
+                        PeerHandlerToManagerMsg::Error(peer_addr, PeerError::HandshakeError),
+                    );
                 }
                 Ok(Ok((tcp_stream, supports_fast_extension))) => {
-                    send_to_torrent_manager(
-                        &peers_to_torrent_manager_tx,
-                        PeersToManagerMsg::NewPeer(tcp_stream, supports_fast_extension),
-                    )
-                    .await;
+                    send_handler_msg_to_torrent_manager(
+                        &peer_handler_to_torrent_manager_tx,
+                        PeerHandlerToManagerMsg::NewPeer(tcp_stream, supports_fast_extension),
+                    );
                 }
             }
         }
@@ -160,7 +158,7 @@ pub async fn run_new_incoming_peers_handler(
     tcp_wire_protocol_listening_port: u16,
     piece_completion_status: Option<Vec<bool>>,
     mut to_new_incoming_peers_handler_rx: UnboundedReceiver<ToNewIncomingPeersHandlerMsg>,
-    peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
+    peer_handler_to_torrent_manager_tx: UnboundedSender<PeerHandlerToManagerMsg>,
     raw_metadata_size: Option<i64>,
 ) {
     let ok_to_accept_connection_for_rcv: Arc<Mutex<bool>> = Arc::new(Mutex::new(true)); // accept new connections at start
@@ -242,7 +240,8 @@ pub async fn run_new_incoming_peers_handler(
             let piece_completion_status_for_spawn = piece_completion_status.clone();
             let metadata_size_for_spawn = metadata_size.clone();
             let own_peer_id_for_spawn = own_peer_id.clone();
-            let peers_to_torrent_manager_tx_for_spawn = peers_to_torrent_manager_tx.clone();
+            let peer_handler_to_torrent_manager_tx_for_spawn =
+                peer_handler_to_torrent_manager_tx.clone();
             tokio::spawn(async move {
                 let pcs_lock = piece_completion_status_for_spawn.lock().await;
                 let pcs = pcs_lock.clone();
@@ -271,11 +270,10 @@ pub async fn run_new_incoming_peers_handler(
                         log::trace!("handshake failed with peer {remote_addr}: {e}");
                     }
                     Ok(Ok((tcp_stream, supports_fast_extension))) => {
-                        send_to_torrent_manager(
-                            &peers_to_torrent_manager_tx_for_spawn,
-                            PeersToManagerMsg::NewPeer(tcp_stream, supports_fast_extension),
-                        )
-                        .await;
+                        send_handler_msg_to_torrent_manager(
+                            &peer_handler_to_torrent_manager_tx_for_spawn,
+                            PeerHandlerToManagerMsg::NewPeer(tcp_stream, supports_fast_extension),
+                        );
                     }
                 }
             });
@@ -293,24 +291,27 @@ fn addr_or_unknown(stream: &TcpStream) -> String {
 pub fn start_peer_msg_handlers(
     peer_addr: HostAndPort,
     tcp_stream: TcpStream,
-    peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
+    peer_handler_to_torrent_manager_tx: UnboundedSender<PeerHandlerToManagerMsg>,
+    incoming_peer_messages_tx: Sender<PeerMessage>,
     to_peer_rx: Receiver<ToPeerMsg>,
     to_peer_cancel_rx: Receiver<ToPeerCancelMsg>,
     download_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
     upload_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
 ) {
-    let peers_to_torrent_manager_tx_for_snd_message_handler = peers_to_torrent_manager_tx.clone();
+    let peer_handler_to_torrent_manager_tx_for_snd_message_handler =
+        peer_handler_to_torrent_manager_tx.clone();
     let (read, write) = tokio::io::split(tcp_stream);
     let mut rcv = tokio::spawn(rcv_message_handler(
         peer_addr.clone(),
-        peers_to_torrent_manager_tx,
+        incoming_peer_messages_tx,
+        peer_handler_to_torrent_manager_tx,
         read,
         download_rate_limiter,
     ));
     let mut snd = tokio::spawn(snd_message_handler(
         peer_addr.clone(),
         to_peer_rx,
-        peers_to_torrent_manager_tx_for_snd_message_handler,
+        peer_handler_to_torrent_manager_tx_for_snd_message_handler,
         write,
         to_peer_cancel_rx,
         upload_rate_limiter,
@@ -431,7 +432,8 @@ async fn handshake(
 
 async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
     peer_addr: HostAndPort,
-    peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
+    incoming_peer_messages_tx: Sender<PeerMessage>,
+    peer_handler_to_torrent_manager_tx: UnboundedSender<PeerHandlerToManagerMsg>,
     mut wire_proto: T,
     download_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
 ) {
@@ -446,20 +448,18 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
                 log::trace!(
                     "did not receive anything (not even keep-alive messages) from peer {peer_addr} in {PEER_NO_INBOUND_TRAFFIC_FAILURE_TIMEOUT:#?}"
                 );
-                send_to_torrent_manager(
-                    &peers_to_torrent_manager_tx,
-                    PeersToManagerMsg::Error(peer_addr, PeerError::Timeout),
-                )
-                .await;
+                send_handler_msg_to_torrent_manager(
+                    &peer_handler_to_torrent_manager_tx,
+                    PeerHandlerToManagerMsg::Error(peer_addr, PeerError::Timeout),
+                );
                 break;
             }
             Ok(Err(e)) => {
                 log::trace!("receive failed with peer {peer_addr}: {e}");
-                send_to_torrent_manager(
-                    &peers_to_torrent_manager_tx,
-                    PeersToManagerMsg::Error(peer_addr, PeerError::Others),
-                )
-                .await;
+                send_handler_msg_to_torrent_manager(
+                    &peer_handler_to_torrent_manager_tx,
+                    PeerHandlerToManagerMsg::Error(peer_addr, PeerError::Others),
+                );
                 break;
             }
             Ok(Ok(proto_msg)) => {
@@ -470,9 +470,12 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
                 rate_limit(&proto_msg, &download_rate_limiter).await;
 
                 log::trace!("received from {peer_addr}: {proto_msg}");
-                send_to_torrent_manager(
-                    &peers_to_torrent_manager_tx,
-                    PeersToManagerMsg::Receive(peer_addr.clone(), proto_msg),
+                send_peer_msg_to_torrent_manager(
+                    &incoming_peer_messages_tx,
+                    PeerMessage {
+                        peer_addr: peer_addr.clone(),
+                        message: proto_msg,
+                    },
                 )
                 .await;
             }
@@ -504,7 +507,7 @@ async fn rate_limit(proto_msg: &Message, rate_limiter: &Option<Arc<Mutex<RateLim
 async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
     peer_addr: HostAndPort,
     mut to_peer_rx: Receiver<ToPeerMsg>,
-    peers_to_torrent_manager_tx: Sender<PeersToManagerMsg>,
+    peer_handler_to_torrent_manager_tx: UnboundedSender<PeerHandlerToManagerMsg>,
     mut wire_proto: T,
     mut to_peer_cancel_rx: Receiver<ToPeerCancelMsg>,
     upload_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
@@ -557,11 +560,10 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                             "avoided sending canceled request to peer {peer_addr} (block_idx: {piece_idx} begin: {begin}, end: {})",
                             data.len()
                         );
-                        send_to_torrent_manager(
-                            &peers_to_torrent_manager_tx,
-                            PeersToManagerMsg::PieceBlockRequestFulfilled(peer_addr.clone()),
-                        )
-                        .await;
+                        send_handler_msg_to_torrent_manager(
+                            &peer_handler_to_torrent_manager_tx,
+                            PeerHandlerToManagerMsg::PieceBlockRequestFulfilled(peer_addr.clone()),
+                        );
 
                         continue;
                     }
@@ -571,29 +573,28 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                 match timeout(DEFAULT_TIMEOUT, wire_proto.send(proto_msg)).await {
                     Err(_elapsed) => {
                         log::trace!("timeout sending message to peer {peer_addr}");
-                        send_to_torrent_manager(
-                            &peers_to_torrent_manager_tx,
-                            PeersToManagerMsg::Error(peer_addr.clone(), PeerError::Others),
-                        )
-                        .await;
+                        send_handler_msg_to_torrent_manager(
+                            &peer_handler_to_torrent_manager_tx,
+                            PeerHandlerToManagerMsg::Error(peer_addr.clone(), PeerError::Others),
+                        );
                         break;
                     }
                     Ok(Err(e)) => {
                         log::trace!("sending failed to peer {peer_addr}: {e}");
-                        send_to_torrent_manager(
-                            &peers_to_torrent_manager_tx,
-                            PeersToManagerMsg::Error(peer_addr.clone(), PeerError::Others),
-                        )
-                        .await;
+                        send_handler_msg_to_torrent_manager(
+                            &peer_handler_to_torrent_manager_tx,
+                            PeerHandlerToManagerMsg::Error(peer_addr.clone(), PeerError::Others),
+                        );
                         break;
                     }
                     Ok(Ok(_)) => {
                         if is_sending_piece {
-                            send_to_torrent_manager(
-                                &peers_to_torrent_manager_tx,
-                                PeersToManagerMsg::PieceBlockRequestFulfilled(peer_addr.clone()),
-                            )
-                            .await;
+                            send_handler_msg_to_torrent_manager(
+                                &peer_handler_to_torrent_manager_tx,
+                                PeerHandlerToManagerMsg::PieceBlockRequestFulfilled(
+                                    peer_addr.clone(),
+                                ),
+                            );
                         }
                     }
                 }
@@ -605,17 +606,26 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
     }
 }
 
-async fn send_to_torrent_manager(
-    peers_to_torrent_manager_tx: &Sender<PeersToManagerMsg>,
-    msg: PeersToManagerMsg,
+async fn send_peer_msg_to_torrent_manager(
+    incoming_peer_messages_tx: &Sender<PeerMessage>,
+    msg: PeerMessage,
 ) {
-    if peers_to_torrent_manager_tx.capacity() <= 5 {
+    if incoming_peer_messages_tx.capacity() <= 5 {
         log::warn!(
-            "low peers_to_torrent_manager_tx capacity: {}",
-            peers_to_torrent_manager_tx.capacity()
+            "low incoming_peer_messages_tx capacity: {}",
+            incoming_peer_messages_tx.capacity()
         );
     }
-    // ignore error here: torrent manger can drop this peer due to errors in rcv_message_handler
+    // ignore error here: torrent manager can drop this peer due to errors in rcv_message_handler
     // while snd_message_handler is about to send messages to manager or vice versa
-    _ = peers_to_torrent_manager_tx.send(msg).await;
+    _ = incoming_peer_messages_tx.send(msg).await;
+}
+
+fn send_handler_msg_to_torrent_manager(
+    peer_handler_to_torrent_manager_tx: &UnboundedSender<PeerHandlerToManagerMsg>,
+    msg: PeerHandlerToManagerMsg,
+) {
+    peer_handler_to_torrent_manager_tx
+        .send(msg)
+        .expect("peer_handler_to_torrent_manager_tx receiver half closed");
 }

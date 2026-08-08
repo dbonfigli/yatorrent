@@ -15,7 +15,7 @@ use crate::{
         peer::Peer,
         peer_handler::{
             self, FastExtensionSupport, MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER,
-            PeerError, PeersToManagerMsg, ToNewIncomingPeersHandlerMsg,
+            PeerError, PeerHandlerToManagerMsg, PeerMessage, ToNewIncomingPeersHandlerMsg,
         },
         pex_handler::PexEvent,
         piece_requestor::MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT,
@@ -45,21 +45,24 @@ impl TorrentManager {
 
         loop {
             tokio::select! {
-                Some(msg) = self.peers_ctx.peers_to_torrent_manager_rx.recv() => {
+                Some(msg) = self.peers_ctx.peer_handler_to_torrent_manager_rx.recv() => {
                     match msg {
-                        PeersToManagerMsg::Error(peer_addr, error_type) => {
-                            self.handle_peer_error(peer_addr, error_type).await;
+                        PeerHandlerToManagerMsg::Error(peer_addr, error_type) => {
+                            self.handle_peer_error(peer_addr, error_type);
                         }
-                        PeersToManagerMsg::Receive(peer_addr, msg) => {
-                            self.handle_receive_message(peer_addr, msg).await;
-                        }
-                        PeersToManagerMsg::NewPeer(tcp_stream, supports_fast_extension) => {
+                        PeerHandlerToManagerMsg::NewPeer(tcp_stream, supports_fast_extension) => {
                             self.handle_new_peer(tcp_stream, supports_fast_extension).await;
                         }
-                        PeersToManagerMsg::PieceBlockRequestFulfilled(peer_addr) => {
-                            // should we maybe use a separate channel for this?
+                        PeerHandlerToManagerMsg::PieceBlockRequestFulfilled(peer_addr) => {
                             self.handle_piece_block_request_fulfilled(peer_addr);
                         },
+                    }
+                }
+                Some(msg) = self.peers_ctx.incoming_peer_messages_rx.recv() => {
+                    match msg {
+                        PeerMessage { peer_addr, message } => {
+                            self.handle_receive_message(peer_addr, message).await;
+                        }
                     }
                 }
                 Some(msg) = self.file_manager_handler.recv_response() => {
@@ -127,7 +130,8 @@ impl TorrentManager {
         peer_handler::start_peer_msg_handlers(
             peer_addr.clone(),
             tcp_stream,
-            self.peers_ctx.peers_to_torrent_manager_tx.clone(),
+            self.peers_ctx.peer_handler_to_torrent_manager_tx.clone(),
+            self.peers_ctx.incoming_peer_messages_tx.clone(),
             to_peer_rx,
             to_peer_cancel_rx,
             self.global_rate_limiter

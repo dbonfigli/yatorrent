@@ -5,19 +5,19 @@ use crate::{
         },
         pex_handler::PexEvent,
         torrent_manager::{
-            FileManagerHandler, PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY, TorrentManager,
+            FileManagerHandler, INCOMING_PEER_MESSAGES_CHANNEL_CAPACITY, TorrentManager,
         },
     },
     util::HostAndPort,
 };
 
 pub(super) fn should_choke(
-    peers_to_torrent_manager_channel_capacity: usize,
+    incoming_peer_messages_channel_capacity: usize,
     outstanding_incoming_piece_block_requests_for_this_peer: usize,
     file_manager_initialized: bool,
     file_manager_handler: &FileManagerHandler,
 ) -> bool {
-    peers_to_torrent_manager_channel_capacity < PEERS_TO_TORRENT_MANAGER_CHANNEL_CAPACITY / 2
+    incoming_peer_messages_channel_capacity < INCOMING_PEER_MESSAGES_CHANNEL_CAPACITY / 2
         || !file_manager_initialized
         || outstanding_incoming_piece_block_requests_for_this_peer
             > MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER as usize
