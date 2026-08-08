@@ -1,5 +1,5 @@
 use std::{
-    net::IpAddr,
+    net::{IpAddr, Ipv4Addr},
     time::{Duration, SystemTime},
 };
 
@@ -45,6 +45,26 @@ impl TorrentManager {
 
         loop {
             tokio::select! {
+
+                _ = ticker.tick() => {
+                    self.handle_tick().await;
+                }
+
+                Some(msg) = self.file_manager_handler.recv_response() => {
+                    match msg {
+                        FileManagerResponse::Write(msg) => {
+                           self.handle_write_piece_block_response(msg).await;
+                        }
+                        FileManagerResponse::Read(msg) => {
+                            self.handle_read_piece_block_response(msg).await;
+                        }
+                    }
+                }
+
+                Some(DhtToTorrentManagerMsg::NewPeer(ip, port)) = dht_to_torrent_manager_rx.recv() => {
+                    self.handle_new_peer_from_dht(ip, port);
+                }
+
                 Some(msg) = self.peers_ctx.peer_handler_to_torrent_manager_rx.recv() => {
                     match msg {
                         PeerHandlerToManagerMsg::Error(peer_addr, error_type) => {
@@ -58,36 +78,31 @@ impl TorrentManager {
                         },
                     }
                 }
-                Some(msg) = self.peers_ctx.incoming_peer_messages_rx.recv() => {
-                    match msg {
-                        PeerMessage { peer_addr, message } => {
-                            self.handle_receive_message(peer_addr, message).await;
-                        }
-                    }
-                }
-                Some(msg) = self.file_manager_handler.recv_response() => {
-                    match msg {
-                        FileManagerResponse::Write(msg) => {
-                           self.handle_write_piece_block_response(msg).await;
-                        }
-                        FileManagerResponse::Read(msg) => {
-                            self.handle_read_piece_block_response(msg).await;
-                        }
-                    }
 
+                Some(PeerMessage { peer_addr, message }) = self.peers_ctx.incoming_peer_messages_rx.recv() => {
+                    self.handle_receive_message(peer_addr, message).await;
                 }
-                _ = ticker.tick() => {
-                    self.handle_tick().await;
-                }
-                Some(DhtToTorrentManagerMsg::NewPeer(ip, port)) = dht_to_torrent_manager_rx.recv() => {
-                    let p = tracker::Peer{peer_id: None, ip: ip.to_string(), port};
-                    let mut advertised_peers_mg = self.peers_ctx.advertised_peers.lock().expect("another user panicked while holding the lock");
-                    advertised_peers_mg.entry(format!("{ip}:{port}")).or_insert((p, SystemTime::UNIX_EPOCH));
-                    drop(advertised_peers_mg);
-                }
+
                 else => break,
             }
         }
+    }
+
+    fn handle_new_peer_from_dht(&mut self, ip: Ipv4Addr, port: u16) {
+        let p = tracker::Peer {
+            peer_id: None,
+            ip: ip.to_string(),
+            port,
+        };
+        let mut advertised_peers_mg = self
+            .peers_ctx
+            .advertised_peers
+            .lock()
+            .expect("another user panicked while holding the lock");
+        advertised_peers_mg
+            .entry(format!("{ip}:{port}"))
+            .or_insert((p, SystemTime::UNIX_EPOCH));
+        drop(advertised_peers_mg);
     }
 
     fn handle_peer_error(&mut self, peer_addr: HostAndPort, error_type: PeerError) {
