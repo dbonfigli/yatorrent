@@ -12,8 +12,8 @@ use crate::{
     },
     persistence::{
         file_manager::{
-            self, ReadPieceBlockRequest, ReadPieceBlockResponse, ShaCorruptedError,
-            WritePieceBlockRequest, WritePieceBlockResponse,
+            self, ReadPieceBlockRequest, ReadPieceBlockResponse, ShaCheckReadError,
+            ShaCorruptedError, WritePieceBlockRequest, WritePieceBlockResponse,
         },
         torrent_data_status::TorrentDataStatus,
     },
@@ -233,12 +233,28 @@ impl TorrentManager {
             Err(e) => {
                 log::error!("cannot write block received from {}: {e}", peer_addr);
 
+                let peer = match self.peers_ctx.peers.get_mut(&peer_addr) {
+                    Some(peer) => peer,
+                    None => return,
+                };
+
+                let sha_corrupted_error = e.downcast_ref::<ShaCorruptedError>().is_some();
+                let sha_check_read_error = e.downcast_ref::<ShaCheckReadError>().is_some();
+
+                if sha_corrupted_error || sha_check_read_error {
+                    // we could not verify the whole piece, wipe current download status
+                    // also from the piece requestor so to start over
+                    self.piece_requestor
+                        .piece_request_completed(&peer_addr, piece_idx);
+                } else {
+                    // only a block write failed, tell piece requestor this so to remove
+                    // it from downloading piece tracking
+                    self.piece_requestor
+                        .block_write_failed(&peer_addr, piece_idx);
+                }
+
                 // keep track of corruptions, remove if too many
-                if e.downcast_ref::<ShaCorruptedError>().is_some() {
-                    let peer = match self.peers_ctx.peers.get_mut(&peer_addr) {
-                        Some(peer) => peer,
-                        None => return,
-                    };
+                if sha_corrupted_error {
                     peer.increase_corruption_errors();
                     if peer.get_corruption_errors() > MAX_CORRUPTION_ERRORS {
                         log::warn!(

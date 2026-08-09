@@ -118,6 +118,15 @@ impl PieceRequestor {
         }
     }
 
+    pub fn block_write_failed(&mut self, peer_addr: &HostAndPort, piece_idx: usize) {
+        // ideally we should just change the piece in self.requested_pieces so that that block is removed from Piece
+        // but at the moment there is no way to remove a block from a Piece,
+        // so we discard the whole piece assigment, with the drawback of potentially requesting blocks
+        // already requested that are inflight and not yet written to disk
+        // todo: optimize this, add remove_fragment to Piece
+        self.piece_request_completed(peer_addr, piece_idx);
+    }
+
     fn remove_assigments_to_choked(&mut self, peers: &HashMap<HostAndPort, Peer>) {
         let mut peers_to_remove = Vec::new();
         for peer_addr in self.requested_pieces.keys() {
