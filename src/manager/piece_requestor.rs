@@ -232,31 +232,44 @@ impl PieceRequestor {
         for (piece_idx, piece) in torrent_data_status.incomplete_pieces().iter() {
             if !self.outstanding_piece_assignments.contains_key(piece_idx)
                 && let Some((peer_addr, reqs)) = self.assign_piece_reqs(*piece_idx, peers, piece)
+                && !reqs.is_empty()
             {
                 requests_to_send.push((peer_addr, reqs));
             }
         }
 
         // 3. assign other pieces, in order
+        let mut some_peer_can_allocate = self.any_peer_can_allocate_requests(peers);
         for piece_idx in torrent_data_status.missing_pieces() {
-            if self.outstanding_piece_assignments.len() > MAX_OUTSTANDING_PIECES {
+            if !some_peer_can_allocate {
+                break;
+            }
+            if self.outstanding_piece_assignments.len() >= MAX_OUTSTANDING_PIECES {
                 break; // too many outstanding piece requests, stop assigment
             }
             if self.outstanding_piece_assignments.contains_key(piece_idx) {
                 continue; // piece is already assigned, skip this
             }
 
-            match self.assign_piece_reqs(
+            if let Some((peer_addr, reqs)) = self.assign_piece_reqs(
                 *piece_idx,
                 peers,
                 &Piece::new(torrent_data_status.piece_length(*piece_idx)),
-            ) {
-                Some((peer_addr, reqs)) => requests_to_send.push((peer_addr, reqs)),
-                None => break, // we could not find a possible peer to assign this piece, it means there is no capacity left, stop assigment
+            ) && !reqs.is_empty()
+            {
+                requests_to_send.push((peer_addr, reqs));
+                some_peer_can_allocate = self.any_peer_can_allocate_requests(peers);
             }
         }
 
         requests_to_send
+    }
+
+    fn any_peer_can_allocate_requests(&self, peers: &HashMap<HostAndPort, Peer>) -> bool {
+        peers.iter().any(|(peer_addr, peer)| {
+            !peer.is_peer_choking()
+                && self.peer_can_allocate_requests(peer_addr, max_outstanding_reqs(peer))
+        })
     }
 
     fn assign_piece_reqs(
@@ -443,7 +456,7 @@ impl PieceRequestor {
 
         // 3. assign other pieces, in order
         for piece_idx in torrent_data_status.missing_pieces() {
-            if self.outstanding_piece_assignments.len() > MAX_OUTSTANDING_PIECES {
+            if self.outstanding_piece_assignments.len() >= MAX_OUTSTANDING_PIECES {
                 break;
             }
             if !self.peer_can_allocate_requests(peer_addr, request_count) {
