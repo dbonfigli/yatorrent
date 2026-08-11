@@ -76,7 +76,7 @@ impl DhtHandler {
         }
     }
 
-    pub fn new_node_discovered(&mut self, peer_ip_addr: &str, peer_port: u16) {
+    pub fn new_node_discovered(&mut self, peer_ip_addr: Ipv4Addr, peer_port: u16) {
         self.to_dht_manager_tx
             .send(ToDhtManagerMsg::NewNode(format!(
                 "{peer_ip_addr}:{peer_port}"

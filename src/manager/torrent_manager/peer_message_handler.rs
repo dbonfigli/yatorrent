@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use crate::{
     bencoding::Value::{self, Dict, Int},
     manager::{
@@ -65,10 +67,14 @@ impl TorrentManager {
             }
             Message::Port(port) => {
                 // we know the peer supports DHT, send this to dht as new node
-                let peer_ip_addr = peer_addr.split(":").next().expect(
-                    "peer_addr, taken from tcp_stream.peer_addr(), is always of format ip:port",
-                );
-                self.dht_handler.new_node_discovered(peer_ip_addr, port);
+                match peer_addr.parse::<SocketAddr>() {
+                    Ok(SocketAddr::V4(socket_addr)) => self
+                        .dht_handler
+                        .new_node_discovered(*socket_addr.ip(), port),
+                    _ => log::trace!(
+                        "ignoring \"port\" message from {peer_addr}: it is not an ipv4 peer and our dht implementation is ipv4 only"
+                    ),
+                }
             }
             Message::Suggest(piece_idx) => {
                 self.handle_suggest_message(peer_addr, piece_idx).await;
