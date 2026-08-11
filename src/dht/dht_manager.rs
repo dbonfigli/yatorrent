@@ -286,7 +286,9 @@ impl DhtManager {
             .map(|(k, _)| *k)
             .collect();
         for info_hash in expired_get_peers_requests {
-            self.end_get_peers_search(&info_hash, socket).await;
+            if let Some(req) = self.inflight_get_peers_requests.remove(&info_hash) {
+                self.end_get_peers_search(&info_hash, &req, socket).await;
+            }
         }
 
         // terminate expired find_node requests
@@ -299,7 +301,9 @@ impl DhtManager {
             .map(|(k, _)| *k)
             .collect();
         for req_id in expired_find_nodes_requests {
-            self.end_find_node_search(&req_id).await;
+            if let Some(req) = self.inflight_find_node_requests.remove(&req_id) {
+                self.end_find_node_search(&req);
+            }
         }
 
         // routing table maintenance
@@ -518,8 +522,13 @@ impl DhtManager {
                         dht_to_torrent_manager_tx,
                     )
                     .await;
-                    self.inflight_get_peers_requests
-                        .insert(original_request_id, original_request);
+                    if original_request.inflight_requests == 0 {
+                        self.end_get_peers_search(&original_request_id, &original_request, socket)
+                            .await;
+                    } else {
+                        self.inflight_get_peers_requests
+                            .insert(original_request_id, original_request);
+                    }
                     return;
                 }
                 // if instead it was a find_node response...
@@ -537,8 +546,12 @@ impl DhtManager {
                         resp_data,
                     )
                     .await;
-                    self.inflight_find_node_requests
-                        .insert(original_request_id, original_request);
+                    if original_request.inflight_requests == 0 {
+                        self.end_find_node_search(&original_request);
+                    } else {
+                        self.inflight_find_node_requests
+                            .insert(original_request_id, original_request);
+                    }
                     return;
                 }
                 log::trace!(
@@ -585,53 +598,54 @@ impl DhtManager {
         }
     }
 
-    async fn end_get_peers_search(&mut self, info_hash: &[u8; 20], socket: &UdpSocket) {
-        if let Some(req) = self.inflight_get_peers_requests.remove(info_hash) {
-            // send announce_peer to closest K nodes
-            for i in 0..cmp::min(req.replying_nodes.len(), K_FACTOR) {
-                let (_, ip, port, token) = &req.replying_nodes[i];
-                if let Some(token_val) = token {
-                    self.msg_sender
-                        .do_req(
-                            socket,
-                            to_addr_string(ip, *port),
-                            KRPCMessage::AnnouncePeerReq(
-                                self.own_node_id,
-                                *info_hash,
-                                self.listening_torrent_wire_protocol_port,
-                                token_val.clone(),
-                                false,
-                            ),
-                            None,
-                            0,
-                        )
-                        .await;
-                }
+    async fn end_get_peers_search(
+        &mut self,
+        info_hash: &[u8; 20],
+        req: &GetPeersRequest,
+        socket: &UdpSocket,
+    ) {
+        // send announce_peer to closest K nodes
+        for i in 0..cmp::min(req.replying_nodes.len(), K_FACTOR) {
+            let (_, ip, port, token) = &req.replying_nodes[i];
+            if let Some(token_val) = token {
+                self.msg_sender
+                    .do_req(
+                        socket,
+                        to_addr_string(ip, *port),
+                        KRPCMessage::AnnouncePeerReq(
+                            self.own_node_id,
+                            *info_hash,
+                            self.listening_torrent_wire_protocol_port,
+                            token_val.clone(),
+                            false,
+                        ),
+                        None,
+                        0,
+                    )
+                    .await;
             }
-
-            log::info!(
-                "get_peers request terminated: routing table size: {}, total sent requests: {} not replied: {}, replied: {}, replied with peers: {}, discovered peers: {}",
-                self.routing_table.as_mut_vec().len(), // todo optimize this
-                req.total_requests,
-                req.inflight_requests,
-                req.replying_nodes.len(),
-                req.replying_nodes_with_peers,
-                req.discovered_peers.len(),
-            );
         }
+
+        log::info!(
+            "get_peers request terminated: routing table size: {}, total sent requests: {} not replied: {}, replied: {}, replied with peers: {}, discovered peers: {}",
+            self.routing_table.as_mut_vec().len(), // todo optimize this
+            req.total_requests,
+            req.inflight_requests,
+            req.replying_nodes.len(),
+            req.replying_nodes_with_peers,
+            req.discovered_peers.len(),
+        );
     }
 
-    async fn end_find_node_search(&mut self, req_id: &[u8; 20]) {
-        if let Some(req) = self.inflight_find_node_requests.remove(req_id) {
-            log::debug!(
-                "find_node request for {} terminated: total sent requests: {} not replied: {}, discovered nodes: {}, probed nodes for routing table addition: {}",
-                force_string(&req.node_id_to_find.to_vec()),
-                req.total_requests,
-                req.inflight_requests,
-                req.total_discovered_nodes,
-                req.probed_nodes.len(),
-            );
-        }
+    fn end_find_node_search(&mut self, req: &FindNodeRequest) {
+        log::debug!(
+            "find_node request for {} terminated: total sent requests: {} not replied: {}, discovered nodes: {}, probed nodes for routing table addition: {}",
+            force_string(&req.node_id_to_find.to_vec()),
+            req.total_requests,
+            req.inflight_requests,
+            req.total_discovered_nodes,
+            req.probed_nodes.len(),
+        );
     }
 
     async fn handle_get_peers_resp(
@@ -714,11 +728,6 @@ impl DhtManager {
                         dht_to_torrent_manager_tx.send(DhtToTorrentManagerMsg::NewPeer(p.0, p.1));
                 }
             }
-            if original_request.inflight_requests == 0 {
-                // search is over
-                self.end_get_peers_search(&original_request_id, socket)
-                    .await;
-            }
         }
     }
 
@@ -732,6 +741,10 @@ impl DhtManager {
         call_depth: usize,
         resp_data: GetPeersOrFindNodeRespData,
     ) {
+        if original_request.inflight_requests > 0 {
+            // avoid overflowing in special cases similar to get_peer
+            original_request.inflight_requests -= 1;
+        }
         let nodes = match resp_data.nodes {
             Some(nodes) => nodes,
             None => {
@@ -741,11 +754,6 @@ impl DhtManager {
                 return;
             }
         };
-
-        if original_request.inflight_requests > 0 {
-            // avoid overflowing in special cases similar to get_peer
-            original_request.inflight_requests -= 1;
-        }
 
         // add or refresh this replying node to the routing table
         self.routing_table
@@ -812,11 +820,6 @@ impl DhtManager {
                 original_request.inflight_requests += 1;
                 original_request.queried_nodes.insert(node_id);
             }
-        }
-
-        if original_request.inflight_requests == 0 {
-            // search is over, let's gather results
-            self.end_find_node_search(&original_request_id).await;
         }
     }
 
