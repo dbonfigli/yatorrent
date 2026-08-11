@@ -161,6 +161,24 @@ impl MessageSender {
             log::debug!("could not send dht message {msg:?} to {dest}: {e}");
         };
     }
+
+    pub async fn do_resp(
+        &mut self,
+        socket: &UdpSocket,
+        dest: HostAndPort,
+        tid: Vec<u8>,
+        msg: KRPCMessage,
+    ) {
+        log::trace!(
+            "perform respo to {}, tid: {}, msg: {msg:?}",
+            dest.clone(),
+            force_string(&tid.to_vec()),
+        );
+        let buf = encode_krpc_message(tid.to_vec(), msg.clone());
+        if let Err(e) = socket.send_to(&buf, dest.clone()).await {
+            log::debug!("could not send dht message {msg:?} to {dest}: {e}");
+        };
+    }
 }
 
 impl DhtManager {
@@ -460,12 +478,11 @@ impl DhtManager {
         match msg {
             KRPCMessage::PingReq(_querying_node_id) => {
                 self.msg_sender
-                    .do_req(
+                    .do_resp(
                         socket,
                         remote_addr.to_string(),
+                        transaction_id,
                         KRPCMessage::PingOrAnnouncePeerResp(self.own_node_id),
-                        None,
-                        0,
                     )
                     .await;
             }
@@ -482,13 +499,25 @@ impl DhtManager {
             }
 
             KRPCMessage::FindNodeReq(querying_node_id, target_node_id) => {
-                self.handle_find_node_req(remote_addr, socket, querying_node_id, target_node_id)
-                    .await;
+                self.handle_find_node_req(
+                    remote_addr,
+                    socket,
+                    transaction_id,
+                    querying_node_id,
+                    target_node_id,
+                )
+                .await;
             }
 
             KRPCMessage::GetPeersReq(_querying_node_id, info_hash) => {
-                self.handle_get_peers_req(remote_ipv4addr, remote_port, socket, info_hash)
-                    .await
+                self.handle_get_peers_req(
+                    remote_ipv4addr,
+                    remote_port,
+                    socket,
+                    transaction_id,
+                    info_hash,
+                )
+                .await
             }
 
             KRPCMessage::GetPeersOrFindNodeResp(resp_data) => {
@@ -571,6 +600,7 @@ impl DhtManager {
                     remote_ipv4addr,
                     remote_port,
                     socket,
+                    transaction_id,
                     info_hash,
                     token,
                     announce_peer_port,
@@ -828,6 +858,7 @@ impl DhtManager {
         remote_ipv4addr: Ipv4Addr,
         remote_port: u16,
         socket: &UdpSocket,
+        transaction_id: Vec<u8>,
         info_hash: [u8; 20],
         token: Vec<u8>,
         announce_peer_port: u16,
@@ -842,15 +873,14 @@ impl DhtManager {
                     "got an announce_peer from {source_req_addr_port} with a token that is not 20b as expected, refusing it"
                 );
                 self.msg_sender
-                    .do_req(
+                    .do_resp(
                         socket,
                         source_req_addr_port,
+                        transaction_id,
                         KRPCMessage::Error(
                             ErrorType::GenericError,
                             "wrong secret, should be 20b long".to_string(),
                         ),
-                        None,
-                        0,
                     )
                     .await;
                 return;
@@ -866,12 +896,11 @@ impl DhtManager {
                 force_string(&expected_token.to_vec())
             );
             self.msg_sender
-                .do_req(
+                .do_resp(
                     socket,
                     source_req_addr_port,
+                    transaction_id,
                     KRPCMessage::Error(ErrorType::GenericError, "wrong secret content".to_string()),
-                    None,
-                    0,
                 )
                 .await;
             return;
@@ -894,12 +923,11 @@ impl DhtManager {
         }
         // send ok
         self.msg_sender
-            .do_req(
+            .do_resp(
                 socket,
                 source_req_addr_port,
+                transaction_id,
                 KRPCMessage::PingOrAnnouncePeerResp(self.own_node_id),
-                None,
-                0,
             )
             .await;
     }
@@ -947,6 +975,7 @@ impl DhtManager {
         remote_ipv4addr: Ipv4Addr,
         remote_port: u16,
         socket: &UdpSocket,
+        transaction_id: Vec<u8>,
         info_hash: [u8; 20],
     ) {
         let source_req_addr_port = to_addr_string(&remote_ipv4addr, remote_port);
@@ -960,17 +989,16 @@ impl DhtManager {
                 let mut resp_peers_info: Vec<(Ipv4Addr, u16)> = peers.keys().copied().collect();
                 resp_peers_info.truncate(8000); // do not overflow a single udp packet. todo: do a better calculation
                 self.msg_sender
-                    .do_req(
+                    .do_resp(
                         socket,
                         source_req_addr_port.to_string(),
+                        transaction_id,
                         KRPCMessage::GetPeersOrFindNodeResp(GetPeersOrFindNodeRespData {
                             target_id: self.own_node_id,
                             token: Some(token.to_vec()),
                             nodes: None, // todo: note that some clients also send closest nodes on get_peers requests even if they know some peers, should we do the same?
                             values: Some(resp_peers_info),
                         }),
-                        None,
-                        0,
                     )
                     .await;
             }
@@ -982,17 +1010,16 @@ impl DhtManager {
                     .map(|n| (biguint_to_u8_20(&n.id), n.addr, n.port))
                     .collect();
                 self.msg_sender
-                    .do_req(
+                    .do_resp(
                         socket,
                         source_req_addr_port.to_string(),
+                        transaction_id,
                         KRPCMessage::GetPeersOrFindNodeResp(GetPeersOrFindNodeRespData {
                             target_id: self.own_node_id,
                             token: Some(token.to_vec()),
                             nodes: Some(closest_nodes_info),
                             values: None,
                         }),
-                        None,
-                        0,
                     )
                     .await;
             }
@@ -1003,14 +1030,16 @@ impl DhtManager {
         &mut self,
         remote_addr: SocketAddr,
         socket: &UdpSocket,
+        transaction_id: Vec<u8>,
         querying_node_id: [u8; 20],
         target_node_id: [u8; 20],
     ) {
         let closest_nodes = self.routing_table.closest_nodes(&target_node_id);
         self.msg_sender
-            .do_req(
+            .do_resp(
                 socket,
                 remote_addr.to_string(),
+                transaction_id,
                 KRPCMessage::GetPeersOrFindNodeResp(GetPeersOrFindNodeRespData {
                     target_id: self.own_node_id,
                     token: None,
@@ -1022,8 +1051,6 @@ impl DhtManager {
                     ),
                     values: None,
                 }),
-                None,
-                0,
             )
             .await;
 
