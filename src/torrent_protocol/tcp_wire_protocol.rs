@@ -369,7 +369,7 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
             }
             // piece
             7 => {
-                if size_message - 9 == 0 || size_message > MAX_MESSAGE_SIZE_B {
+                if size_message <= 9 || size_message > MAX_MESSAGE_SIZE_B {
                     bail!("malformed size_message ({size_message}) on piece");
                 }
                 let mut index_buf: [u8; 4] = [0; 4];
@@ -461,7 +461,7 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
             }
             // extension message
             20 => {
-                if size_message - 2 == 0 || size_message > MAX_MESSAGE_SIZE_B {
+                if size_message <= 2 || size_message > MAX_MESSAGE_SIZE_B {
                     bail!("malformed size_message ({size_message}) on extension message");
                 }
                 let mut buf: [u8; 1] = [0; 1];
