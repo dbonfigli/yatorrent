@@ -12,11 +12,11 @@ use rlimit::{Resource, getrlimit, setrlimit};
 #[cfg(unix)]
 use std::cmp::min;
 
-use crate::manager::BLOCK_SIZE_B;
 use crate::manager::torrent_manager::{
     FilesData, TorrentManagerLimitOptions, TorrentManagerNetworkOptions, TorrentManagerOptions,
     TorrentManagerStorageOptions,
 };
+use crate::torrent_protocol::MAX_MESSAGE_SIZE_B;
 
 mod bencoding;
 mod dht;
@@ -246,8 +246,8 @@ fn get_bandwitdh(bandwidth: Option<String>) -> Option<Size> {
             exit(1)
         }
         Ok(v) => {
-            if v.bytes() <= BLOCK_SIZE_B.try_into().unwrap() {
-                log::error!("bandwitdh limit cannot be less than {BLOCK_SIZE_B} bytes (the size of a full block request)");
+            if v.bytes() <= MAX_MESSAGE_SIZE_B.try_into().unwrap() {
+                log::error!("bandwitdh limit cannot be less than {MAX_MESSAGE_SIZE_B} bytes (the size of the biggest torrent protocol message we support)");
                 exit(1)
             }
             v
