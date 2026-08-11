@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
-    net::Ipv4Addr,
+    net::SocketAddr,
     time::{Duration, SystemTime},
 };
 
@@ -260,17 +260,13 @@ impl Peer {
         dropped: Vec<HostAndPort>,
     ) {
         let mut h = HashMap::new();
+        let added = ip_port_list_to_compact_format(added);
         if !added.is_empty() {
-            h.insert(
-                b"added".to_vec(),
-                Str(ip_port_list_to_compact_format(added)),
-            );
+            h.insert(b"added".to_vec(), Str(added));
         }
+        let dropped = ip_port_list_to_compact_format(dropped);
         if !dropped.is_empty() {
-            h.insert(
-                b"dropped".to_vec(),
-                Str(ip_port_list_to_compact_format(dropped)),
-            );
+            h.insert(b"dropped".to_vec(), Str(dropped));
         }
         self.last_pex_message_sent = SystemTime::now();
         if !h.is_empty() {
@@ -490,14 +486,15 @@ impl Peer {
 fn ip_port_list_to_compact_format(addrs: Vec<HostAndPort>) -> Vec<u8> {
     let mut compact_format: Vec<u8> = Vec::new();
     for addr in addrs {
-        let ip_port: Vec<_> = addr.split(':').collect();
-        if ip_port.len() != 2 {
-            panic!("addr string was not of the format ip:port");
+        match addr.parse::<SocketAddr>() {
+            Ok(SocketAddr::V4(socket_addr)) => {
+                compact_format.append(&mut socket_addr.ip().octets().to_vec());
+                compact_format.append(&mut socket_addr.port().to_be_bytes().to_vec());
+            }
+            _ => {
+                log::debug!("{addr} is not an ipv4 address");
+            }
         }
-        let ipv4_addr: Ipv4Addr = ip_port[0].parse().expect("addr was not an ipv4");
-        compact_format.append(&mut ipv4_addr.octets().to_vec());
-        let port: u16 = ip_port[1].parse().expect("port was not a u16");
-        compact_format.append(&mut port.to_be_bytes().to_vec());
     }
     compact_format
 }
