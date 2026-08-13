@@ -220,8 +220,8 @@ pub fn start_file_manager(
     }
     let total_pieces = piece_hashes.len();
     if total_file_size > normal_piece_length * total_pieces as u64 {
-        log::warn!(
-            "the total file size of all files exceed the #pieces * piece_length we have, the .torrent file could be malformed, the exceeding files will not be downloaded"
+        panic!(
+            "the total file size of all files exceed the #pieces * piece_length we have, the .torrent file / metedata could be malformed"
         );
     }
 
