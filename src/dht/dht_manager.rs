@@ -38,6 +38,11 @@ const NODE_NO_INBOUND_TRAFFIC_FAILURE_TIMEOUT: Duration = Duration::from_secs(90
 const PING_INTERVAL: Duration = Duration::from_secs(60);
 const NODE_INACTIVITY_PING_THRESHOLD: Duration = Duration::from_secs(600);
 
+// we limit peers on get peers responses due to
+// 1. must not overflow a single udp packet
+// 2. avoid allowing us to be used as UDP amplification attack
+const MAX_RESP_GET_PEERS_SIZE: usize = 100;
+
 const WELL_KNOWN_BOOTSTRAP_NODES: &[&str] = &[
     "dht.libtorrent.org:25401",
     "router.utorrent.com:6881",
@@ -76,7 +81,7 @@ pub struct DhtManager {
     msg_sender: MessageSender,
     routing_table: Bucket,
     token_signing_secret: [u8; 10], // todo: we must rotate this once in a while
-    known_peers: HashMap<[u8; 20], HashMap<(Ipv4Addr, u16), SystemTime>>, // info hash -> hashmap of (ip/port of peers that have it -> last announced); todo: should we expire keys here once in a while / if keys are too many
+    known_peers: HashMap<[u8; 20], HashMap<(Ipv4Addr, u16), SystemTime>>, // info hash -> hashmap of (ip/port of peers that have it -> last announced)
     inflight_get_peers_requests: HashMap<[u8; 20], GetPeersRequest>, // info hash -> GetPeersRequest
     inflight_find_node_requests: HashMap<[u8; 20], FindNodeRequest>, // random id -> FindNodeRequest
     last_routing_table_refresh: SystemTime,
@@ -270,17 +275,7 @@ impl DhtManager {
                         }
                         ToDhtManagerMsg::ConnectedToNewPeer(info_hash, new_peer_addr, new_peer_port) => {
                             log::trace!("got ConnectedToNewPeer msg from torrent manager: {new_peer_addr}");
-                            let peer_info = (new_peer_addr, new_peer_port);
-                            match self.known_peers.get_mut(&info_hash) {
-                                Some(peers_for_this_info_hash) => {
-                                    peers_for_this_info_hash.insert(peer_info, SystemTime::now());
-                                }
-                                None => {
-                                    let mut peers_for_this_info_hash = HashMap::new();
-                                    peers_for_this_info_hash.insert(peer_info, SystemTime::now());
-                                    self.known_peers.insert(info_hash, peers_for_this_info_hash);
-                                }
-                            }
+                            self.insert_new_peer(new_peer_addr, new_peer_port, info_hash);
                         }
                     }
                 }
@@ -910,17 +905,7 @@ impl DhtManager {
         if imply_port {
             peer_port = remote_port;
         }
-        let peer_info = (remote_ipv4addr, peer_port);
-        match self.known_peers.get_mut(&info_hash) {
-            Some(s) => {
-                s.insert(peer_info, SystemTime::now());
-            }
-            None => {
-                let mut s = HashMap::new();
-                s.insert(peer_info, SystemTime::now());
-                self.known_peers.insert(info_hash, s);
-            }
-        }
+        self.insert_new_peer(remote_ipv4addr, peer_port, info_hash);
         // send ok
         self.msg_sender
             .do_resp(
@@ -986,8 +971,7 @@ impl DhtManager {
         // response
         match self.known_peers.get(&info_hash) {
             Some(peers) => {
-                let mut resp_peers_info: Vec<(Ipv4Addr, u16)> = peers.keys().copied().collect();
-                resp_peers_info.truncate(8000); // do not overflow a single udp packet. todo: do a better calculation
+                let resp_peers_info: Vec<(Ipv4Addr, u16)> = peers.keys().copied().collect();
                 self.msg_sender
                     .do_resp(
                         socket,
@@ -1066,6 +1050,32 @@ impl DhtManager {
                     0,
                 )
                 .await;
+        }
+    }
+
+    fn insert_new_peer(
+        &mut self,
+        new_peer_addr: Ipv4Addr,
+        new_peer_port: u16,
+        info_hash: [u8; 20],
+    ) {
+        match self.known_peers.get_mut(&info_hash) {
+            Some(s) => {
+                if s.len() > MAX_RESP_GET_PEERS_SIZE {
+                    let oldest = *(s
+                        .iter()
+                        .max_by_key(|(_, v)| **v)
+                        .expect("cannot be none since size is > 0")
+                        .0);
+                    s.remove(&oldest);
+                }
+                s.insert((new_peer_addr, new_peer_port), SystemTime::now());
+            }
+            None => {
+                let mut s = HashMap::new();
+                s.insert((new_peer_addr, new_peer_port), SystemTime::now());
+                self.known_peers.insert(info_hash, s);
+            }
         }
     }
 }
