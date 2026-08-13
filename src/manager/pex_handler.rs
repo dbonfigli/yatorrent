@@ -58,6 +58,8 @@ impl PexHandler {
     }
 
     pub fn new_pex_event(&mut self, peer_addr: HostAndPort, pex_event: PexEvent) {
+        self.added_dropped_peer_events
+            .retain(|e| e.peer != peer_addr);
         self.added_dropped_peer_events.push(AddedDroppedEvent {
             event_timestamp: SystemTime::now(),
             peer: peer_addr,

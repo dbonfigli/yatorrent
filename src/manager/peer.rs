@@ -32,6 +32,7 @@ const DEFAULT_MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER: usize = 2000;
 const RTT_SAMPLES_COUNT: usize = 20;
 const KEEP_ALIVE_FREQ: Duration = Duration::from_secs(90);
 const PEX_MESSAGE_COOL_OFF_PERIOD: Duration = Duration::from_secs(60);
+const MAX_PEX_PEER_LIST_SIZE_FOR_PERIODIC_MESSAGES: usize = 50; // as per bep11 spec
 
 pub enum MetadataMessage {
     Request(u64), // piece idx
@@ -469,16 +470,18 @@ impl Peer {
                     map
                 },
             );
-        let added = elided_events
+        let mut added: Vec<String> = elided_events
             .iter()
             .filter(|(_, event_type)| **event_type == PexEvent::Added)
             .map(|(p, _)| (*p).clone())
             .collect();
-        let dropped = elided_events
+        added.truncate(MAX_PEX_PEER_LIST_SIZE_FOR_PERIODIC_MESSAGES);
+        let mut dropped: Vec<String> = elided_events
             .iter()
             .filter(|(_, event_type)| **event_type == PexEvent::Dropped)
             .map(|(p, _)| (*p).clone())
             .collect();
+        dropped.truncate(MAX_PEX_PEER_LIST_SIZE_FOR_PERIODIC_MESSAGES);
         self.send_pex_extension_message(added, dropped).await;
     }
 }
