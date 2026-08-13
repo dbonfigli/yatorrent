@@ -32,7 +32,7 @@ pub enum Message {
     HaveAll,
     HaveNone,
     Reject(BlockRequest),
-    AllowerdFast(u32), // piece index
+    AllowedFast(u32), // piece index
     Extended {
         extension_protocol_id: u8,
         bencoded_message: Value,
@@ -116,7 +116,7 @@ impl fmt::Display for Message {
                     block_request.piece_idx, block_request.block_begin, block_request.data_len
                 )
             }
-            Message::AllowerdFast(piece_idx) => {
+            Message::AllowedFast(piece_idx) => {
                 write!(f, "allowed fast piece id {piece_idx}")
             }
             Message::Extended {

@@ -175,7 +175,7 @@ impl MessageSender {
         msg: KRPCMessage,
     ) {
         log::trace!(
-            "perform respo to {}, tid: {}, msg: {msg:?}",
+            "perform resp to {}, tid: {}, msg: {msg:?}",
             dest.clone(),
             force_string(&tid.to_vec()),
         );

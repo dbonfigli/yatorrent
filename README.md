@@ -48,9 +48,9 @@ Options:
   -c, --max-connected-peers <MAX_CONNECTED_PEERS>
           Maximum number of connected peers allowed [env: MAX_CONNECTED_PEERS=] [default: 100]
   -z, --max-download-bandwidth <MAX_DOWNLOAD_BANDWIDTH>
-          Max allowerd total download bandwidth, with associated unit, e.g 10MiB (MiB is different from MB, the value is always bytes regardless of the case of "b", optional, no limit if not provided) [env: MAX_DOWNLOAD_BANDWIDTH=]
+          Max allowed total download bandwidth, with associated unit, e.g 10MiB (MiB is different from MB, the value is always bytes regardless of the case of "b", optional, no limit if not provided) [env: MAX_DOWNLOAD_BANDWIDTH=]
   -u, --max-upload-bandwidth <MAX_UPLOAD_BANDWIDTH>
-          Max allowerd total upload bandwidth, with associated unit, e.g 10MiB (MiB is different from MB, the value is always bytes regardless of the case of "b", optional, no limit if not provided) [env: MAX_UPLOAD_BANDWIDTH=]
+          Max allowed total upload bandwidth, with associated unit, e.g 10MiB (MiB is different from MB, the value is always bytes regardless of the case of "b", optional, no limit if not provided) [env: MAX_UPLOAD_BANDWIDTH=]
   -e, --exit-when-complete
           Exit the client when the download is complete [env: EXIT_WHEN_COMPLETE=]
   -h, --help

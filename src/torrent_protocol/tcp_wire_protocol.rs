@@ -265,7 +265,7 @@ impl ProtocolWriteHalf for WriteHalf<TcpStream> {
                     Ok(())
                 }
             }
-            Message::AllowerdFast(piece_num) => {
+            Message::AllowedFast(piece_num) => {
                 let mut buf: [u8; 9] = [0; 9];
                 buf[3] = 5;
                 buf[4] = 17;
@@ -337,7 +337,7 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
             // bitfield
             5 => {
                 if size_message > MAX_MESSAGE_SIZE_B {
-                    bail!("malformed size_message ({size_message}) on bitfiled");
+                    bail!("malformed size_message ({size_message}) on bitfield");
                 }
                 let bitfield_byte_size: usize = (size_message - 1).try_into()?;
                 let mut buf = vec![0; bitfield_byte_size];
@@ -457,7 +457,7 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                 if let Err(e) = self.read_exact(&mut buf).await {
                     return Err(e.into());
                 }
-                Ok(Message::AllowerdFast(u32::from_be_bytes(buf)))
+                Ok(Message::AllowedFast(u32::from_be_bytes(buf)))
             }
             // extension message
             20 => {
@@ -561,7 +561,7 @@ mod tests {
             vec![
                 0, 0, 0, 3, // len
                 5, // type
-                0b10000001, 0b00001100 // bitfiled bites
+                0b10000001, 0b00001100 // bitfield bites
             ]
         );
     }
@@ -578,7 +578,7 @@ mod tests {
             vec![
                 0, 0, 0, 3, // len
                 5, // type
-                0b10000001, 0b00001101 // bitfiled bites
+                0b10000001, 0b00001101 // bitfield bites
             ]
         );
     }
@@ -594,7 +594,7 @@ mod tests {
             vec![
                 0, 0, 0, 2,          // len
                 5,          // type
-                0b01000000  // bitfiled bites
+                0b01000000  // bitfield bites
             ]
         );
     }

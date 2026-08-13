@@ -88,7 +88,7 @@ impl TorrentManager {
             Message::Reject(block_request) => {
                 self.handle_reject_message(peer_addr, block_request).await;
             }
-            Message::AllowerdFast(piece_idx) => {
+            Message::AllowedFast(piece_idx) => {
                 self.handle_allow_fast_message(peer_addr, piece_idx as usize)
                     .await;
             }

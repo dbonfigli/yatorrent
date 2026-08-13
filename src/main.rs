@@ -67,11 +67,11 @@ struct Args {
     #[arg(short = 'c', long, env, default_value_t = 100)]
     max_connected_peers: usize,
 
-    /// Max allowerd total download bandwidth, with associated unit, e.g 10MiB (MiB is different from MB, the value is always bytes regardless of the case of "b", optional, no limit if not provided)
+    /// Max allowed total download bandwidth, with associated unit, e.g 10MiB (MiB is different from MB, the value is always bytes regardless of the case of "b", optional, no limit if not provided)
     #[arg(short = 'z', long, env)]
     max_download_bandwidth: Option<String>,
 
-    /// Max allowerd total upload bandwidth, with associated unit, e.g 10MiB (MiB is different from MB, the value is always bytes regardless of the case of "b", optional, no limit if not provided)
+    /// Max allowed total upload bandwidth, with associated unit, e.g 10MiB (MiB is different from MB, the value is always bytes regardless of the case of "b", optional, no limit if not provided)
     #[arg(short = 'u', long, env)]
     max_upload_bandwidth: Option<String>,
 
