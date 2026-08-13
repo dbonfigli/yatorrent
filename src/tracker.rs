@@ -457,7 +457,7 @@ impl TrackerClient {
         announce_buf[16..36].copy_from_slice(&info_hash);
         announce_buf[36..56].copy_from_slice(self.peer_id.as_bytes());
         announce_buf[56..64].copy_from_slice(&downloaded.to_be_bytes());
-        announce_buf[64..72].copy_from_slice(&left.unwrap_or_default().to_be_bytes()); // BEP 0015 does not specify what to do if left is not provided, so we use 0
+        announce_buf[64..72].copy_from_slice(&left.unwrap_or(0xFFFFFFFF).to_be_bytes()); // BEP 0015 does not specify what to do if left is not provided, so we use 0xFFFFFFFF like other clients do
         announce_buf[72..80].copy_from_slice(&uploaded.to_be_bytes());
         let event_id: u32 = match event {
             Event::None => 0,
