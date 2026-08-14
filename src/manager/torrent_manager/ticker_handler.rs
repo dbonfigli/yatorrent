@@ -1,4 +1,7 @@
-use std::time::{Duration, SystemTime};
+use std::{
+    collections::HashSet,
+    time::{Duration, SystemTime},
+};
 
 use crate::{
     manager::{
@@ -7,6 +10,7 @@ use crate::{
     },
     torrent_protocol::wire_protocol::Message,
     tracker::Peer,
+    util::HostAndPort,
 };
 use rand::seq::IndexedRandom;
 
@@ -46,18 +50,27 @@ impl TorrentManager {
 
     async fn connect_to_new_peers(&mut self) {
         let current_peers_n = self.peers_ctx.peers.len();
-        if current_peers_n < self.torrent_manager_config.max_connected_peers {
-            let possible_peers_mg = self
-                .peers_ctx
-                .advertised_peers
-                .lock()
-                .expect("another user panicked while holding the lock");
-            let now = SystemTime::now();
-            let possible_peers: Vec<(String, (Peer, SystemTime))> = possible_peers_mg
+        if current_peers_n >= self.torrent_manager_config.max_connected_peers {
+            return;
+        }
+
+        let connected_peers: HashSet<HostAndPort> = self
+            .peers_ctx
+            .peers
+            .values()
+            .filter_map(|p| p.get_peer_addr_and_listening_torrent_protocol_port())
+            .collect();
+        let possible_peers_mg = self
+            .peers_ctx
+            .advertised_peers
+            .lock()
+            .expect("another user panicked while holding the lock");
+        let now = SystemTime::now();
+        let possible_peers: Vec<(String, (Peer, SystemTime))> = possible_peers_mg
                 .iter()
                 .filter(|(k, (_, last_connection_attempt))| {
                     // avoid selecting peers we are already connected to
-                    !self.peers_ctx.peers.contains_key(*k)
+                    !connected_peers.contains(*k)
                     // avoid selecting peers we know are bad
                     && !self.peers_ctx.bad_peers.contains(*k)
                     // use peers we didn't try to connect to recently
@@ -67,50 +80,49 @@ impl TorrentManager {
                 })
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
-            drop(possible_peers_mg);
+        drop(possible_peers_mg);
 
-            log::debug!(
-                "trying to connect to {} peers",
-                self.torrent_manager_config.max_connected_peers - current_peers_n
-            );
-            let candidates_for_new_connections: Vec<_> = possible_peers
-                .sample(
-                    &mut rand::rng(),
-                    self.torrent_manager_config.max_connected_peers - current_peers_n,
-                )
-                .collect();
-            let piece_completion_status = self
-                .torrent_data_status
-                .as_ref()
-                .map(|f| f.current_piece_completion_status());
-            // todo: better algorithm to select new peers
-            for (_, (peer, _)) in candidates_for_new_connections.iter() {
-                let piece_completion_status = piece_completion_status.clone();
-                tokio::spawn(peer_handler::connect_to_new_peer(
-                    peer.ip.clone(),
-                    peer.port,
-                    self.torrent_manager_config.info_hash,
-                    self.torrent_manager_config.own_peer_id.clone(),
-                    self.torrent_manager_config.listening_dht_port,
-                    piece_completion_status,
-                    self.metadata_handler.raw_metadata_size(),
-                    self.peers_ctx.peer_handler_to_torrent_manager_tx.clone(),
-                ));
-            }
-            // update last connection attempt
-            let mut possible_peers_mg = self
-                .peers_ctx
-                .advertised_peers
-                .lock()
-                .expect("another user panicked while holding the lock");
-            for (peer_addr, _) in candidates_for_new_connections.iter() {
-                let possible_peer_entry = possible_peers_mg
-                    .get_mut(peer_addr)
-                    .expect("we filtered on this above");
-                possible_peer_entry.1 = now;
-            }
-            drop(possible_peers_mg);
+        log::debug!(
+            "trying to connect to {} peers",
+            self.torrent_manager_config.max_connected_peers - current_peers_n
+        );
+        let candidates_for_new_connections: Vec<_> = possible_peers
+            .sample(
+                &mut rand::rng(),
+                self.torrent_manager_config.max_connected_peers - current_peers_n,
+            )
+            .collect();
+        let piece_completion_status = self
+            .torrent_data_status
+            .as_ref()
+            .map(|f| f.current_piece_completion_status());
+        // todo: better algorithm to select new peers
+        for (_, (peer, _)) in candidates_for_new_connections.iter() {
+            let piece_completion_status = piece_completion_status.clone();
+            tokio::spawn(peer_handler::connect_to_new_peer(
+                peer.ip.clone(),
+                peer.port,
+                self.torrent_manager_config.info_hash,
+                self.torrent_manager_config.own_peer_id.clone(),
+                self.torrent_manager_config.listening_dht_port,
+                piece_completion_status,
+                self.metadata_handler.raw_metadata_size(),
+                self.peers_ctx.peer_handler_to_torrent_manager_tx.clone(),
+            ));
         }
+        // update last connection attempt
+        let mut possible_peers_mg = self
+            .peers_ctx
+            .advertised_peers
+            .lock()
+            .expect("another user panicked while holding the lock");
+        for (peer_addr, _) in candidates_for_new_connections.iter() {
+            let possible_peer_entry = possible_peers_mg
+                .get_mut(peer_addr)
+                .expect("we filtered on this above");
+            possible_peer_entry.1 = now;
+        }
+        drop(possible_peers_mg);
     }
 
     async fn send_keep_alives(&mut self) {

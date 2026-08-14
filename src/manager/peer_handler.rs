@@ -43,7 +43,11 @@ pub type FastExtensionSupport = bool;
 
 pub enum PeerHandlerToManagerMsg {
     Error(HostAndPort, PeerError),
-    NewPeer(TcpStream, FastExtensionSupport),
+    NewPeer {
+        tcp_stream: TcpStream,
+        supports_fast_extension: FastExtensionSupport,
+        listening_torrent_protocol_port: Option<u16>,
+    },
     PieceBlockRequestFulfilled(HostAndPort),
 }
 
@@ -135,7 +139,11 @@ pub async fn connect_to_new_peer(
                 Ok(Ok((tcp_stream, supports_fast_extension))) => {
                     send_handler_msg_to_torrent_manager(
                         &peer_handler_to_torrent_manager_tx,
-                        PeerHandlerToManagerMsg::NewPeer(tcp_stream, supports_fast_extension),
+                        PeerHandlerToManagerMsg::NewPeer {
+                            tcp_stream,
+                            supports_fast_extension,
+                            listening_torrent_protocol_port: Some(port),
+                        },
                     );
                 }
             }
@@ -272,7 +280,11 @@ pub async fn run_new_incoming_peers_handler(
                     Ok(Ok((tcp_stream, supports_fast_extension))) => {
                         send_handler_msg_to_torrent_manager(
                             &peer_handler_to_torrent_manager_tx_for_spawn,
-                            PeerHandlerToManagerMsg::NewPeer(tcp_stream, supports_fast_extension),
+                            PeerHandlerToManagerMsg::NewPeer {
+                                tcp_stream,
+                                supports_fast_extension,
+                                listening_torrent_protocol_port: None,
+                            },
                         );
                     }
                 }

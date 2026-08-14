@@ -26,11 +26,14 @@ pub(super) fn should_choke(
 
 impl TorrentManager {
     pub(super) fn remove_peer(&mut self, peer_addr: HostAndPort) {
-        self.pex_handler
-            .new_pex_event(peer_addr.clone(), PexEvent::Dropped);
-        if self.peers_ctx.peers.remove(&peer_addr).is_some() {
+        if let Some(peer) = self.peers_ctx.peers.remove(&peer_addr) {
             self.piece_requestor.remove_assigments_to_peer(&peer_addr);
+            if let Some(addr) = peer.get_peer_addr_and_listening_torrent_protocol_port() {
+                self.pex_handler.new_pex_event(addr, PexEvent::Dropped);
+                // todo we should also inform dht handler about this? maybe not, since it could be that the removal was "benign"
+            }
         }
+
         if self.peers_ctx.peers.len() < self.torrent_manager_config.max_connected_peers {
             self.peers_ctx
                 .to_new_incoming_peers_handler_tx

@@ -45,6 +45,9 @@ pub enum MetadataMessage {
 }
 
 pub struct Peer {
+    // peer_addr is ip:port of the remote peer we are connected to.
+    // Note that the port could NOT be one the peer is listening too for the torrent protocol,
+    // if the connection was initiate by the peer
     peer_addr: HostAndPort,
     am_choking: bool,
     am_choking_since: SystemTime,
@@ -68,6 +71,7 @@ pub struct Peer {
     rtt: Option<Duration>,
     rtt_samples: VecDeque<Duration>,
     supports_fast_extension: bool,
+    listening_torrent_protocol_port: Option<u16>,
 }
 
 impl Peer {
@@ -77,6 +81,7 @@ impl Peer {
         to_peer_tx: Sender<ToPeerMsg>,
         to_peer_cancel_tx: Sender<ToPeerCancelMsg>,
         supports_fast_extension: FastExtensionSupport,
+        listening_torrent_protocol_port: Option<u16>,
     ) -> Self {
         Peer {
             peer_addr,
@@ -102,7 +107,21 @@ impl Peer {
             supports_fast_extension,
             rtt: None,
             rtt_samples: VecDeque::new(),
+            listening_torrent_protocol_port,
         }
+    }
+
+    pub fn set_listening_torrent_protocol_port(&mut self, port: u16) {
+        self.listening_torrent_protocol_port = Some(port);
+    }
+
+    pub fn get_peer_addr_and_listening_torrent_protocol_port(&self) -> Option<HostAndPort> {
+        if let Some(port) = self.listening_torrent_protocol_port
+            && let Ok(addr) = self.peer_addr.parse::<SocketAddr>()
+        {
+            return Some(format!("{}:{}", addr.ip(), port));
+        }
+        None
     }
 
     pub fn get_peer_addr(&self) -> HostAndPort {

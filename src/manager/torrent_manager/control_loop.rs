@@ -70,8 +70,8 @@ impl TorrentManager {
                         PeerHandlerToManagerMsg::Error(peer_addr, error_type) => {
                             self.handle_peer_error(peer_addr, error_type);
                         }
-                        PeerHandlerToManagerMsg::NewPeer(tcp_stream, supports_fast_extension) => {
-                            self.handle_new_peer(tcp_stream, supports_fast_extension).await;
+                        PeerHandlerToManagerMsg::NewPeer { tcp_stream, supports_fast_extension, listening_torrent_protocol_port } => {
+                            self.handle_new_peer(tcp_stream, supports_fast_extension, listening_torrent_protocol_port).await;
                         }
                         PeerHandlerToManagerMsg::PieceBlockRequestFulfilled(peer_addr) => {
                             self.handle_piece_block_request_fulfilled(peer_addr);
@@ -109,7 +109,11 @@ impl TorrentManager {
         log::debug!("removing errored peer {peer_addr}");
         if error_type == PeerError::HandshakeError {
             // todo: understand other error cases that are not recoverable and should stop trying again on this peer
-            self.peers_ctx.bad_peers.insert(peer_addr.clone());
+            if let Some(peer) = self.peers_ctx.peers.get(&peer_addr)
+                && let Some(addr) = peer.get_peer_addr_and_listening_torrent_protocol_port()
+            {
+                self.peers_ctx.bad_peers.insert(addr);
+            }
         }
         self.remove_peer(peer_addr);
     }
@@ -124,12 +128,21 @@ impl TorrentManager {
         &mut self,
         tcp_stream: TcpStream,
         supports_fast_extension: FastExtensionSupport,
+        peer_listening_torrent_protocol_port: Option<u16>,
     ) {
         let peer_addr = match tcp_stream.peer_addr() {
             Ok(s) => {
-                // send to dht manager the fact that we know a new good peer
-                if let IpAddr::V4(peer_addr) = s.ip() {
-                    self.dht_handler.new_peer_connected(peer_addr, s.port())
+                if let Some(peer_torrent_port) = peer_listening_torrent_protocol_port {
+                    if let IpAddr::V4(peer_addr) = s.ip() {
+                        // send to dht manager the fact that we know a new good peer
+                        self.dht_handler
+                            .new_peer_connected(peer_addr, peer_torrent_port);
+                        // same for pex
+                        self.pex_handler.new_pex_event(
+                            format!("{peer_addr}:{peer_torrent_port}"),
+                            PexEvent::Added,
+                        );
+                    }
                 }
                 s.to_string()
             }
@@ -166,10 +179,10 @@ impl TorrentManager {
                 to_peer_tx,
                 to_peer_cancel_tx,
                 supports_fast_extension,
+                peer_listening_torrent_protocol_port,
             ),
         );
         log::debug!("new peer initialized: {peer_addr}");
-        self.pex_handler.new_pex_event(peer_addr, PexEvent::Added);
         if self.peers_ctx.peers.len() > self.torrent_manager_config.max_connected_peers {
             log::trace!("stop accepting new peers");
             self.peers_ctx

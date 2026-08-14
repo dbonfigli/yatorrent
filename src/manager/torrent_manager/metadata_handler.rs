@@ -332,8 +332,13 @@ impl TorrentManager {
                 .advertised_peers
                 .lock()
                 .expect("another user panicked while holding the lock");
-            for peer_addr in self.peers_ctx.peers.keys() {
-                if let Some((advertised_peer, _)) = advertised_peers_mg.remove(peer_addr) {
+            for peer_addr in self
+                .peers_ctx
+                .peers
+                .values()
+                .filter_map(|p| p.get_peer_addr_and_listening_torrent_protocol_port())
+            {
+                if let Some((advertised_peer, _)) = advertised_peers_mg.remove(&peer_addr) {
                     advertised_peers_mg
                         .insert(peer_addr.clone(), (advertised_peer, SystemTime::UNIX_EPOCH));
                 }
