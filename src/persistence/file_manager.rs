@@ -224,6 +224,11 @@ pub fn start_file_manager(
             "the total file size of all files exceed the #pieces * piece_length we have, the .torrent file / metedata could be malformed"
         );
     }
+    if total_file_size <= (normal_piece_length * (total_pieces as u64 - 1)) {
+        panic!(
+            "the total file size of all files does not cover all the declared pieces and piece_length we have, the .torrent file / metedata could be malformed"
+        );
+    }
 
     let file_paths_for_pieces =
         generate_file_paths_for_pieces(base_path, total_pieces, normal_piece_length, &file_list);
