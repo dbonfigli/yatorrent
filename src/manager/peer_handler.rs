@@ -332,14 +332,16 @@ async fn handshake(
     piece_completion_status: Option<Vec<bool>>,
     metadata_size: Option<i64>,
 ) -> Result<(TcpStream, FastExtensionSupport)> {
+    let own_peer_id = own_peer_id.as_bytes().try_into()?;
     let Handshake {
         pstr: peer_protocol,
         reserved,
         info_hash: peer_info_hash,
         peer_id,
-    } = stream
-        .handshake(info_hash, own_peer_id.as_bytes().try_into()?)
-        .await?;
+    } = stream.handshake(info_hash, own_peer_id).await?;
+    if peer_id == own_peer_id {
+        bail!("we are connecting to ouself");
+    }
     log::trace!(
         "received handshake info from {}: peer protocol: {peer_protocol}, info_hash: {}, peer_id: {}, reserved: {reserved:?}",
         addr_or_unknown(&stream),
