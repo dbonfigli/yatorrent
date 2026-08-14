@@ -1064,7 +1064,7 @@ impl DhtManager {
                 if s.len() > MAX_RESP_GET_PEERS_SIZE {
                     let oldest = *(s
                         .iter()
-                        .max_by_key(|(_, v)| **v)
+                        .min_by_key(|(_, v)| **v)
                         .expect("cannot be none since size is > 0")
                         .0);
                     s.remove(&oldest);
