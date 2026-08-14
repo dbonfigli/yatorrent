@@ -122,12 +122,12 @@ async fn main() -> Result<()> {
         }
     }
 
-    let max_download_bandwidth = get_bandwitdh(args.max_download_bandwidth).map(|d| {
+    let max_download_bandwidth = get_bandwidth(args.max_download_bandwidth).map(|d| {
         log::info!("capping download bandwidth at {d}");
         d.bytes()
     });
 
-    let max_upload_bandwidth = get_bandwitdh(args.max_upload_bandwidth).map(|d| {
+    let max_upload_bandwidth = get_bandwidth(args.max_upload_bandwidth).map(|d| {
         log::info!("capping upload bandwidth at {d}");
         d.bytes()
     });
@@ -239,7 +239,7 @@ async fn main() -> Result<()> {
     exit(1);
 }
 
-fn get_bandwitdh(bandwidth: Option<String>) -> Option<Size> {
+fn get_bandwidth(bandwidth: Option<String>) -> Option<Size> {
     bandwidth.map(|b| match Size::from_str(&b) {
         Err(e) => {
             log::error!("could not parse bandwidth {b}: {e}");
@@ -247,7 +247,7 @@ fn get_bandwitdh(bandwidth: Option<String>) -> Option<Size> {
         }
         Ok(v) => {
             if v.bytes() <= MAX_MESSAGE_SIZE_B.try_into().unwrap() {
-                log::error!("bandwitdh limit cannot be less than {MAX_MESSAGE_SIZE_B} bytes (the size of the biggest torrent protocol message we support)");
+                log::error!("bandwidth limit cannot be less than {MAX_MESSAGE_SIZE_B} bytes (the size of the biggest torrent protocol message we support)");
                 exit(1)
             }
             v
