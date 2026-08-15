@@ -246,7 +246,7 @@ fn get_bandwidth(bandwidth: Option<String>) -> Option<Size> {
             exit(1)
         }
         Ok(v) => {
-            if v.bytes() <= MAX_MESSAGE_SIZE_B.try_into().unwrap() {
+            if v.bytes() <= MAX_MESSAGE_SIZE_B.into() {
                 log::error!("bandwidth limit cannot be less than {MAX_MESSAGE_SIZE_B} bytes (the size of the biggest torrent protocol message we support)");
                 exit(1)
             }

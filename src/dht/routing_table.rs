@@ -62,9 +62,8 @@ pub fn biguint_to_u8_20(n: &BigUint) -> [u8; 20] {
         vec.insert(0, 0);
     }
 
-    vec.try_into().expect(
-        format!("could not convert biguint to [u8; 20] number is more than 20 bytes: {n}").as_str(),
-    )
+    vec.try_into()
+        .expect("could not convert biguint to [u8; 20] number is more than 20 bytes")
 }
 
 impl Bucket {

@@ -40,12 +40,15 @@ impl TrackerRequestor {
         bytes_left: Option<u64>,
         uploaded_downloaded_bytes: (u64, u64),
     ) {
-        let tracker_client_mg = self
-            .tracker_client
-            .lock()
-            .expect("another user panicked while holding the lock");
-        let tracker_request_interval = tracker_client_mg.tracker_request_interval;
-        drop(tracker_client_mg);
+        let tracker_request_interval = {
+            let tracker_client_mg = self
+                .tracker_client
+                .lock()
+                .expect("another user panicked while holding the lock");
+            let tracker_request_interval = tracker_client_mg.tracker_request_interval;
+            drop(tracker_client_mg);
+            tracker_request_interval
+        };
         if let Ok(elapsed) = SystemTime::now().duration_since(self.last_tracker_request_time)
             && elapsed > tracker_request_interval
         {

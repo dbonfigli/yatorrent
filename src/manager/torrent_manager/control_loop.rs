@@ -128,17 +128,15 @@ impl TorrentManager {
     ) {
         let peer_addr = match tcp_stream.peer_addr() {
             Ok(s) => {
-                if let Some(peer_torrent_port) = peer_listening_torrent_protocol_port {
-                    if let IpAddr::V4(peer_addr) = s.ip() {
-                        // send to dht manager the fact that we know a new good peer
-                        self.dht_handler
-                            .new_peer_connected(peer_addr, peer_torrent_port);
-                        // same for pex
-                        self.pex_handler.new_pex_event(
-                            format!("{peer_addr}:{peer_torrent_port}"),
-                            PexEvent::Added,
-                        );
-                    }
+                if let Some(peer_torrent_port) = peer_listening_torrent_protocol_port
+                    && let IpAddr::V4(peer_addr) = s.ip()
+                {
+                    // send to dht manager the fact that we know a new good peer
+                    self.dht_handler
+                        .new_peer_connected(peer_addr, peer_torrent_port);
+                    // same for pex
+                    self.pex_handler
+                        .new_pex_event(format!("{peer_addr}:{peer_torrent_port}"), PexEvent::Added);
                 }
                 s.to_string()
             }
