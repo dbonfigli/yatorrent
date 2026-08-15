@@ -319,7 +319,8 @@ fn read_data(
     block_begin: u64,
     block_length: u64,
 ) -> Result<Vec<u8>> {
-    let mut block_buf = Vec::<u8>::new();
+    let mut block_buf = vec![0u8; block_length as usize];
+    let mut block_buf_offset = 0;
     let mut current_piece_offset = 0;
     let mut block_bytes_still_to_read = block_length;
     for (file, start, end) in file_handles_for_piece.iter() {
@@ -348,9 +349,12 @@ fn read_data(
             block_bytes_still_to_read -= end - file_offset;
         }
 
-        let mut file_buf: Vec<u8> = vec![0; bytes_to_read as usize];
-        read_at(file, &mut file_buf, file_offset)?;
-        block_buf.append(&mut file_buf); // todo: optimize this more: avoid appending, create a buf large enough from the start
+        read_at(
+            file,
+            &mut block_buf[block_buf_offset..block_buf_offset + bytes_to_read as usize],
+            file_offset,
+        )?;
+        block_buf_offset += bytes_to_read as usize;
     }
 
     Ok(block_buf)
