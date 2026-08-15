@@ -22,7 +22,7 @@ use crate::{
         torrent_manager::{TorrentManager, file_manager_handler::FileManagerResponse},
     },
     tracker,
-    util::HostAndPort,
+    util::{HostAndPort, pretty_info_hash},
 };
 
 const TICK_INTERVAL: Duration = Duration::from_secs(1);
@@ -70,8 +70,8 @@ impl TorrentManager {
                         PeerHandlerToManagerMsg::Error(peer_addr, error_type) => {
                             self.handle_peer_error(peer_addr, error_type);
                         }
-                        PeerHandlerToManagerMsg::NewPeer { tcp_stream, supports_fast_extension, listening_torrent_protocol_port } => {
-                            self.handle_new_peer(tcp_stream, supports_fast_extension, listening_torrent_protocol_port).await;
+                        PeerHandlerToManagerMsg::NewPeer { tcp_stream, peer_id, supports_fast_extension, listening_torrent_protocol_port } => {
+                            self.handle_new_peer(tcp_stream, peer_id, supports_fast_extension, listening_torrent_protocol_port).await;
                         }
                         PeerHandlerToManagerMsg::PieceBlockRequestFulfilled(peer_addr) => {
                             self.handle_piece_block_request_fulfilled(peer_addr);
@@ -114,9 +114,25 @@ impl TorrentManager {
     async fn handle_new_peer(
         &mut self,
         tcp_stream: TcpStream,
+        peer_id: [u8; 20],
         supports_fast_extension: FastExtensionSupport,
         peer_listening_torrent_protocol_port: Option<u16>,
     ) {
+        // disconnect if we detect via peer_id that we are already connected to this peer
+        if self
+            .peers_ctx
+            .peers
+            .iter()
+            .find(|(_, p)| p.peer_id() == peer_id)
+            .is_some()
+        {
+            log::debug!(
+                "new peer initialization failed because we are already conneted to this peer with peer_id {}",
+                pretty_info_hash(peer_id)
+            );
+            return;
+        }
+
         let peer_addr = match tcp_stream.peer_addr() {
             Ok(s) => {
                 if let Some(peer_torrent_port) = peer_listening_torrent_protocol_port
@@ -162,6 +178,7 @@ impl TorrentManager {
             peer_addr.clone(),
             Peer::new(
                 peer_addr.clone(),
+                peer_id,
                 self.torrent_data_status.as_ref().map(|f| f.num_pieces()),
                 to_peer_tx,
                 to_peer_cancel_tx,

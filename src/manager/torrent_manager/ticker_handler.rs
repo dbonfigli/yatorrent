@@ -9,6 +9,7 @@ use crate::{
         torrent_manager::{TorrentManager, peer_context::AdvertisedPeer, util::should_choke},
     },
     torrent_protocol::wire_protocol::Message,
+    tracker,
     util::HostAndPort,
 };
 use rand::seq::IndexedRandom;
@@ -53,28 +54,45 @@ impl TorrentManager {
             return;
         }
 
-        let connected_peers: HashSet<HostAndPort> = self
+        let connected_peers_by_addr: HashSet<HostAndPort> = self
             .peers_ctx
             .peers
             .values()
             .filter_map(|p| p.get_peer_addr_and_listening_torrent_protocol_port())
             .collect();
+        let connected_peers_by_peer_id: HashSet<[u8; 20]> = self
+            .peers_ctx
+            .peers
+            .iter()
+            .map(|(_, p)| p.peer_id())
+            .collect();
         let now = SystemTime::now();
-        let possible_peers: Vec<(String, AdvertisedPeer)> = self.peers_ctx.advertised_peers
-                .get_snapshot()
-                .iter()
-                .filter(|(k,  AdvertisedPeer { last_connection_attempt, ..})| {
-                    // avoid selecting peers we are already connected to
-                    !connected_peers.contains(*k)
+        let possible_peers: Vec<(String, AdvertisedPeer)> = self
+            .peers_ctx
+            .advertised_peers
+            .get_snapshot()
+            .iter()
+            .filter(|(k, advertised_peer)| {
+                // avoid selecting peers we are already connected to
+                !connected_peers_by_addr.contains(*k)
+                    // do not connect to someone we are already connected to
+                    // (it can happen that the connection is remote initiated and did not send port, we can recognize them by the peer id)
+                    && !is_already_connected_with_same_peer_id(
+                        &advertised_peer.peer,
+                        &connected_peers_by_peer_id,
+                    )
                     // avoid selecting peers we know are bad
                     && !self.peers_ctx.is_bad_peer(k)
                     // use peers we didn't try to connect to recently
                     // this cool-off time is also important to avoid new connections to peers we attempted few secs ago
                     // and for which a connection attempt is still inflight
-                    && now.duration_since(*last_connection_attempt).unwrap_or_default() > NEW_CONNECTION_COOL_OFF_PERIOD
-                })
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
+                    && now
+                        .duration_since(advertised_peer.last_connection_attempt)
+                        .unwrap_or_default()
+                        > NEW_CONNECTION_COOL_OFF_PERIOD
+            })
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
 
         log::debug!(
             "trying to connect to {} peers",
@@ -224,4 +242,19 @@ impl TorrentManager {
             )
             .await;
     }
+}
+
+fn is_already_connected_with_same_peer_id(
+    peer: &tracker::Peer,
+    connected_peers_by_peer_id: &HashSet<[u8; 20]>,
+) -> bool {
+    let peer_id: Option<[u8; 20]> = peer
+        .peer_id
+        .as_deref()
+        .and_then(|s| s.as_bytes().try_into().ok());
+    let peer_id = match peer_id {
+        None => return false,
+        Some(peer_id) => peer_id,
+    };
+    connected_peers_by_peer_id.contains(&peer_id)
 }

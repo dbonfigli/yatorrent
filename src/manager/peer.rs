@@ -49,6 +49,7 @@ pub struct Peer {
     // Note that the port could NOT be one the peer is listening too for the torrent protocol,
     // if the connection was initiate by the peer
     peer_addr: HostAndPort,
+    peer_id: [u8; 20],
     am_choking: bool,
     am_choking_since: SystemTime,
     am_interested: bool,
@@ -77,6 +78,7 @@ pub struct Peer {
 impl Peer {
     pub fn new(
         peer_addr: HostAndPort,
+        peer_id: [u8; 20],
         num_pieces: Option<usize>,
         to_peer_tx: Sender<ToPeerMsg>,
         to_peer_cancel_tx: Sender<ToPeerCancelMsg>,
@@ -85,6 +87,7 @@ impl Peer {
     ) -> Self {
         Peer {
             peer_addr,
+            peer_id,
             am_choking: true,
             am_choking_since: SystemTime::UNIX_EPOCH,
             am_interested: false,
@@ -109,6 +112,10 @@ impl Peer {
             rtt_samples: VecDeque::new(),
             listening_torrent_protocol_port,
         }
+    }
+
+    pub fn peer_id(&self) -> [u8; 20] {
+        self.peer_id
     }
 
     pub fn set_listening_torrent_protocol_port(&mut self, port: u16) {

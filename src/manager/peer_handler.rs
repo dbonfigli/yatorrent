@@ -45,6 +45,7 @@ pub enum PeerHandlerToManagerMsg {
     Error(HostAndPort, PeerError),
     NewPeer {
         tcp_stream: TcpStream,
+        peer_id: [u8; 20],
         supports_fast_extension: FastExtensionSupport,
         listening_torrent_protocol_port: Option<u16>,
     },
@@ -68,7 +69,7 @@ pub type ToPeerCancelMsg = (BlockRequest, SystemTime); // block request, cancel 
 pub async fn connect_to_new_peer(
     host: String,
     port: u16,
-    peer_id: Option<String>,
+    advertised_peer_id: Option<String>,
     info_hash: [u8; 20],
     own_peer_id: String,
     listening_dht_port: u16,
@@ -79,7 +80,7 @@ pub async fn connect_to_new_peer(
     let dest: String = format!("{host}:{port}");
     log::trace!(
         "initiating connection to peer: {dest}, (id: {})",
-        peer_id.unwrap_or("unknown".to_string()),
+        advertised_peer_id.unwrap_or("unknown".to_string()),
     );
     match timeout(DEFAULT_TIMEOUT, TcpStream::connect(dest.clone())).await {
         Err(_elapsed) => {
@@ -146,11 +147,16 @@ pub async fn connect_to_new_peer(
                         ),
                     );
                 }
-                Ok(Ok((tcp_stream, supports_fast_extension))) => {
+                Ok(Ok(HandshakeResult {
+                    tcp_stream,
+                    peer_id,
+                    supports_fast_extension,
+                })) => {
                     send_handler_msg_to_torrent_manager(
                         &peer_handler_to_torrent_manager_tx,
                         PeerHandlerToManagerMsg::NewPeer {
                             tcp_stream,
+                            peer_id,
                             supports_fast_extension,
                             listening_torrent_protocol_port: Some(port),
                         },
@@ -287,11 +293,16 @@ pub async fn run_new_incoming_peers_handler(
                     Ok(Err(e)) => {
                         log::trace!("handshake failed with peer {remote_addr}: {e}");
                     }
-                    Ok(Ok((tcp_stream, supports_fast_extension))) => {
+                    Ok(Ok(HandshakeResult {
+                        tcp_stream,
+                        peer_id,
+                        supports_fast_extension,
+                    })) => {
                         send_handler_msg_to_torrent_manager(
                             &peer_handler_to_torrent_manager_tx_for_spawn,
                             PeerHandlerToManagerMsg::NewPeer {
                                 tcp_stream,
+                                peer_id,
                                 supports_fast_extension,
                                 listening_torrent_protocol_port: None,
                             },
@@ -346,6 +357,12 @@ pub fn start_peer_msg_handlers(
     });
 }
 
+struct HandshakeResult {
+    tcp_stream: TcpStream,
+    peer_id: [u8; 20],
+    supports_fast_extension: FastExtensionSupport,
+}
+
 async fn handshake(
     mut stream: TcpStream,
     info_hash: [u8; 20],
@@ -353,7 +370,7 @@ async fn handshake(
     listening_dht_port: u16,
     piece_completion_status: Option<Vec<bool>>,
     metadata_size: Option<i64>,
-) -> Result<(TcpStream, FastExtensionSupport)> {
+) -> Result<HandshakeResult> {
     let own_peer_id = own_peer_id.as_bytes().try_into()?;
     let Handshake {
         pstr: peer_protocol,
@@ -451,7 +468,11 @@ async fn handshake(
     let stream = read.unsplit(write);
 
     // handshake completed successfully
-    Ok((stream, supports_fast_extension))
+    Ok(HandshakeResult {
+        tcp_stream: stream,
+        peer_id,
+        supports_fast_extension,
+    })
 }
 
 async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
