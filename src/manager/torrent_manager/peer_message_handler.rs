@@ -404,7 +404,7 @@ impl TorrentManager {
                 pex_handler::handle_receive_extended_message_ut_pex(
                     extended_message,
                     peer_addr,
-                    self.peers_ctx.advertised_peers.clone(),
+                    &mut self.peers_ctx.advertised_peers,
                 );
             }
             _ if extension_id == peer.get_ut_metadata_id() => {

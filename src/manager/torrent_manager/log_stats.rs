@@ -12,13 +12,6 @@ const TIME_TO_CONSIDER_DOWNLOAD_STALLED: Duration = Duration::from_secs(15);
 
 impl TorrentManager {
     pub(super) fn log_stats(&self) {
-        let advertised_peers_lock = self
-            .peers_ctx
-            .advertised_peers
-            .lock()
-            .expect("another user panicked while holding the lock");
-        let advertised_peers_len = advertised_peers_lock.len();
-        drop(advertised_peers_lock);
         log::info!(
             "left: {left}, pieces: {completed_pieces}/{total_pieces}{metadata_pieces} | {bandwidth_tracker}{wasted} | known peers: {known_peers} (bad: {bad_peers}), connected: {connected_peers}, unchoked: {unchoked_peers} | pending msgs: incoming_peer_messages {cur_ch_cap}; read_reqs {read_reqs} (inflight: {inflight_read_ops}); write_reqs {write_reqs}",
             left = self
@@ -63,7 +56,7 @@ impl TorrentManager {
                     Size::from_bytes(w).format().with_style(Style::Abbreviated)
                 ),
             },
-            known_peers = advertised_peers_len,
+            known_peers = self.peers_ctx.advertised_peers.len(),
             bad_peers = self.peers_ctx.bad_peers.len(),
             connected_peers = self.peers_ctx.peers.len(),
             unchoked_peers =

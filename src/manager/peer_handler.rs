@@ -66,7 +66,7 @@ pub enum PeerError {
 pub type ToPeerCancelMsg = (BlockRequest, SystemTime); // block request, cancel time
 
 pub async fn connect_to_new_peer(
-    host: HostAndPort,
+    host: String,
     port: u16,
     info_hash: [u8; 20],
     own_peer_id: String,
@@ -620,7 +620,7 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                 }
             }
             ToPeerMsg::Disconnect() => {
-                break;
+                break; // todo: most probably this is useless if we drop to_peer_tx, revise this 
             }
         }
     }

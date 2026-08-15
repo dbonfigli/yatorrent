@@ -327,23 +327,17 @@ impl TorrentManager {
             log::warn!(
                 "resetting current connected peers to retrieve which block each peer has..."
             );
-            let mut advertised_peers_mg = self
-                .peers_ctx
-                .advertised_peers
-                .lock()
-                .expect("another user panicked while holding the lock");
-            for peer_addr in self
+
+            let connected_peers = self
                 .peers_ctx
                 .peers
                 .values()
                 .filter_map(|p| p.get_peer_addr_and_listening_torrent_protocol_port())
-            {
-                if let Some((advertised_peer, _)) = advertised_peers_mg.remove(&peer_addr) {
-                    advertised_peers_mg
-                        .insert(peer_addr.clone(), (advertised_peer, SystemTime::UNIX_EPOCH));
-                }
-            }
-            drop(advertised_peers_mg);
+                .collect();
+            self.peers_ctx
+                .advertised_peers
+                .wipe_last_connection_attempt(connected_peers);
+
             self.peers_ctx.peers = HashMap::new();
         }
     }

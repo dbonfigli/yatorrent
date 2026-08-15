@@ -43,6 +43,7 @@ const INCOMING_PEER_MESSAGES_CHANNEL_CAPACITY: usize = 50000;
 const BASE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 const HIGH_NUMBER_OF_BAD_PEERS: usize = 10000;
+const HIGH_NUMBER_OF_ADVERTISED_PEERS: usize = 10000;
 
 pub struct FilesData {
     pub file_list: Vec<FileEntry>,
@@ -97,7 +98,7 @@ struct TorrentManagerConfig {
 
 struct PeersContext {
     peers: HashMap<HostAndPort, Peer>,
-    advertised_peers: Arc<Mutex<HashMap<HostAndPort, (tracker::Peer, SystemTime)>>>, // peer addr -> (peer, last connection attempt)
+    advertised_peers: AdvertisedPeers,
     bad_peers: BadPeers,
     to_new_incoming_peers_handler_tx: UnboundedSender<ToNewIncomingPeersHandlerMsg>,
     to_new_incoming_peers_handler_rx: Option<UnboundedReceiver<ToNewIncomingPeersHandlerMsg>>, // optional bc we will move it to the incoming peer handler at start, todo: should we move creation of this channel there?
@@ -107,8 +108,98 @@ struct PeersContext {
     incoming_peer_messages_rx: Receiver<PeerMessage>,
 }
 
+#[derive(Clone)]
+struct AdvertisedPeer {
+    peer: tracker::Peer,
+    last_connection_attempt: SystemTime,
+    known_since: Instant,
+}
+
+#[derive(Clone)]
+pub struct AdvertisedPeers {
+    advertised_peers: Arc<Mutex<HashMap<HostAndPort, AdvertisedPeer>>>,
+}
+
+impl AdvertisedPeers {
+    fn new() -> Self {
+        AdvertisedPeers {
+            advertised_peers: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn update_last_connection_attempt(&mut self, peers: Vec<HostAndPort>) {
+        let mut possible_peers_mg = self
+            .advertised_peers
+            .lock()
+            .expect("another user panicked while holding the lock");
+        for peer_addr in peers.iter() {
+            possible_peers_mg
+                .entry(peer_addr.clone())
+                .and_modify(|possible_peer_entry| {
+                    possible_peer_entry.last_connection_attempt = SystemTime::now()
+                });
+        }
+    }
+
+    pub fn wipe_last_connection_attempt(&mut self, peers: Vec<HostAndPort>) {
+        let mut advertised_peers_mg = self
+            .advertised_peers
+            .lock()
+            .expect("another user panicked while holding the lock");
+        for peer_addr in peers {
+            if let Some(v) = advertised_peers_mg.get_mut(&peer_addr) {
+                v.last_connection_attempt = SystemTime::UNIX_EPOCH;
+            }
+        }
+    }
+
+    pub fn insert(&mut self, peers: Vec<tracker::Peer>) {
+        let mut advertised_peers_mg = self
+            .advertised_peers
+            .lock()
+            .expect("another user panicked while holding the lock");
+        peers.iter().for_each(|p: &tracker::Peer| {
+            advertised_peers_mg
+                .entry(format!("{}:{}", p.ip, p.port))
+                .or_insert(AdvertisedPeer {
+                    peer: p.clone(),
+                    last_connection_attempt: SystemTime::UNIX_EPOCH,
+                    known_since: Instant::now(),
+                });
+        });
+
+        if advertised_peers_mg.len() > HIGH_NUMBER_OF_ADVERTISED_PEERS * 2 {
+            let to_remove = advertised_peers_mg.len() / 2;
+
+            let mut oldest: Vec<_> = advertised_peers_mg
+                .iter()
+                .map(|(peer, AdvertisedPeer { known_since, .. })| (peer.clone(), *known_since))
+                .collect();
+            oldest.sort_unstable_by_key(|(_, timestamp)| *timestamp);
+
+            for (peer, _) in oldest.into_iter().take(to_remove) {
+                advertised_peers_mg.remove(&peer);
+            }
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.advertised_peers
+            .lock()
+            .expect("another user panicked while holding the lock")
+            .len()
+    }
+
+    fn get_snapshot(&self) -> HashMap<HostAndPort, AdvertisedPeer> {
+        self.advertised_peers
+            .lock()
+            .expect("another user panicked while holding the lock")
+            .clone()
+    }
+}
+
 struct BadPeers {
-    bad_peers: HashMap<HostAndPort, Instant>,
+    bad_peers: HashMap<HostAndPort, Instant>, // peer -> insertion time as bad peer
 }
 
 impl BadPeers {
@@ -171,7 +262,7 @@ impl TorrentManager {
         let own_peer_id = generate_peer_id();
         let base_path = Path::new(&opts.storage_opts.base_path);
 
-        let mut initial_advertised_peers = HashMap::new();
+        let mut initial_advertised_peers = Vec::new();
         for peer_addr in opts.network_opts.initial_peers {
             let ip_and_port = peer_addr
                 .rsplit_once(':')
@@ -185,9 +276,10 @@ impl TorrentManager {
                     .parse::<u16>()
                     .expect("all initial peers should be of the host:port format"),
             };
-            initial_advertised_peers.insert(peer_addr, (p, SystemTime::UNIX_EPOCH));
+            initial_advertised_peers.push(p);
         }
-        let advertised_peers = Arc::new(Mutex::new(initial_advertised_peers));
+        let mut advertised_peers = AdvertisedPeers::new();
+        advertised_peers.insert(initial_advertised_peers);
 
         let torrent_manager_config = TorrentManagerConfig {
             base_path: PathBuf::from(base_path),

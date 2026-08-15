@@ -1,11 +1,10 @@
 use anyhow::{Result, bail};
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use crate::manager::torrent_manager::AdvertisedPeers;
 use crate::tracker;
 use crate::tracker::{Event, NoTrackerError, Response, TrackerClient};
-use crate::util::HostAndPort;
 
 pub struct TrackerRequestor {
     tracker_client: Arc<Mutex<TrackerClient>>,
@@ -36,7 +35,7 @@ impl TrackerRequestor {
     // used to send recurring updates to tracker
     pub async fn async_update_to_tracker(
         &mut self,
-        advertised_peers: Arc<Mutex<HashMap<HostAndPort, (tracker::Peer, SystemTime)>>>,
+        advertised_peers: &AdvertisedPeers,
         bytes_left: Option<u64>,
         uploaded_downloaded_bytes: (u64, u64),
     ) {
@@ -71,7 +70,7 @@ impl TrackerRequestor {
     pub async fn async_request_to_tracker(
         &mut self,
         event: Event,
-        advertised_peers: Arc<Mutex<HashMap<HostAndPort, (tracker::Peer, SystemTime)>>>,
+        advertised_peers: &AdvertisedPeers,
         bytes_left: Option<u64>,
         uploaded_downloaded_bytes: (u64, u64),
     ) {
@@ -92,6 +91,7 @@ impl TrackerRequestor {
         drop(tracker_client_mg);
         let tracker_client_arc = self.tracker_client.clone();
         let info_hash = self.info_hash;
+        let mut advertised_peers = advertised_peers.clone();
         tokio::spawn(async move {
             if let Ok((updated_tracker_client, latest_advertised_peers)) = request_to_tracker(
                 tracker_client,
@@ -103,12 +103,12 @@ impl TrackerRequestor {
             )
             .await
             {
-                update_tracker_client_and_advertised_peers(
-                    tracker_client_arc,
-                    advertised_peers,
-                    updated_tracker_client,
-                    latest_advertised_peers,
-                );
+                let mut tracker_client_mg = tracker_client_arc
+                    .lock()
+                    .expect("another user panicked while holding the lock");
+                *tracker_client_mg = updated_tracker_client;
+                drop(tracker_client_mg);
+                advertised_peers.insert(latest_advertised_peers);
             }
         });
     }
@@ -158,26 +158,4 @@ async fn request_to_tracker(
             Ok((tracker_client, ok_response.peers))
         }
     }
-}
-
-fn update_tracker_client_and_advertised_peers(
-    tracker_client: Arc<Mutex<TrackerClient>>,
-    advertised_peers: Arc<Mutex<HashMap<HostAndPort, (tracker::Peer, SystemTime)>>>,
-    updated_tracker_client: TrackerClient,
-    latest_advertised_peers: Vec<tracker::Peer>,
-) {
-    let mut tracker_client_mg = tracker_client
-        .lock()
-        .expect("another user panicked while holding the lock");
-    *tracker_client_mg = updated_tracker_client;
-    drop(tracker_client_mg);
-    let mut advertised_peers = advertised_peers
-        .lock()
-        .expect("another user panicked while holding the lock");
-    latest_advertised_peers.iter().for_each(|p| {
-        advertised_peers
-            .entry(format!("{}:{}", p.ip, p.port))
-            .or_insert((p.clone(), SystemTime::UNIX_EPOCH));
-    });
-    drop(advertised_peers);
 }

@@ -1,12 +1,11 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
     time::{Duration, SystemTime},
 };
 
 use crate::{
     bencoding::Value::{self, Dict, Str},
-    manager::peer::Peer,
+    manager::{peer::Peer, torrent_manager::AdvertisedPeers},
     tracker,
     util::HostAndPort,
 };
@@ -71,7 +70,7 @@ impl PexHandler {
 pub fn handle_receive_extended_message_ut_pex(
     extended_message: Value,
     peer_addr: HostAndPort,
-    advertised_peers: Arc<Mutex<HashMap<HostAndPort, (tracker::Peer, SystemTime)>>>,
+    advertised_peers: &mut AdvertisedPeers,
 ) {
     let d = match extended_message {
         Dict { dict: d, .. } => d,
@@ -110,13 +109,7 @@ pub fn handle_receive_extended_message_ut_pex(
                 ip: ip.clone(),
                 port,
             };
-            let mut advertised_peers_mg = advertised_peers
-                .lock()
-                .expect("another user panicked while holding the lock");
-            advertised_peers_mg
-                .entry(format!("{ip}:{port}"))
-                .or_insert((p, SystemTime::UNIX_EPOCH));
-            drop(advertised_peers_mg);
+            advertised_peers.insert(vec![p]);
         }
     }
 }

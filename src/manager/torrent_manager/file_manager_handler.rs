@@ -189,7 +189,7 @@ impl TorrentManager {
                         self.tracker_requestor
                             .async_request_to_tracker(
                                 Event::Completed,
-                                self.peers_ctx.advertised_peers.clone(),
+                                &self.peers_ctx.advertised_peers,
                                 self.torrent_data_status.as_ref().map(|f| f.bytes_left()),
                                 (
                                     self.bandwidth_tracker.uploaded_bytes(),

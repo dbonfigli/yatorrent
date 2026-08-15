@@ -1,6 +1,6 @@
 use std::{
     net::{IpAddr, Ipv4Addr},
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 
 use tokio::{
@@ -89,20 +89,11 @@ impl TorrentManager {
     }
 
     fn handle_new_peer_from_dht(&mut self, ip: Ipv4Addr, port: u16) {
-        let p = tracker::Peer {
+        self.peers_ctx.advertised_peers.insert(vec![tracker::Peer {
             peer_id: None,
             ip: ip.to_string(),
             port,
-        };
-        let mut advertised_peers_mg = self
-            .peers_ctx
-            .advertised_peers
-            .lock()
-            .expect("another user panicked while holding the lock");
-        advertised_peers_mg
-            .entry(format!("{ip}:{port}"))
-            .or_insert((p, SystemTime::UNIX_EPOCH));
-        drop(advertised_peers_mg);
+        }]);
     }
 
     fn handle_peer_error(&mut self, peer_addr: HostAndPort, error_type: PeerError) {
