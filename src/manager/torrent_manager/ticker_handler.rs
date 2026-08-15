@@ -72,7 +72,7 @@ impl TorrentManager {
                     // avoid selecting peers we are already connected to
                     !connected_peers.contains(*k)
                     // avoid selecting peers we know are bad
-                    && !self.peers_ctx.bad_peers.contains(*k)
+                    && !self.peers_ctx.bad_peers.is_bad_peer(k)
                     // use peers we didn't try to connect to recently
                     // this cool-off time is also important to avoid new connections to peers we attempted few secs ago
                     // and for which a connection attempt is still inflight

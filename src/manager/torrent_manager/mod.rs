@@ -1,8 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use std::{iter, path::Path};
 
 use rand::RngExt;
@@ -41,6 +41,8 @@ const INCOMING_PEER_MESSAGES_CHANNEL_CAPACITY: usize = 50000;
 // decreasing this will waste more bandwidth (needlessly requesting the same block again even if a peer sends it eventually) but will make retries for pieces requested to slow peers faster
 // eventually we should tune this respect to download spped from a peer and how many outstanding requests we made
 const BASE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+const HIGH_NUMBER_OF_BAD_PEERS: usize = 10000;
 
 pub struct FilesData {
     pub file_list: Vec<FileEntry>,
@@ -96,13 +98,52 @@ struct TorrentManagerConfig {
 struct PeersContext {
     peers: HashMap<HostAndPort, Peer>,
     advertised_peers: Arc<Mutex<HashMap<HostAndPort, (tracker::Peer, SystemTime)>>>, // peer addr -> (peer, last connection attempt)
-    bad_peers: HashSet<HostAndPort>, // todo: remove old bad peers after a while?
+    bad_peers: BadPeers,
     to_new_incoming_peers_handler_tx: UnboundedSender<ToNewIncomingPeersHandlerMsg>,
     to_new_incoming_peers_handler_rx: Option<UnboundedReceiver<ToNewIncomingPeersHandlerMsg>>, // optional bc we will move it to the incoming peer handler at start, todo: should we move creation of this channel there?
     peer_handler_to_torrent_manager_tx: UnboundedSender<PeerHandlerToManagerMsg>,
     peer_handler_to_torrent_manager_rx: UnboundedReceiver<PeerHandlerToManagerMsg>,
     incoming_peer_messages_tx: Sender<PeerMessage>,
     incoming_peer_messages_rx: Receiver<PeerMessage>,
+}
+
+struct BadPeers {
+    bad_peers: HashMap<HostAndPort, Instant>,
+}
+
+impl BadPeers {
+    fn new() -> Self {
+        BadPeers {
+            bad_peers: HashMap::new(),
+        }
+    }
+
+    fn insert_bad_peer(&mut self, bad_peer: HostAndPort) {
+        self.bad_peers.insert(bad_peer, Instant::now());
+
+        if self.bad_peers.len() > HIGH_NUMBER_OF_BAD_PEERS * 2 {
+            let to_remove = self.bad_peers.len() / 2;
+
+            let mut oldest: Vec<_> = self
+                .bad_peers
+                .iter()
+                .map(|(peer, timestamp)| (peer.clone(), *timestamp))
+                .collect();
+            oldest.sort_unstable_by_key(|(_, timestamp)| *timestamp);
+
+            for (peer, _) in oldest.into_iter().take(to_remove) {
+                self.bad_peers.remove(&peer);
+            }
+        }
+    }
+
+    fn is_bad_peer(&self, bad_peer: &HostAndPort) -> bool {
+        self.bad_peers.contains_key(bad_peer)
+    }
+
+    fn len(&self) -> usize {
+        self.bad_peers.len()
+    }
 }
 
 struct GlobalRateLimiter {
@@ -181,7 +222,7 @@ impl TorrentManager {
         let peers_ctx = PeersContext {
             peers: HashMap::new(),
             advertised_peers,
-            bad_peers: HashSet::new(),
+            bad_peers: BadPeers::new(),
             to_new_incoming_peers_handler_tx,
             to_new_incoming_peers_handler_rx: Some(to_new_incoming_peers_handler_rx),
             peer_handler_to_torrent_manager_tx,

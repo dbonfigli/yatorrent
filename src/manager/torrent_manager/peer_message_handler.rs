@@ -139,7 +139,7 @@ impl TorrentManager {
                 "got message \"have\" {piece_idx} from peer {peer_addr} but the torrent have only {} pieces",
                 torrent_data_status.num_pieces()
             );
-            self.peers_ctx.bad_peers.insert(peer_addr.clone());
+            self.peers_ctx.bad_peers.insert_bad_peer(peer_addr.clone());
             peer.send(ToPeerMsg::Disconnect()).await;
             self.remove_peer(peer_addr);
         }
@@ -161,7 +161,7 @@ impl TorrentManager {
                 bitfield.len(),
                 torrent_data_status.num_pieces()
             );
-            self.peers_ctx.bad_peers.insert(peer_addr.clone());
+            self.peers_ctx.bad_peers.insert_bad_peer(peer_addr.clone());
             if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
                 peer.send(ToPeerMsg::Disconnect()).await;
             }

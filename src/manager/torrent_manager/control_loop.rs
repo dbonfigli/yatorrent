@@ -109,7 +109,7 @@ impl TorrentManager {
         log::debug!("removing errored peer {peer_addr}");
         if error_type == PeerError::SelfInitiatedHandshakeError {
             // todo: understand other error cases that are not recoverable and should stop trying again on this peer
-            self.peers_ctx.bad_peers.insert(peer_addr.clone());
+            self.peers_ctx.bad_peers.insert_bad_peer(peer_addr.clone());
         }
         self.remove_peer(peer_addr);
     }
