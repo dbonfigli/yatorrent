@@ -6,7 +6,7 @@ use std::{
 use crate::{
     manager::{
         peer_handler::{self, ToPeerMsg},
-        torrent_manager::{AdvertisedPeer, TorrentManager, util::should_choke},
+        torrent_manager::{TorrentManager, peer_context::AdvertisedPeer, util::should_choke},
     },
     torrent_protocol::wire_protocol::Message,
     util::HostAndPort,
@@ -67,7 +67,7 @@ impl TorrentManager {
                     // avoid selecting peers we are already connected to
                     !connected_peers.contains(*k)
                     // avoid selecting peers we know are bad
-                    && !self.peers_ctx.bad_peers.is_bad_peer(k)
+                    && !self.peers_ctx.is_bad_peer(k)
                     // use peers we didn't try to connect to recently
                     // this cool-off time is also important to avoid new connections to peers we attempted few secs ago
                     // and for which a connection attempt is still inflight
@@ -96,12 +96,15 @@ impl TorrentManager {
             tokio::spawn(peer_handler::connect_to_new_peer(
                 advertised_peer.peer.ip.clone(),
                 advertised_peer.peer.port,
+                advertised_peer.peer.peer_id.clone(),
                 self.torrent_manager_config.info_hash,
                 self.torrent_manager_config.own_peer_id.clone(),
                 self.torrent_manager_config.listening_dht_port,
                 piece_completion_status,
                 self.metadata_handler.raw_metadata_size(),
-                self.peers_ctx.peer_handler_to_torrent_manager_tx.clone(),
+                self.peers_channels
+                    .peer_handler_to_torrent_manager_tx
+                    .clone(),
             ));
         }
         // update last connection attempt
@@ -129,7 +132,7 @@ impl TorrentManager {
                     .unwrap_or_default()
                     > MIN_CHOKE_TIME
                 && !should_choke(
-                    self.peers_ctx.incoming_peer_messages_tx.capacity(),
+                    self.peers_channels.incoming_peer_messages_tx.capacity(),
                     peer.get_outstanding_incoming_piece_block_requests(),
                     self.torrent_data_status.is_some(),
                     &self.file_manager_handler,

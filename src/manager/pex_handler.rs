@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     bencoding::Value::{self, Dict, Str},
-    manager::{peer::Peer, torrent_manager::AdvertisedPeers},
+    manager::peer::Peer,
     tracker,
     util::HostAndPort,
 };
@@ -67,18 +67,17 @@ impl PexHandler {
     }
 }
 
-pub fn handle_receive_extended_message_ut_pex(
+pub fn parse_extended_message_ut_pex(
     extended_message: Value,
     peer_addr: HostAndPort,
-    advertised_peers: &mut AdvertisedPeers,
-) {
+) -> Option<tracker::Peer> {
     let d = match extended_message {
         Dict { dict: d, .. } => d,
         _ => {
             log::debug!(
                 "got a PEX message from {peer_addr}, it was a bencoded value but not a dict, ignoring it"
             );
-            return;
+            return None;
         }
     };
     // todo: should we also use the dropped list? atm we are eager to hoard all possible peers so we ignore it
@@ -88,7 +87,7 @@ pub fn handle_receive_extended_message_ut_pex(
             log::debug!(
                 "got a PEX message from {peer_addr} with an \"added\" field that is not divisible by 6, ignoring it"
             );
-            return;
+            return None;
         }
         for i in (0..compact_contacts_info.len()).step_by(6) {
             let mut peer_ip_buf: [u8; 4] = [0; 4];
@@ -109,7 +108,9 @@ pub fn handle_receive_extended_message_ut_pex(
                 ip: ip.clone(),
                 port,
             };
-            advertised_peers.insert(vec![p]);
+            return Some(p);
         }
     }
+
+    None
 }

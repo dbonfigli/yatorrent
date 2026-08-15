@@ -57,7 +57,7 @@ impl TorrentManager {
                 ),
             },
             known_peers = self.peers_ctx.advertised_peers.len(),
-            bad_peers = self.peers_ctx.bad_peers.len(),
+            bad_peers = self.peers_ctx.bad_peers_count(),
             connected_peers = self.peers_ctx.peers.len(),
             unchoked_peers =
                 self.peers_ctx
@@ -69,7 +69,7 @@ impl TorrentManager {
                         acc
                     }),
             cur_ch_cap = INCOMING_PEER_MESSAGES_CHANNEL_CAPACITY
-                - self.peers_ctx.incoming_peer_messages_tx.capacity(),
+                - self.peers_channels.incoming_peer_messages_tx.capacity(),
             read_reqs = self.file_manager_handler.inflight_read_reqs(),
             inflight_read_ops = self.file_manager_handler.outstanding_read_ops(),
             write_reqs = self.file_manager_handler.inflight_write_reqs(),

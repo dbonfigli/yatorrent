@@ -304,7 +304,7 @@ impl TorrentManager {
             ));
 
             // update new incoming peers handler with new data info
-            self.peers_ctx
+            self.peers_channels
                 .to_new_incoming_peers_handler_tx
                 .send(ToNewIncomingPeersHandlerMsg::TorrentDataInitialized {
                     metadata_size: self

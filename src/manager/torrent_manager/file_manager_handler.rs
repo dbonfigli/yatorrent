@@ -204,7 +204,7 @@ impl TorrentManager {
                     }
 
                     let _ = self
-                        .peers_ctx
+                        .peers_channels
                         .to_new_incoming_peers_handler_tx
                         .send(ToNewIncomingPeersHandlerMsg::PieceCompleted(piece_idx));
 

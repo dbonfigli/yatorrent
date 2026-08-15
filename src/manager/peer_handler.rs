@@ -68,6 +68,7 @@ pub type ToPeerCancelMsg = (BlockRequest, SystemTime); // block request, cancel 
 pub async fn connect_to_new_peer(
     host: String,
     port: u16,
+    peer_id: Option<String>,
     info_hash: [u8; 20],
     own_peer_id: String,
     listening_dht_port: u16,
@@ -76,7 +77,10 @@ pub async fn connect_to_new_peer(
     peer_handler_to_torrent_manager_tx: UnboundedSender<PeerHandlerToManagerMsg>,
 ) {
     let dest: String = format!("{host}:{port}");
-    log::trace!("initiating connection to peer: {dest}");
+    log::trace!(
+        "initiating connection to peer: {dest}, (id: {})",
+        peer_id.unwrap_or("unknown".to_string()),
+    );
     match timeout(DEFAULT_TIMEOUT, TcpStream::connect(dest.clone())).await {
         Err(_elapsed) => {
             log::trace!("timed out connecting to peer {dest}");

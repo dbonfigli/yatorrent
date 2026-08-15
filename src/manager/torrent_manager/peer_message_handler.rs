@@ -139,8 +139,8 @@ impl TorrentManager {
                 "got message \"have\" {piece_idx} from peer {peer_addr} but the torrent have only {} pieces",
                 torrent_data_status.num_pieces()
             );
-            self.peers_ctx.bad_peers.insert_bad_peer(peer_addr.clone());
             peer.send(ToPeerMsg::Disconnect()).await;
+            self.peers_ctx.insert_bad_peer(peer_addr.clone());
             self.remove_peer(peer_addr);
         }
     }
@@ -161,7 +161,7 @@ impl TorrentManager {
                 bitfield.len(),
                 torrent_data_status.num_pieces()
             );
-            self.peers_ctx.bad_peers.insert_bad_peer(peer_addr.clone());
+            self.peers_ctx.insert_bad_peer(peer_addr.clone());
             if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
                 peer.send(ToPeerMsg::Disconnect()).await;
             }
@@ -238,7 +238,7 @@ impl TorrentManager {
         if !peer.get_am_choking()
             && util::should_choke(
                 // todo: choking algorithm is really naive, must improve it to avoid saturating upload
-                self.peers_ctx.incoming_peer_messages_tx.capacity(),
+                self.peers_channels.incoming_peer_messages_tx.capacity(),
                 peer.get_outstanding_incoming_piece_block_requests(),
                 true,
                 &self.file_manager_handler,
@@ -401,11 +401,11 @@ impl TorrentManager {
             }
             _ if extension_id == peer.get_ut_pex_id() => {
                 // this is an ut_pex extended message
-                pex_handler::handle_receive_extended_message_ut_pex(
-                    extended_message,
-                    peer_addr,
-                    &mut self.peers_ctx.advertised_peers,
-                );
+                if let Some(p) =
+                    pex_handler::parse_extended_message_ut_pex(extended_message, peer_addr)
+                {
+                    self.peers_ctx.advertised_peers.insert(vec![p]);
+                }
             }
             _ if extension_id == peer.get_ut_metadata_id() => {
                 // this is an ut_metadata extended message

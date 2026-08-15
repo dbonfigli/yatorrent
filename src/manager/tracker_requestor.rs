@@ -2,7 +2,7 @@ use anyhow::{Result, bail};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use crate::manager::torrent_manager::AdvertisedPeers;
+use crate::manager::torrent_manager::peer_context::AdvertisedPeers;
 use crate::tracker;
 use crate::tracker::{Event, NoTrackerError, Response, TrackerClient};
 

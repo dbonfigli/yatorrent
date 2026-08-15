@@ -1,8 +1,7 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::sync::Arc;
+use std::time::Duration;
 use std::{iter, path::Path};
 
 use rand::RngExt;
@@ -11,14 +10,14 @@ use tokio::sync::mpsc::{self, Receiver, Sender, UnboundedReceiver, UnboundedSend
 use crate::manager::bandwidth_tracker::BandwidthTracker;
 
 use crate::manager::dht_handler::DhtHandler;
-use crate::manager::peer::Peer;
-use crate::manager::peer_handler::{self, PeerHandlerToManagerMsg};
-use crate::manager::peer_handler::{PeerMessage, ToNewIncomingPeersHandlerMsg};
+use crate::manager::peer_handler::PeerMessage;
+use crate::manager::peer_handler::{self, PeerHandlerToManagerMsg, ToNewIncomingPeersHandlerMsg};
 use crate::manager::pex_handler::PexHandler;
 use crate::manager::piece_requestor::PieceRequestor;
 use crate::manager::rate_limiter::RateLimiter;
 use crate::manager::torrent_manager::file_manager_handler::FileManagerHandler;
 use crate::manager::torrent_manager::metadata_handler::MetadataHandler;
+use crate::manager::torrent_manager::peer_context::PeersContext;
 use crate::manager::tracker_requestor::TrackerRequestor;
 use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::tracker;
@@ -28,6 +27,7 @@ mod control_loop;
 mod file_manager_handler;
 mod log_stats;
 mod metadata_handler;
+pub mod peer_context;
 mod peer_message_handler;
 mod ticker_handler;
 mod util;
@@ -41,9 +41,6 @@ const INCOMING_PEER_MESSAGES_CHANNEL_CAPACITY: usize = 50000;
 // decreasing this will waste more bandwidth (needlessly requesting the same block again even if a peer sends it eventually) but will make retries for pieces requested to slow peers faster
 // eventually we should tune this respect to download spped from a peer and how many outstanding requests we made
 const BASE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
-
-const HIGH_NUMBER_OF_BAD_PEERS: usize = 10000;
-const HIGH_NUMBER_OF_ADVERTISED_PEERS: usize = 10000;
 
 pub struct FilesData {
     pub file_list: Vec<FileEntry>,
@@ -96,145 +93,13 @@ struct TorrentManagerConfig {
     exit_when_complete: bool,
 }
 
-struct PeersContext {
-    peers: HashMap<HostAndPort, Peer>,
-    advertised_peers: AdvertisedPeers,
-    bad_peers: BadPeers,
+struct PeersChannels {
     to_new_incoming_peers_handler_tx: UnboundedSender<ToNewIncomingPeersHandlerMsg>,
     to_new_incoming_peers_handler_rx: Option<UnboundedReceiver<ToNewIncomingPeersHandlerMsg>>, // optional bc we will move it to the incoming peer handler at start, todo: should we move creation of this channel there?
     peer_handler_to_torrent_manager_tx: UnboundedSender<PeerHandlerToManagerMsg>,
     peer_handler_to_torrent_manager_rx: UnboundedReceiver<PeerHandlerToManagerMsg>,
     incoming_peer_messages_tx: Sender<PeerMessage>,
     incoming_peer_messages_rx: Receiver<PeerMessage>,
-}
-
-#[derive(Clone)]
-struct AdvertisedPeer {
-    peer: tracker::Peer,
-    last_connection_attempt: SystemTime,
-    known_since: Instant,
-}
-
-#[derive(Clone)]
-pub struct AdvertisedPeers {
-    advertised_peers: Arc<Mutex<HashMap<HostAndPort, AdvertisedPeer>>>,
-}
-
-impl AdvertisedPeers {
-    fn new() -> Self {
-        AdvertisedPeers {
-            advertised_peers: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    pub fn update_last_connection_attempt(&mut self, peers: Vec<HostAndPort>) {
-        let mut possible_peers_mg = self
-            .advertised_peers
-            .lock()
-            .expect("another user panicked while holding the lock");
-        for peer_addr in peers.iter() {
-            possible_peers_mg
-                .entry(peer_addr.clone())
-                .and_modify(|possible_peer_entry| {
-                    possible_peer_entry.last_connection_attempt = SystemTime::now()
-                });
-        }
-    }
-
-    pub fn wipe_last_connection_attempt(&mut self, peers: Vec<HostAndPort>) {
-        let mut advertised_peers_mg = self
-            .advertised_peers
-            .lock()
-            .expect("another user panicked while holding the lock");
-        for peer_addr in peers {
-            if let Some(v) = advertised_peers_mg.get_mut(&peer_addr) {
-                v.last_connection_attempt = SystemTime::UNIX_EPOCH;
-            }
-        }
-    }
-
-    pub fn insert(&mut self, peers: Vec<tracker::Peer>) {
-        let mut advertised_peers_mg = self
-            .advertised_peers
-            .lock()
-            .expect("another user panicked while holding the lock");
-        peers.iter().for_each(|p: &tracker::Peer| {
-            advertised_peers_mg
-                .entry(format!("{}:{}", p.ip, p.port))
-                .or_insert(AdvertisedPeer {
-                    peer: p.clone(),
-                    last_connection_attempt: SystemTime::UNIX_EPOCH,
-                    known_since: Instant::now(),
-                });
-        });
-
-        if advertised_peers_mg.len() > HIGH_NUMBER_OF_ADVERTISED_PEERS * 2 {
-            let to_remove = advertised_peers_mg.len() / 2;
-
-            let mut oldest: Vec<_> = advertised_peers_mg
-                .iter()
-                .map(|(peer, AdvertisedPeer { known_since, .. })| (peer.clone(), *known_since))
-                .collect();
-            oldest.sort_unstable_by_key(|(_, timestamp)| *timestamp);
-
-            for (peer, _) in oldest.into_iter().take(to_remove) {
-                advertised_peers_mg.remove(&peer);
-            }
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.advertised_peers
-            .lock()
-            .expect("another user panicked while holding the lock")
-            .len()
-    }
-
-    fn get_snapshot(&self) -> HashMap<HostAndPort, AdvertisedPeer> {
-        self.advertised_peers
-            .lock()
-            .expect("another user panicked while holding the lock")
-            .clone()
-    }
-}
-
-struct BadPeers {
-    bad_peers: HashMap<HostAndPort, Instant>, // peer -> insertion time as bad peer
-}
-
-impl BadPeers {
-    fn new() -> Self {
-        BadPeers {
-            bad_peers: HashMap::new(),
-        }
-    }
-
-    fn insert_bad_peer(&mut self, bad_peer: HostAndPort) {
-        self.bad_peers.insert(bad_peer, Instant::now());
-
-        if self.bad_peers.len() > HIGH_NUMBER_OF_BAD_PEERS * 2 {
-            let to_remove = self.bad_peers.len() / 2;
-
-            let mut oldest: Vec<_> = self
-                .bad_peers
-                .iter()
-                .map(|(peer, timestamp)| (peer.clone(), *timestamp))
-                .collect();
-            oldest.sort_unstable_by_key(|(_, timestamp)| *timestamp);
-
-            for (peer, _) in oldest.into_iter().take(to_remove) {
-                self.bad_peers.remove(&peer);
-            }
-        }
-    }
-
-    fn is_bad_peer(&self, bad_peer: &HostAndPort) -> bool {
-        self.bad_peers.contains_key(bad_peer)
-    }
-
-    fn len(&self) -> usize {
-        self.bad_peers.len()
-    }
 }
 
 struct GlobalRateLimiter {
@@ -247,6 +112,7 @@ pub struct TorrentManager {
     file_manager_handler: FileManagerHandler,
     torrent_data_status: Option<TorrentDataStatus>,
     peers_ctx: PeersContext,
+    peers_channels: PeersChannels,
     dht_handler: DhtHandler,
     global_rate_limiter: GlobalRateLimiter,
     metadata_handler: MetadataHandler,
@@ -278,8 +144,6 @@ impl TorrentManager {
             };
             initial_advertised_peers.push(p);
         }
-        let mut advertised_peers = AdvertisedPeers::new();
-        advertised_peers.insert(initial_advertised_peers);
 
         let torrent_manager_config = TorrentManagerConfig {
             base_path: PathBuf::from(base_path),
@@ -311,10 +175,8 @@ impl TorrentManager {
             mpsc::unbounded_channel();
         let (peers_to_torrent_manager_tx, peers_to_torrent_manager_rx) =
             mpsc::channel::<PeerMessage>(INCOMING_PEER_MESSAGES_CHANNEL_CAPACITY);
-        let peers_ctx = PeersContext {
-            peers: HashMap::new(),
-            advertised_peers,
-            bad_peers: BadPeers::new(),
+
+        let peers_channels = PeersChannels {
             to_new_incoming_peers_handler_tx,
             to_new_incoming_peers_handler_rx: Some(to_new_incoming_peers_handler_rx),
             peer_handler_to_torrent_manager_tx,
@@ -361,7 +223,8 @@ impl TorrentManager {
             torrent_manager_config,
             file_manager_handler,
             torrent_data_status,
-            peers_ctx,
+            peers_ctx: PeersContext::new(initial_advertised_peers),
+            peers_channels,
             dht_handler: DhtHandler::new(opts.network_opts.dht_nodes, opts.info_hash),
             global_rate_limiter,
             metadata_handler,
@@ -390,11 +253,13 @@ impl TorrentManager {
             self.torrent_data_status
                 .as_ref()
                 .map(|f| f.current_piece_completion_status()),
-            self.peers_ctx
+            self.peers_channels
                 .to_new_incoming_peers_handler_rx
                 .take()
                 .expect("no to_new_incoming_peers_handler_rx, has start been called twice?"),
-            self.peers_ctx.peer_handler_to_torrent_manager_tx.clone(),
+            self.peers_channels
+                .peer_handler_to_torrent_manager_tx
+                .clone(),
             self.metadata_handler.raw_metadata_size(),
         )
         .await;

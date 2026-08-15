@@ -65,7 +65,7 @@ impl TorrentManager {
                     self.handle_new_peer_from_dht(ip, port);
                 }
 
-                Some(msg) = self.peers_ctx.peer_handler_to_torrent_manager_rx.recv() => {
+                Some(msg) = self.peers_channels.peer_handler_to_torrent_manager_rx.recv() => {
                     match msg {
                         PeerHandlerToManagerMsg::Error(peer_addr, error_type) => {
                             self.handle_peer_error(peer_addr, error_type);
@@ -79,7 +79,7 @@ impl TorrentManager {
                     }
                 }
 
-                Some(PeerMessage { peer_addr, message }) = self.peers_ctx.incoming_peer_messages_rx.recv() => {
+                Some(PeerMessage { peer_addr, message }) = self.peers_channels.incoming_peer_messages_rx.recv() => {
                     self.handle_receive_message(peer_addr, message).await;
                 }
 
@@ -100,7 +100,7 @@ impl TorrentManager {
         log::debug!("removing errored peer {peer_addr}");
         if error_type == PeerError::SelfInitiatedHandshakeError {
             // todo: understand other error cases that are not recoverable and should stop trying again on this peer
-            self.peers_ctx.bad_peers.insert_bad_peer(peer_addr.clone());
+            self.peers_ctx.insert_bad_peer(peer_addr.clone());
         }
         self.remove_peer(peer_addr);
     }
@@ -143,8 +143,10 @@ impl TorrentManager {
         peer_handler::start_peer_msg_handlers(
             peer_addr.clone(),
             tcp_stream,
-            self.peers_ctx.peer_handler_to_torrent_manager_tx.clone(),
-            self.peers_ctx.incoming_peer_messages_tx.clone(),
+            self.peers_channels
+                .peer_handler_to_torrent_manager_tx
+                .clone(),
+            self.peers_channels.incoming_peer_messages_tx.clone(),
             to_peer_rx,
             to_peer_cancel_rx,
             self.global_rate_limiter
@@ -170,7 +172,7 @@ impl TorrentManager {
         log::debug!("new peer initialized: {peer_addr}");
         if self.peers_ctx.peers.len() > self.torrent_manager_config.max_connected_peers {
             log::trace!("stop accepting new peers");
-            self.peers_ctx
+            self.peers_channels
                 .to_new_incoming_peers_handler_tx
                 .send(ToNewIncomingPeersHandlerMsg::OkToAcceptConnection(false))
                 .expect("to_new_incoming_peers_handler_tx receiver half closed");
