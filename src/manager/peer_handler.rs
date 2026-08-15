@@ -58,8 +58,8 @@ pub struct PeerMessage {
 
 #[derive(PartialEq)]
 pub enum PeerError {
-    HandshakeError,
-    Timeout,
+    SelfInitiatedHandshakeError,
+    NoInboundTrafficTimeout,
     Others,
 }
 
@@ -75,21 +75,21 @@ pub async fn connect_to_new_peer(
     metadata_size: Option<i64>,
     peer_handler_to_torrent_manager_tx: UnboundedSender<PeerHandlerToManagerMsg>,
 ) {
-    let dest = format!("{host}:{port}");
+    let dest: String = format!("{host}:{port}");
     log::trace!("initiating connection to peer: {dest}");
     match timeout(DEFAULT_TIMEOUT, TcpStream::connect(dest.clone())).await {
         Err(_elapsed) => {
             log::trace!("timed out connecting to peer {dest}");
             send_handler_msg_to_torrent_manager(
                 &peer_handler_to_torrent_manager_tx,
-                PeerHandlerToManagerMsg::Error(format!("{host}:{port}"), PeerError::HandshakeError),
+                PeerHandlerToManagerMsg::Error(dest, PeerError::SelfInitiatedHandshakeError),
             );
         }
         Ok(Err(e)) => {
             log::trace!("error initiating connection to peer {dest}: {e}");
             send_handler_msg_to_torrent_manager(
                 &peer_handler_to_torrent_manager_tx,
-                PeerHandlerToManagerMsg::Error(format!("{host}:{port}"), PeerError::HandshakeError),
+                PeerHandlerToManagerMsg::Error(dest, PeerError::SelfInitiatedHandshakeError),
             );
         }
         Ok(Ok(tcp_stream)) => {
@@ -102,8 +102,8 @@ pub async fn connect_to_new_peer(
                     send_handler_msg_to_torrent_manager(
                         &peer_handler_to_torrent_manager_tx,
                         PeerHandlerToManagerMsg::Error(
-                            format!("{host}:{port}"),
-                            PeerError::HandshakeError,
+                            dest,
+                            PeerError::SelfInitiatedHandshakeError,
                         ),
                     );
                     return;
@@ -126,14 +126,20 @@ pub async fn connect_to_new_peer(
                     log::trace!("timed out completing handshake with peer {dest}");
                     send_handler_msg_to_torrent_manager(
                         &peer_handler_to_torrent_manager_tx,
-                        PeerHandlerToManagerMsg::Error(peer_addr, PeerError::HandshakeError),
+                        PeerHandlerToManagerMsg::Error(
+                            peer_addr,
+                            PeerError::SelfInitiatedHandshakeError,
+                        ),
                     );
                 }
                 Ok(Err(e)) => {
                     log::trace!("error completing handshake with peer {peer_addr}: {e}");
                     send_handler_msg_to_torrent_manager(
                         &peer_handler_to_torrent_manager_tx,
-                        PeerHandlerToManagerMsg::Error(peer_addr, PeerError::HandshakeError),
+                        PeerHandlerToManagerMsg::Error(
+                            peer_addr,
+                            PeerError::SelfInitiatedHandshakeError,
+                        ),
                     );
                 }
                 Ok(Ok((tcp_stream, supports_fast_extension))) => {
@@ -464,7 +470,7 @@ async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
                 );
                 send_handler_msg_to_torrent_manager(
                     &peer_handler_to_torrent_manager_tx,
-                    PeerHandlerToManagerMsg::Error(peer_addr, PeerError::Timeout),
+                    PeerHandlerToManagerMsg::Error(peer_addr, PeerError::NoInboundTrafficTimeout),
                 );
                 break;
             }

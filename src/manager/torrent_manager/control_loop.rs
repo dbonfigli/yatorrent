@@ -107,13 +107,9 @@ impl TorrentManager {
 
     fn handle_peer_error(&mut self, peer_addr: HostAndPort, error_type: PeerError) {
         log::debug!("removing errored peer {peer_addr}");
-        if error_type == PeerError::HandshakeError {
+        if error_type == PeerError::SelfInitiatedHandshakeError {
             // todo: understand other error cases that are not recoverable and should stop trying again on this peer
-            if let Some(peer) = self.peers_ctx.peers.get(&peer_addr)
-                && let Some(addr) = peer.get_peer_addr_and_listening_torrent_protocol_port()
-            {
-                self.peers_ctx.bad_peers.insert(addr);
-            }
+            self.peers_ctx.bad_peers.insert(peer_addr.clone());
         }
         self.remove_peer(peer_addr);
     }
