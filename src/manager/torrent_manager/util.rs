@@ -17,11 +17,32 @@ pub(super) fn should_choke(
     file_manager_initialized: bool,
     file_manager_handler: &FileManagerHandler,
 ) -> bool {
-    incoming_peer_messages_channel_capacity < INCOMING_PEER_MESSAGES_CHANNEL_CAPACITY / 2
-        || !file_manager_initialized
-        || outstanding_incoming_piece_block_requests_for_this_peer
-            > MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER as usize
-        || file_manager_handler.read_saturated()
+    if !file_manager_initialized {
+        return true;
+    }
+
+    if incoming_peer_messages_channel_capacity < INCOMING_PEER_MESSAGES_CHANNEL_CAPACITY / 2 {
+        log::debug!(
+            "chocked due to incoming_peer_messages_channel_capacity ({incoming_peer_messages_channel_capacity}) < INCOMING_PEER_MESSAGES_CHANNEL_CAPACITY / 2"
+        );
+        return true;
+    }
+
+    if outstanding_incoming_piece_block_requests_for_this_peer
+        > MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER as usize
+    {
+        log::debug!(
+            "chocked due to outstanding_incoming_piece_block_requests_for_this_peer ({outstanding_incoming_piece_block_requests_for_this_peer}) > MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER"
+        );
+        return true;
+    }
+
+    if file_manager_handler.read_saturated() {
+        log::debug!("chocked due to file manager saturated");
+        return true;
+    }
+
+    return false;
 }
 
 impl TorrentManager {
