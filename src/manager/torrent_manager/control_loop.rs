@@ -45,6 +45,7 @@ impl TorrentManager {
 
         loop {
             tokio::select! {
+                biased;
 
                 _ = ticker.tick() => {
                     self.handle_tick().await;
