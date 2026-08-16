@@ -93,7 +93,7 @@ Options:
           Print version
 ```
 
-## TODOSs
+## TODOs
 
 - check for stalled downloads / try new peers if no current one has a piece we want
 - better algorithm to exclude bad peers for new connections
