@@ -53,7 +53,7 @@ $ ./target/release/yatorrent  -t ~/Downloads/ubuntu-26.04-desktop-amd64.iso.torr
 ```
 and in another, the magnet link to also specify `x.pe` to directly know the other client:
 ```
-../target/release/yatorrent -m "magnet:?xt=urn:btih:dafc8c076ca2f3ed376eeae7c76a0d6be2415c45&x.pe=127.0.0.1:8000" -b ~/Downloads/ubuntu2 -s -p 8102 -d 8101
+$ ./target/release/yatorrent -m "magnet:?xt=urn:btih:dafc8c076ca2f3ed376eeae7c76a0d6be2415c45&x.pe=127.0.0.1:8000" -b ~/Downloads/ubuntu2 -s -p 8102 -d 8101
 ```
 You can run as many clients as you want to test multiple local clients, as log as you select different prots with `-p` and `-d`, they will be able to know each other also via PEX.
 
