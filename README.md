@@ -1,6 +1,6 @@
 # YATORRENT - yet another torrent client
 
-A command line torrent client written in rust, implementing the Torrent protocol v1.0 ([BEP 3](http://bittorrent.org/beps/bep_0003.html), [detailed spec](https://wiki.theory.org/BitTorrentSpecification)) over TCP, with the following extensions:
+Yatorrent is a fast, lightweight BitTorrent client written from scratch in Rust, implementing the Torrent protocol v1.0 ([BEP 3](http://bittorrent.org/beps/bep_0003.html), [detailed spec](https://wiki.theory.org/BitTorrentSpecification)) over TCP, with the following extensions:
 
 - [BEP 5 - DHT Protocol](http://bittorrent.org/beps/bep_0005.html);
 - [BEP 6 - Fast Extension](https://www.bittorrent.org/beps/bep_0006.html);
@@ -11,7 +11,15 @@ A command line torrent client written in rust, implementing the Torrent protocol
 - [BEP 15 - UDP Tracker Protocol for BitTorrent](http://bittorrent.org/beps/bep_0015.html);
 - [BEP 23 - Tracker Returns Compact Peer Lists](https://www.bittorrent.org/beps/bep_0023.html).
 
-This is a didactic project I created purely to learn rust, it is far from feature complete or production ready, albeit working: it has been tested to saturate a 1Gb/s internet connection with low cpu usage.
+## Supported Platforms
+
+Yatorrent is cross-platform: runs on Linux, macOS, and Windows.
+
+## Performance
+
+Yatorrent has been tested to saturate a 1 Gb/s internet connection while maintaining low CPU usage. When used locally alongside other local clients, download speeds have instead been limited by disk I/O, reaching the maximum throughput the storage device can sustain, tested with up to 300MB/s.
+
+## Quick Start
 
 Compile with:
 
@@ -24,6 +32,32 @@ and run with:
 ```
 $ yatorrent -t <path to torrent file>
 ```
+
+Examples:
+
+```
+$ ./target/release/yatorrent  -t ~/Downloads/ubuntu-26.04-desktop-amd64.iso.torrent -b ~/Downloads/ubuntu
+```
+
+or, use a magnet file (on this example, `ubuntu-26.04-desktop-amd64.iso`):
+
+```
+$ ./target/release/yatorrent -m "magnet:?xt=urn:btih:dafc8c076ca2f3ed376eeae7c76a0d6be2415c45" -b ~/Downloads/ubuntu
+```
+
+### Local Test
+
+To test it both as a seeder and as a leecher locally, fully download the torrent, then block internet access, then on one shell:
+```
+$ ./target/release/yatorrent  -t ~/Downloads/ubuntu-26.04-desktop-amd64.iso.torrent -b ~/Downloads/ubuntu -s
+```
+and in another, the magnet link to also specify `x.pe` to directly know the other client:
+```
+../target/release/yatorrent -m "magnet:?xt=urn:btih:dafc8c076ca2f3ed376eeae7c76a0d6be2415c45&x.pe=127.0.0.1:8000" -b ~/Downloads/ubuntu2 -s -p 8102 -d 8101
+```
+You can run as many clients as you want to test multiple local clients, as log as you select different prots with `-p` and `-d`, they will be able to know each other also via PEX.
+
+### Usage
 
 All command line arguments (show them with the `--help`), also definable via environment variables:
 
@@ -59,7 +93,7 @@ Options:
           Print version
 ```
 
-Things yet to be implemented / todos:
+## TODOSs
 
 - check for stalled downloads / try new peers if no current one has a piece we want
 - better algorithm to exclude bad peers for new connections
@@ -67,3 +101,7 @@ Things yet to be implemented / todos:
 - text-based UI / ncourses
 - [BEP 29 - uTorrent transport protocol](https://www.bittorrent.org/beps/bep_0029.html)
 - [BEP 55 - Holepunch extension](https://www.bittorrent.org/beps/bep_0055.html)
+
+## Why?
+
+Yatorrent originally started as a didactic project to learn Rust, but it has since grown into a feature-reach BitTorrent client with substantial performance.
