@@ -70,14 +70,16 @@ impl PexHandler {
 pub fn parse_extended_message_ut_pex(
     extended_message: Value,
     peer_addr: HostAndPort,
-) -> Option<tracker::Peer> {
+) -> Vec<tracker::Peer> {
+    let mut peers = Vec::new();
+
     let d = match extended_message {
         Dict { dict: d, .. } => d,
         _ => {
             log::debug!(
                 "got a PEX message from {peer_addr}, it was a bencoded value but not a dict, ignoring it"
             );
-            return None;
+            return peers;
         }
     };
     // todo: should we also use the dropped list? atm we are eager to hoard all possible peers so we ignore it
@@ -87,7 +89,7 @@ pub fn parse_extended_message_ut_pex(
             log::debug!(
                 "got a PEX message from {peer_addr} with an \"added\" field that is not divisible by 6, ignoring it"
             );
-            return None;
+            return peers;
         }
         for i in (0..compact_contacts_info.len()).step_by(6) {
             let mut peer_ip_buf: [u8; 4] = [0; 4];
@@ -102,15 +104,14 @@ pub fn parse_extended_message_ut_pex(
             let mut peer_port_buf: [u8; 2] = [0; 2];
             peer_port_buf.copy_from_slice(&compact_contacts_info[i + 4..i + 6]);
             let port = u16::from_be_bytes(peer_port_buf);
-            log::debug!("adding peer advertised by {peer_addr} from PEX: {ip}:{port}");
             let p = tracker::Peer {
                 peer_id: None,
                 ip: ip.clone(),
                 port,
             };
-            return Some(p);
+            peers.push(p);
         }
     }
 
-    None
+    peers
 }

@@ -401,11 +401,9 @@ impl TorrentManager {
             }
             _ if extension_id == peer.get_ut_pex_id() => {
                 // this is an ut_pex extended message
-                if let Some(p) =
-                    pex_handler::parse_extended_message_ut_pex(extended_message, peer_addr)
-                {
-                    self.peers_ctx.advertised_peers.insert(vec![p]);
-                }
+                let new_peers =
+                    pex_handler::parse_extended_message_ut_pex(extended_message, peer_addr);
+                self.peers_ctx.advertised_peers.insert(new_peers);
             }
             _ if extension_id == peer.get_ut_metadata_id() => {
                 // this is an ut_metadata extended message
