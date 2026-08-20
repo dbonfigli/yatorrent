@@ -3,11 +3,7 @@ use std::{
     time::Duration,
 };
 
-use tokio::{
-    net::TcpStream,
-    sync::mpsc::{self, UnboundedReceiver},
-    time::MissedTickBehavior,
-};
+use tokio::{net::TcpStream, sync::mpsc, time::MissedTickBehavior};
 
 use crate::{
     dht::dht_manager::DhtToTorrentManagerMsg,
@@ -36,10 +32,7 @@ const TO_PEER_CANCEL_CHANNEL_CAPACITY: usize =
     MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT + 200;
 
 impl TorrentManager {
-    pub(super) async fn control_loop(
-        &mut self,
-        mut dht_to_torrent_manager_rx: UnboundedReceiver<DhtToTorrentManagerMsg>,
-    ) {
+    pub(super) async fn control_loop(&mut self) {
         let mut ticker = tokio::time::interval(TICK_INTERVAL);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
@@ -62,7 +55,7 @@ impl TorrentManager {
                     }
                 }
 
-                Some(DhtToTorrentManagerMsg::NewPeer(ip, port)) = dht_to_torrent_manager_rx.recv() => {
+                Some(DhtToTorrentManagerMsg::NewPeer(ip, port)) = self.dht_handler.recv_new_peer() => {
                     self.handle_new_peer_from_dht(ip, port);
                 }
 

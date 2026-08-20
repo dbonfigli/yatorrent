@@ -78,6 +78,10 @@ struct Args {
     /// Exit the client when the download is complete
     #[arg(short = 'e', long, env, default_value_t = false)]
     exit_when_complete: bool,
+
+    /// Disable the DHT (Distributed Hash Table) to find peers without a central tracker (enabled by default)
+    #[arg(short, long, env, default_value_t = false)]
+    no_dht: bool,
 }
 
 #[derive(clap::ValueEnum, Debug, Clone)]
@@ -186,6 +190,7 @@ async fn main() -> Result<()> {
                     tracker_announce_list: m.announce_list.clone(),
                     show_peers_stats: args.show_peers_stats,
                     exit_when_complete: args.exit_when_complete,
+                    dht_enabled: !args.no_dht,
                 })
                 .start()
                 .await;
@@ -220,6 +225,7 @@ async fn main() -> Result<()> {
                     tracker_announce_list: vec![magnet.tracker_urls],
                     show_peers_stats: args.show_peers_stats,
                     exit_when_complete: args.exit_when_complete,
+                    dht_enabled: !args.no_dht,
                 })
                 .start()
                 .await;

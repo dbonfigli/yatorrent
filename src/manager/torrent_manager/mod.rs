@@ -75,6 +75,7 @@ pub struct TorrentManagerOptions {
     pub tracker_announce_list: Vec<Vec<String>>,
     pub show_peers_stats: bool,
     pub exit_when_complete: bool,
+    pub dht_enabled: bool,
 }
 
 struct TorrentManagerConfig {
@@ -225,7 +226,11 @@ impl TorrentManager {
             torrent_data_status,
             peers_ctx: PeersContext::new(initial_advertised_peers),
             peers_channels,
-            dht_handler: DhtHandler::new(opts.network_opts.dht_nodes, opts.info_hash),
+            dht_handler: DhtHandler::new(
+                opts.dht_enabled,
+                opts.network_opts.dht_nodes,
+                opts.info_hash,
+            ),
             global_rate_limiter,
             metadata_handler,
             tracker_requestor,
@@ -238,7 +243,7 @@ impl TorrentManager {
 
     pub async fn start(&mut self) {
         // start dht manager
-        let dht_to_torrent_manager_rx = self.dht_handler.start_dht_manager(
+        self.dht_handler.start_dht_manager(
             self.torrent_manager_config
                 .listening_torrent_wire_protocol_port,
             self.torrent_manager_config.listening_dht_port,
@@ -265,7 +270,7 @@ impl TorrentManager {
         .await;
 
         // start control loop to handle channel messages - will block forever
-        self.control_loop(dht_to_torrent_manager_rx).await;
+        self.control_loop().await;
     }
 }
 
