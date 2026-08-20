@@ -652,7 +652,7 @@ fn generate_file_paths_for_pieces(
     piece_length: u64,
     file_list: &Vec<FileEntry>,
 ) -> FilePathsForPieces {
-    let mut file_paths_for_pieces = Vec::new();
+    let mut file_paths_for_pieces = Vec::with_capacity(total_pieces);
     let mut current_file_index = 0;
     let mut current_position_in_file = 0;
     for piece_index in 0..total_pieces {
