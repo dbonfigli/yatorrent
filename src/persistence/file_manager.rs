@@ -230,8 +230,12 @@ pub fn start_file_manager(
         );
     }
 
-    let file_paths_for_pieces =
-        generate_file_paths_for_pieces(base_path, total_pieces, normal_piece_length, &file_list);
+    let file_paths_for_pieces = Arc::new(generate_file_paths_for_pieces(
+        base_path,
+        total_pieces,
+        normal_piece_length,
+        &file_list,
+    ));
 
     let mut last_piece_length = 0;
     for (_, start, end) in file_paths_for_pieces[total_pieces - 1].iter() {
@@ -244,12 +248,12 @@ pub fn start_file_manager(
     };
 
     let piece_completion_status =
-        refresh_completed_pieces(&piece_hashes, &piece_sizer, &file_paths_for_pieces);
+        refresh_completed_pieces(&piece_hashes, &piece_sizer, file_paths_for_pieces.clone());
 
     log_file_completion_stats(
         base_path,
         &file_list,
-        &file_paths_for_pieces,
+        file_paths_for_pieces.clone(),
         &piece_completion_status,
     );
 
@@ -273,7 +277,7 @@ pub fn start_file_manager(
                         piece_completion_status_for_reads.clone(),
                         &piece_sizer_for_reads,
                         &mut file_handles,
-                        &file_paths_for_pieces_for_reads
+                        file_paths_for_pieces_for_reads.clone()
                     ).await;
                 }
                 else => break,
@@ -295,7 +299,7 @@ pub fn start_file_manager(
                         &write_responses_tx,
                         &piece_sizer,
                         shared_piece_completion_status.clone(),
-                        &file_paths_for_pieces,
+                        file_paths_for_pieces.clone(),
                         &mut file_handles,
                         &piece_hashes,
                         &mut incomplete_pieces
@@ -368,7 +372,7 @@ async fn handle_read_piece_block(
     piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
     piece_sizer: &PieceSizer,
     read_file_handles: &mut ReadFileHandles,
-    file_paths_for_pieces: &FilePathsForPieces,
+    file_paths_for_pieces: Arc<FilePathsForPieces>,
 ) {
     match read_piece_block_pre_checks(
         piece_completion_status,
@@ -457,7 +461,7 @@ fn read_piece_block_pre_checks(
 }
 
 fn get_files_for_piece_for_r(
-    file_paths_for_pieces: &FilePathsForPieces,
+    file_paths_for_pieces: Arc<FilePathsForPieces>,
     read_file_handles: &mut ReadFileHandles,
     piece_idx: usize,
 ) -> Result<FileHandlesForPiece> {
@@ -470,7 +474,7 @@ fn get_files_for_piece_for_r(
 }
 
 fn get_files_for_piece_for_w(
-    file_paths_for_pieces: &FilePathsForPieces,
+    file_paths_for_pieces: Arc<FilePathsForPieces>,
     write_file_handles: &mut WriteFileHandles,
     piece_idx: usize,
 ) -> Result<FileHandlesForPiece> {
@@ -488,7 +492,7 @@ fn handle_write_piece_block(
 
     piece_sizer: &PieceSizer,
     piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
-    file_paths_for_pieces: &FilePathsForPieces,
+    file_paths_for_pieces: Arc<FilePathsForPieces>,
     write_file_handles: &mut WriteFileHandles,
     piece_hashes: &PieceHashes,
     incomplete_pieces: &mut HashMap<usize, Piece>,
@@ -520,7 +524,7 @@ fn write_piece_block(
 
     piece_sizer: &PieceSizer,
     piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
-    file_paths_for_pieces: &FilePathsForPieces,
+    file_paths_for_pieces: Arc<FilePathsForPieces>,
     write_file_handles: &mut WriteFileHandles,
     piece_hashes: &PieceHashes,
     incomplete_pieces: &mut HashMap<usize, Piece>,
@@ -727,7 +731,7 @@ fn generate_file_paths_for_pieces(
 fn refresh_completed_pieces(
     piece_hashes: &PieceHashes,
     piece_sizer: &PieceSizer,
-    file_paths_for_pieces: &FilePathsForPieces,
+    file_paths_for_pieces: Arc<FilePathsForPieces>,
 ) -> PieceCompletionStatus {
     log::info!("checking pieces already downloaded...");
 
@@ -743,7 +747,7 @@ fn refresh_completed_pieces(
             );
         }
 
-        match get_files_for_piece_for_r(file_paths_for_pieces, &mut file_handles, idx) {
+        match get_files_for_piece_for_r(file_paths_for_pieces.clone(), &mut file_handles, idx) {
             Err(_) => {
                 piece_completion_status[idx] = false;
             }
@@ -777,7 +781,7 @@ fn refresh_completed_pieces(
 fn get_file_list_with_completion_status(
     base_path: &Path,
     file_list: &Vec<FileEntry>,
-    file_paths_for_pieces: &FilePathsForPieces,
+    file_paths_for_pieces: Arc<FilePathsForPieces>,
     piece_completion_status: &PieceCompletionStatus,
 ) -> Vec<(PathBuf, u64, bool)> {
     let mut file_list_with_completion_status: Vec<(PathBuf, u64, bool)> = file_list
@@ -807,7 +811,7 @@ fn get_file_list_with_completion_status(
 fn log_file_completion_stats(
     base_path: &Path,
     file_list: &Vec<FileEntry>,
-    file_paths_for_pieces: &FilePathsForPieces,
+    file_paths_for_pieces: Arc<FilePathsForPieces>,
     piece_completion_status: &PieceCompletionStatus,
 ) {
     let file_list_with_completion_status = get_file_list_with_completion_status(
@@ -842,6 +846,7 @@ mod tests {
         generate_file_paths_for_pieces, get_file_list_with_completion_status,
     };
     use std::path::{Path, PathBuf};
+    use std::sync::Arc;
 
     #[test]
     fn generate_file_paths_for_pieces_1() {
@@ -957,14 +962,18 @@ mod tests {
             FileEntry::new("f4".to_string(), 3),
             FileEntry::new("f5".to_string(), 3),
         ];
-        let file_paths_for_pieces =
-            generate_file_paths_for_pieces(Path::new("./"), 3, 10, &file_list);
+        let file_paths_for_pieces = Arc::new(generate_file_paths_for_pieces(
+            Path::new("./"),
+            3,
+            10,
+            &file_list,
+        ));
         let piece_completion_status = vec![false, true, false];
 
         let res = get_file_list_with_completion_status(
             Path::new("./"),
             &file_list,
-            &file_paths_for_pieces,
+            file_paths_for_pieces,
             &piece_completion_status,
         );
         assert_eq!(
@@ -989,14 +998,18 @@ mod tests {
             FileEntry::new("f5".to_string(), 3),
         ];
 
-        let file_paths_for_pieces =
-            generate_file_paths_for_pieces(Path::new("./"), 3, 10, &file_list);
+        let file_paths_for_pieces = Arc::new(generate_file_paths_for_pieces(
+            Path::new("./"),
+            3,
+            10,
+            &file_list,
+        ));
         let piece_completion_status = vec![true, false, true];
 
         let res = get_file_list_with_completion_status(
             Path::new("./"),
             &file_list,
-            &file_paths_for_pieces,
+            file_paths_for_pieces,
             &piece_completion_status,
         );
         assert_eq!(
@@ -1019,14 +1032,18 @@ mod tests {
             FileEntry::new("f3".to_string(), 5),
         ];
 
-        let file_paths_for_pieces =
-            generate_file_paths_for_pieces(Path::new("relative/"), 3, 10, &file_list);
+        let file_paths_for_pieces = Arc::new(generate_file_paths_for_pieces(
+            Path::new("relative/"),
+            3,
+            10,
+            &file_list,
+        ));
         let piece_completion_status = vec![true, true, true];
 
         let res = get_file_list_with_completion_status(
             Path::new("relative/"),
             &file_list,
-            &file_paths_for_pieces,
+            file_paths_for_pieces,
             &piece_completion_status,
         );
         assert_eq!(
