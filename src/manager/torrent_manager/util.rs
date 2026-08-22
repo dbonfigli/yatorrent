@@ -56,10 +56,10 @@ impl TorrentManager {
         }
 
         if self.peers_ctx.peers.len() < self.torrent_manager_config.max_connected_peers {
-            self.peers_channels
+            _ = self
+                .peers_channels
                 .to_new_incoming_peers_handler_tx
-                .send(ToNewIncomingPeersHandlerMsg::OkToAcceptConnection(true))
-                .expect("to_new_incoming_peers_handler_tx receiver half closed");
+                .send(ToNewIncomingPeersHandlerMsg::OkToAcceptConnection(true));
         }
     }
 }

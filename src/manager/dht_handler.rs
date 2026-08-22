@@ -85,9 +85,9 @@ impl DhtHandler {
             > DHT_NEW_PEER_COOL_OFF_PERIOD
         {
             self.last_get_peers_requested_time = now;
-            self.to_dht_manager_tx
-                .send(ToDhtManagerMsg::GetNewPeers(self.torrent_info_hash))
-                .expect("to_dht_manager_tx receiver half closed");
+            _ = self
+                .to_dht_manager_tx
+                .send(ToDhtManagerMsg::GetNewPeers(self.torrent_info_hash));
         }
     }
 
@@ -96,21 +96,21 @@ impl DhtHandler {
             return;
         }
 
-        self.to_dht_manager_tx
+        _ = self
+            .to_dht_manager_tx
             .send(ToDhtManagerMsg::NewNode(format!(
                 "{peer_ip_addr}:{peer_port}"
-            )))
-            .expect("to_dht_manager_tx receiver half closed");
+            )));
     }
 
     pub fn new_peer_connected(&mut self, peer_ip_addr: Ipv4Addr, peer_port: u16) {
-        self.to_dht_manager_tx
+        _ = self
+            .to_dht_manager_tx
             .send(ToDhtManagerMsg::ConnectedToNewPeer(
                 self.torrent_info_hash,
                 peer_ip_addr,
                 peer_port,
-            ))
-            .expect("to_dht_manager_tx receiver half closed");
+            ));
     }
 
     pub async fn recv_new_peer(&mut self) -> Option<DhtToTorrentManagerMsg> {

@@ -319,9 +319,8 @@ impl TorrentManager {
             };
 
             // update new incoming peers handler with new data info
-            self.peers_channels
-                .to_new_incoming_peers_handler_tx
-                .send(ToNewIncomingPeersHandlerMsg::TorrentDataInitialized {
+            _ = self.peers_channels.to_new_incoming_peers_handler_tx.send(
+                ToNewIncomingPeersHandlerMsg::TorrentDataInitialized {
                     metadata_size: self
                         .metadata_handler
                         .raw_metadata_size()
@@ -331,8 +330,8 @@ impl TorrentManager {
                         .as_ref()
                         .expect("initialized few lines above")
                         .current_piece_completion_status(),
-                })
-                .expect("to_new_incoming_peers_handler_tx receiver half closed");
+                },
+            );
 
             // we finally have the metadata and can exchange files
             // we discarded have messages (we could not save them because we could not know how many pieces there were in total)

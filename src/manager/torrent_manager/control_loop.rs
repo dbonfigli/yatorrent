@@ -227,17 +227,15 @@ impl TorrentManager {
         log::debug!("new peer initialized: {peer_addr}");
         if self.peers_ctx.peers.len() > self.torrent_manager_config.max_connected_peers {
             log::trace!("stop accepting new peers");
-            self.peers_channels
+            _ = self
+                .peers_channels
                 .to_new_incoming_peers_handler_tx
-                .send(ToNewIncomingPeersHandlerMsg::OkToAcceptConnection(false))
-                .expect("to_new_incoming_peers_handler_tx receiver half closed");
+                .send(ToNewIncomingPeersHandlerMsg::OkToAcceptConnection(false));
         }
     }
 
     pub fn send_shutdown_request(&mut self, shutdown_request: ShutdownRequest) {
-        self.shutdown_request_tx
-            .send(shutdown_request)
-            .expect("shutdown_request_tx receiver half closed");
+        _ = self.shutdown_request_tx.send(shutdown_request);
     }
 
     async fn shutdown(&mut self) {

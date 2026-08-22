@@ -670,7 +670,5 @@ fn send_handler_msg_to_torrent_manager(
     peer_handler_to_torrent_manager_tx: &UnboundedSender<PeerHandlerToManagerMsg>,
     msg: PeerHandlerToManagerMsg,
 ) {
-    peer_handler_to_torrent_manager_tx
-        .send(msg)
-        .expect("peer_handler_to_torrent_manager_tx receiver half closed");
+    _ = peer_handler_to_torrent_manager_tx.send(msg);
 }
