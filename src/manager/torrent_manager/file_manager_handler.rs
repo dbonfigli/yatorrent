@@ -1,8 +1,8 @@
-use std::process;
-
 use tokio::sync::mpsc::{
     self, Receiver, Sender, UnboundedReceiver, UnboundedSender, error::SendError,
 };
+
+use anyhow::Result;
 
 use crate::{
     manager::{
@@ -92,7 +92,7 @@ impl FileManagerHandler {
         file_list: Vec<FileEntry>,
         piece_length: u64,
         piece_hashes: Vec<[u8; 20]>,
-    ) -> TorrentDataStatus {
+    ) -> Result<TorrentDataStatus> {
         let read_requests_rx = self
             .read_requests_rx
             .take()
@@ -191,7 +191,8 @@ impl TorrentManager {
                             .completed()
                     {
                         log::warn!("torrent download completed");
-                        self.tracker_requestor
+                        let join_handle = self
+                            .tracker_requestor
                             .async_request_to_tracker(
                                 Event::Completed,
                                 &self.peers_ctx.advertised_peers,
@@ -202,9 +203,14 @@ impl TorrentManager {
                                 ),
                             )
                             .await;
-                        if self.torrent_manager_config.exit_when_complete {
-                            log::warn!("Exiting...");
-                            process::exit(0);
+                        if self.torrent_manager_config.exit_when_complete
+                            && let Some(join_handle) = join_handle
+                        {
+                            // if we must exit when complete, let's wait for the tracker completed event request
+                            // even if we block here, we don't care, we will shut down soon
+                            log::info!("sending completed event to tracker...");
+                            let _ = join_handle.await;
+                            self.send_shutdown_request(0);
                         }
                     }
 

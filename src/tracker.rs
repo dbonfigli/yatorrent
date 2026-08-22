@@ -80,7 +80,6 @@ impl Display for Response {
 pub enum Event {
     None,
     Started,
-    #[allow(dead_code)]
     Stopped,
     Completed,
 }

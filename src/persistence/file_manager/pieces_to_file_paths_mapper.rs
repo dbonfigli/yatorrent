@@ -5,6 +5,7 @@ use std::{
 };
 
 use crate::util::FileEntry;
+use anyhow::{Result, bail};
 
 type FilePathsForPiece = Vec<(PathBuf, u64, u64)>; // same as FileHandlesForPiece but with file paths
 type InternalFileId = usize; // internal id used instead of directly using paths to save on memory
@@ -21,7 +22,7 @@ impl PiecesToFilePathsMapper {
         total_pieces: usize,
         piece_length: u64,
         file_list: &Vec<FileEntry>,
-    ) -> Self {
+    ) -> Result<Self> {
         let mut pieces_to_file_paths_mapper = PiecesToFilePathsMapper {
             piece_id_to_file_paths: Vec::with_capacity(total_pieces),
             file_id_to_path: HashMap::new(),
@@ -40,7 +41,7 @@ impl PiecesToFilePathsMapper {
                         // this was the last piece, it is normal that the piece does not span the full piece_length size for the last file
                         break;
                     } else {
-                        panic!(
+                        bail!(
                             "there are no more files, but there are more pieces still to be matched to files, it seem piece_length * #pieces > sum of all the file sizes, this should never happen, the .torrent file is malformed"
                         )
                     }
@@ -57,20 +58,20 @@ impl PiecesToFilePathsMapper {
 
                 let file_name_path = Path::new(file_name);
                 if file_name_path.is_absolute() {
-                    panic!(
+                    bail!(
                         "the torrent file {} contained a file with absolute path, this is not acceptable",
                         file_name
                     )
                 }
                 for c in file_name_path.components() {
                     if matches!(c, Component::ParentDir) {
-                        panic!(
+                        bail!(
                             "the torrent file {} contained a reference to a parent directory, this is not acceptable",
                             file_name
                         )
                     }
                     if matches!(c, Component::Prefix(_)) {
-                        panic!(
+                        bail!(
                             "the torrent file {} contained a Windows prefix, this is not acceptable",
                             file_name
                         )
@@ -101,7 +102,7 @@ impl PiecesToFilePathsMapper {
                 .push(files_spanning_piece);
         }
 
-        pieces_to_file_paths_mapper
+        Ok(pieces_to_file_paths_mapper)
     }
 
     pub fn get(&self, piece_id: usize) -> FilePathsForPiece {
@@ -148,7 +149,8 @@ mod tests {
             pieces.len(),
             piece_length,
             &file_list,
-        );
+        )
+        .unwrap();
 
         assert_eq!(
             pieces_to_file_paths_mapper.file_id_to_path.get(&0).unwrap(),
@@ -184,7 +186,8 @@ mod tests {
             pieces.len(),
             piece_length,
             &file_list,
-        );
+        )
+        .unwrap();
 
         assert_eq!(
             pieces_to_file_paths_mapper.file_id_to_path.get(&0).unwrap(),
@@ -208,7 +211,8 @@ mod tests {
             pieces.len(),
             piece_length,
             &file_list,
-        );
+        )
+        .unwrap();
 
         assert_eq!(
             pieces_to_file_paths_mapper.file_id_to_path.get(&0).unwrap(),
@@ -238,7 +242,8 @@ mod tests {
         let piece_length = 10;
 
         let pieces_to_file_paths_mapper =
-            PiecesToFilePathsMapper::new(Path::new("./"), pieces.len(), piece_length, &file_list);
+            PiecesToFilePathsMapper::new(Path::new("./"), pieces.len(), piece_length, &file_list)
+                .unwrap();
 
         assert_eq!(
             pieces_to_file_paths_mapper.file_id_to_path.get(&0).unwrap(),

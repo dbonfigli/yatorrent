@@ -296,12 +296,19 @@ impl TorrentManager {
             );
 
             // start file manager
-            self.torrent_data_status = Some(self.file_manager_handler.start(
+            self.torrent_data_status = match self.file_manager_handler.start(
                 self.torrent_manager_config.base_path.as_path(),
                 file_list,
                 piece_length,
                 piece_hashes,
-            ));
+            ) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    log::error!("initialization of torrent data failed: {e}");
+                    self.send_shutdown_request(1);
+                    return;
+                }
+            };
 
             // update new incoming peers handler with new data info
             self.peers_channels

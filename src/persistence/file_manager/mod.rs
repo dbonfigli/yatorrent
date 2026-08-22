@@ -157,19 +157,19 @@ pub fn start_file_manager(
     read_responses_tx: UnboundedSender<ReadPieceBlockResponse>,
     mut write_requests_rx: Receiver<WritePieceBlockRequest>,
     write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
-) -> TorrentDataStatus {
+) -> Result<TorrentDataStatus> {
     let mut total_file_size = 0;
     for FileEntry { size, .. } in file_list.iter() {
         total_file_size += size;
     }
     let total_pieces = piece_hashes.len();
     if total_file_size > normal_piece_length * total_pieces as u64 {
-        panic!(
+        bail!(
             "the total file size of all files exceed the #pieces * piece_length we have, the .torrent file / metedata could be malformed"
         );
     }
     if total_file_size <= (normal_piece_length * (total_pieces as u64 - 1)) {
-        panic!(
+        bail!(
             "the total file size of all files does not cover all the declared pieces and piece_length we have, the .torrent file / metedata could be malformed"
         );
     }
@@ -179,7 +179,7 @@ pub fn start_file_manager(
         total_pieces,
         normal_piece_length,
         &file_list,
-    ));
+    )?);
 
     let mut last_piece_length = 0;
     for (_, start, end) in pieces_to_file_paths_mapper.get(total_pieces - 1).iter() {
@@ -252,11 +252,11 @@ pub fn start_file_manager(
         })
     });
 
-    TorrentDataStatus::new(
+    Ok(TorrentDataStatus::new(
         piece_completion_status,
         normal_piece_length,
         last_piece_length,
-    )
+    ))
 }
 
 fn read_data(
@@ -684,12 +684,8 @@ mod tests {
             FileEntry::new("f4".to_string(), 3),
             FileEntry::new("f5".to_string(), 3),
         ];
-        let pieces_to_file_paths_mapper = Arc::new(PiecesToFilePathsMapper::new(
-            Path::new("./"),
-            3,
-            10,
-            &file_list,
-        ));
+        let pieces_to_file_paths_mapper =
+            Arc::new(PiecesToFilePathsMapper::new(Path::new("./"), 3, 10, &file_list).unwrap());
         let piece_completion_status = vec![false, true, false];
 
         let res = get_file_list_with_completion_status(
@@ -720,12 +716,8 @@ mod tests {
             FileEntry::new("f5".to_string(), 3),
         ];
 
-        let pieces_to_file_paths_mapper = Arc::new(PiecesToFilePathsMapper::new(
-            Path::new("./"),
-            3,
-            10,
-            &file_list,
-        ));
+        let pieces_to_file_paths_mapper =
+            Arc::new(PiecesToFilePathsMapper::new(Path::new("./"), 3, 10, &file_list).unwrap());
         let piece_completion_status = vec![true, false, true];
 
         let res = get_file_list_with_completion_status(
@@ -754,12 +746,9 @@ mod tests {
             FileEntry::new("f3".to_string(), 5),
         ];
 
-        let pieces_to_file_paths_mapper = Arc::new(PiecesToFilePathsMapper::new(
-            Path::new("relative/"),
-            3,
-            10,
-            &file_list,
-        ));
+        let pieces_to_file_paths_mapper = Arc::new(
+            PiecesToFilePathsMapper::new(Path::new("relative/"), 3, 10, &file_list).unwrap(),
+        );
         let piece_completion_status = vec![true, true, true];
 
         let res = get_file_list_with_completion_status(

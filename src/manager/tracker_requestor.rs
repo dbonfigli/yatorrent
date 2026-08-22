@@ -1,6 +1,7 @@
 use anyhow::{Result, bail};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
+use tokio::task::JoinHandle;
 
 use crate::manager::torrent_manager::peer_context::AdvertisedPeers;
 use crate::tracker;
@@ -56,13 +57,14 @@ impl TrackerRequestor {
             } else {
                 Event::None
             };
-            self.async_request_to_tracker(
-                event,
-                advertised_peers,
-                bytes_left,
-                uploaded_downloaded_bytes,
-            )
-            .await;
+            _ = self
+                .async_request_to_tracker(
+                    event,
+                    advertised_peers,
+                    bytes_left,
+                    uploaded_downloaded_bytes,
+                )
+                .await;
         }
     }
 
@@ -73,10 +75,11 @@ impl TrackerRequestor {
         advertised_peers: &AdvertisedPeers,
         bytes_left: Option<u64>,
         uploaded_downloaded_bytes: (u64, u64),
-    ) {
+    ) -> Option<JoinHandle<()>> // optional join handle so callers can wait for the tracker request completion if needed
+    {
         if event == Event::Completed {
             if self.completed_sent_to_tracker {
-                return;
+                return None;
             }
             self.completed_sent_to_tracker = true;
         }
@@ -92,7 +95,7 @@ impl TrackerRequestor {
         let tracker_client_arc = self.tracker_client.clone();
         let info_hash = self.info_hash;
         let mut advertised_peers = advertised_peers.clone();
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             if let Ok((updated_tracker_client, latest_advertised_peers)) = request_to_tracker(
                 tracker_client,
                 event,
@@ -110,7 +113,7 @@ impl TrackerRequestor {
                 drop(tracker_client_mg);
                 advertised_peers.insert(latest_advertised_peers);
             }
-        });
+        }))
     }
 }
 

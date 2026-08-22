@@ -1,5 +1,6 @@
 use std::{
     net::{IpAddr, Ipv4Addr},
+    process,
     time::Duration,
 };
 
@@ -31,14 +32,47 @@ const TO_PEER_CHANNEL_CAPACITY: usize = MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER
 const TO_PEER_CANCEL_CHANNEL_CAPACITY: usize =
     MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT + 200;
 
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = sigterm.recv() => {}
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to listen for Ctrl+C");
+    }
+}
+
 impl TorrentManager {
     pub(super) async fn control_loop(&mut self) {
         let mut ticker = tokio::time::interval(TICK_INTERVAL);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut exit_code = 0;
+        let shutdown = shutdown_signal();
+        tokio::pin!(shutdown);
 
         loop {
             tokio::select! {
                 biased;
+
+                _ = &mut shutdown => {
+                    log::info!("shutdown requested by user");
+                    break;
+                }
+
+                Some(code) = self.shutdown_request_rx.recv() => {
+                    exit_code = code;
+                    break;
+                }
 
                 _ = ticker.tick() => {
                     self.handle_tick().await;
@@ -80,6 +114,9 @@ impl TorrentManager {
                 else => break,
             }
         }
+
+        // graceful shutdown
+        self.shutdown(exit_code).await;
     }
 
     fn handle_new_peer_from_dht(&mut self, ip: Ipv4Addr, port: u16) {
@@ -188,5 +225,30 @@ impl TorrentManager {
                 .send(ToNewIncomingPeersHandlerMsg::OkToAcceptConnection(false))
                 .expect("to_new_incoming_peers_handler_tx receiver half closed");
         }
+    }
+
+    pub fn send_shutdown_request(&mut self, exit_code: i32) {
+        self.shutdown_request_tx
+            .send(exit_code)
+            .expect("shutdown_request_tx receiver half closed");
+    }
+
+    async fn shutdown(&mut self, exit_code: i32) {
+        log::info!("sending stopped event to tracker...");
+        self.tracker_requestor
+            .async_request_to_tracker(
+                tracker::Event::Stopped,
+                &self.peers_ctx.advertised_peers,
+                self.torrent_data_status.as_ref().map(|f| f.bytes_left()),
+                (
+                    self.bandwidth_tracker.uploaded_bytes(),
+                    self.bandwidth_tracker.downloaded_bytes(),
+                ),
+            )
+            .await
+            .map(async |join_handle| join_handle.await);
+
+        log::info!("exiting with code {exit_code}");
+        process::exit(exit_code);
     }
 }

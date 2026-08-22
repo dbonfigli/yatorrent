@@ -122,6 +122,8 @@ pub struct TorrentManager {
     piece_requestor: PieceRequestor,
     pex_handler: PexHandler,
     request_timeout: Duration,
+    shutdown_request_tx: UnboundedSender<i32>, // exit code
+    shutdown_request_rx: UnboundedReceiver<i32>,
 }
 
 impl TorrentManager {
@@ -166,7 +168,13 @@ impl TorrentManager {
                  piece_length,
                  piece_hashes,
              }| {
-                file_manager_handler.start(base_path, file_list, piece_length, piece_hashes)
+                match file_manager_handler.start(base_path, file_list, piece_length, piece_hashes) {
+                    Ok(torrent_data_status) => torrent_data_status,
+                    Err(e) => {
+                        log::error!("initialization of torrent data failed: {e}");
+                        process::exit(1);
+                    }
+                }
             },
         );
 
@@ -220,6 +228,8 @@ impl TorrentManager {
             opts.info_hash,
         );
 
+        let (shutdown_request_tx, shutdown_request_rx) = mpsc::unbounded_channel();
+
         TorrentManager {
             torrent_manager_config,
             file_manager_handler,
@@ -238,6 +248,8 @@ impl TorrentManager {
             piece_requestor: PieceRequestor::new(),
             pex_handler: PexHandler::new(),
             request_timeout: BASE_REQUEST_TIMEOUT,
+            shutdown_request_tx,
+            shutdown_request_rx,
         }
     }
 
