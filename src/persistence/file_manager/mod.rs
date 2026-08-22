@@ -12,8 +12,7 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc::{Receiver, UnboundedSender};
 
 use crate::persistence::file_manager::file_handles::{
-    FileHandlesForPiece, ReadFileHandles, WriteFileHandles, get_files_for_piece_for_r,
-    get_files_for_piece_for_w,
+    FileHandlesForPiece, ReadFileHandles, WriteFileHandles,
 };
 use crate::persistence::file_manager::pieces_to_file_paths_mapper::PiecesToFilePathsMapper;
 use crate::persistence::piece::Piece;
@@ -192,11 +191,9 @@ pub fn start_file_manager(
         last_piece_length,
     };
 
-    let piece_completion_status = refresh_completed_pieces(
-        &piece_hashes,
-        &piece_sizer,
-        pieces_to_file_paths_mapper.clone(),
-    );
+    let mut file_handles = ReadFileHandles::new(pieces_to_file_paths_mapper.clone());
+    let piece_completion_status =
+        refresh_completed_pieces(&piece_hashes, &piece_sizer, &mut file_handles);
 
     log_file_completion_stats(
         base_path,
@@ -211,9 +208,7 @@ pub fn start_file_manager(
     // read request loop
     let piece_completion_status_for_reads = shared_piece_completion_status.clone();
     let piece_sizer_for_reads = piece_sizer.clone();
-    let pieces_to_file_paths_mapper_for_reads = pieces_to_file_paths_mapper.clone();
     tokio::spawn(async move {
-        let mut file_handles = ReadFileHandles::new();
         let fs_reads_semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_READ_OPS));
         loop {
             tokio::select! {
@@ -225,7 +220,6 @@ pub fn start_file_manager(
                         piece_completion_status_for_reads.clone(),
                         &piece_sizer_for_reads,
                         &mut file_handles,
-                        pieces_to_file_paths_mapper_for_reads.clone()
                     ).await;
                 }
                 else => break,
@@ -237,7 +231,7 @@ pub fn start_file_manager(
     let handle = Handle::current();
     std::thread::spawn(move || {
         handle.block_on(async move {
-            let mut file_handles = WriteFileHandles::new();
+            let mut file_handles = WriteFileHandles::new(pieces_to_file_paths_mapper);
             let mut incomplete_pieces = HashMap::new();
             loop {
                 tokio::select! {
@@ -247,7 +241,6 @@ pub fn start_file_manager(
                         &write_responses_tx,
                         &piece_sizer,
                         shared_piece_completion_status.clone(),
-                        pieces_to_file_paths_mapper.clone(),
                         &mut file_handles,
                         &piece_hashes,
                         &mut incomplete_pieces
@@ -320,7 +313,6 @@ async fn handle_read_piece_block(
     piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
     piece_sizer: &PieceSizer,
     read_file_handles: &mut ReadFileHandles,
-    pieces_to_file_paths_mapper: Arc<PiecesToFilePathsMapper>,
 ) {
     match read_piece_block_pre_checks(
         piece_completion_status,
@@ -340,20 +332,17 @@ async fn handle_read_piece_block(
         }
     }
 
-    let file_handles_for_piece = match get_files_for_piece_for_r(
-        pieces_to_file_paths_mapper,
-        read_file_handles,
-        read_piece_block_request.piece_idx,
-    ) {
-        Ok(f) => f,
-        Err(e) => {
-            let _ = reads_file_manager_to_torrent_manager_tx.send(ReadPieceBlockResponse {
-                request: read_piece_block_request,
-                response: Result::Err(e),
-            });
-            return;
-        }
-    };
+    let file_handles_for_piece =
+        match read_file_handles.get_files_for_piece(read_piece_block_request.piece_idx) {
+            Ok(f) => f,
+            Err(e) => {
+                let _ = reads_file_manager_to_torrent_manager_tx.send(ReadPieceBlockResponse {
+                    request: read_piece_block_request,
+                    response: Result::Err(e),
+                });
+                return;
+            }
+        };
 
     let reads_file_manager_to_torrent_manager_tx = reads_file_manager_to_torrent_manager_tx.clone();
     let permit = fs_reads_semaphore
@@ -414,7 +403,6 @@ fn handle_write_piece_block(
 
     piece_sizer: &PieceSizer,
     piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
-    pieces_to_file_paths_mapper: Arc<PiecesToFilePathsMapper>,
     write_file_handles: &mut WriteFileHandles,
     piece_hashes: &PieceHashes,
     incomplete_pieces: &mut HashMap<usize, Piece>,
@@ -425,7 +413,6 @@ fn handle_write_piece_block(
         write_piece_block_request.block_begin,
         piece_sizer,
         piece_completion_status,
-        pieces_to_file_paths_mapper,
         write_file_handles,
         piece_hashes,
         incomplete_pieces,
@@ -446,7 +433,6 @@ fn write_piece_block(
 
     piece_sizer: &PieceSizer,
     piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
-    pieces_to_file_paths_mapper: Arc<PiecesToFilePathsMapper>,
     write_file_handles: &mut WriteFileHandles,
     piece_hashes: &PieceHashes,
     incomplete_pieces: &mut HashMap<usize, Piece>,
@@ -502,7 +488,8 @@ fn write_piece_block(
     let mut data_cursor: u64 = 0;
     let mut data_still_to_be_written = data_len;
     let mut piece_cursor_to_begin = 0;
-    for (file_path, file_start, file_end) in pieces_to_file_paths_mapper.get(piece_idx).iter() {
+    let file_handles_for_piece = write_file_handles.get_files_for_piece(piece_idx)?;
+    for (file, file_start, file_end) in file_handles_for_piece.iter() {
         if data_still_to_be_written == 0 {
             break;
         }
@@ -516,7 +503,6 @@ fn write_piece_block(
             continue;
         }
         let data_to_write = cmp::min(file_end - file_start, data_still_to_be_written);
-        let file = write_file_handles.get_file(file_path)?;
         write_at(
             &file,
             &data[data_cursor as usize..(data_cursor + data_to_write) as usize],
@@ -541,8 +527,6 @@ fn write_piece_block(
             false,
         )?;
 
-        let file_handles_for_piece =
-            get_files_for_piece_for_w(pieces_to_file_paths_mapper, write_file_handles, piece_idx)?;
         let read_piece_data = match read_data(file_handles_for_piece, 0, piece_len) {
             Ok(data) => data,
             Err(error) => bail!(ShaCheckReadError { piece_idx, error }),
@@ -575,13 +559,12 @@ fn write_piece_block(
 fn refresh_completed_pieces(
     piece_hashes: &PieceHashes,
     piece_sizer: &PieceSizer,
-    pieces_to_file_paths_mapper: Arc<PiecesToFilePathsMapper>,
+    file_handles: &mut ReadFileHandles,
 ) -> PieceCompletionStatus {
     log::info!("checking pieces already downloaded...");
 
     let mut piece_completion_status = vec![false; piece_hashes.len()];
     let mut total_completed = 0;
-    let mut file_handles = ReadFileHandles::new();
     for idx in 0..piece_sizer.total_pieces() {
         // print progress
         if idx % (cmp::max(10, piece_sizer.total_pieces()) / 10) == 0 {
@@ -591,8 +574,7 @@ fn refresh_completed_pieces(
             );
         }
 
-        match get_files_for_piece_for_r(pieces_to_file_paths_mapper.clone(), &mut file_handles, idx)
-        {
+        match file_handles.get_files_for_piece(idx) {
             Err(_) => {
                 piece_completion_status[idx] = false;
             }

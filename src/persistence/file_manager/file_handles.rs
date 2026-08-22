@@ -14,16 +14,18 @@ pub type FileHandlesForPiece = Vec<(Arc<File>, u64, u64)>;
 
 pub struct ReadFileHandles {
     file_handles: HashMap<PathBuf, Arc<File>>,
+    pieces_to_file_paths_mapper: Arc<PiecesToFilePathsMapper>,
 }
 
 impl ReadFileHandles {
-    pub fn new() -> ReadFileHandles {
+    pub fn new(pieces_to_file_paths_mapper: Arc<PiecesToFilePathsMapper>) -> ReadFileHandles {
         ReadFileHandles {
             file_handles: HashMap::new(),
+            pieces_to_file_paths_mapper,
         }
     }
 
-    pub fn get_file(&mut self, file_path: &PathBuf) -> Result<Arc<File>> {
+    fn get_file(&mut self, file_path: &PathBuf) -> Result<Arc<File>> {
         // this will fail if the file does not exist, but we have a gate to prevent this if we know we don't have it
         if !self.file_handles.contains_key(file_path) {
             let f = File::options().read(true).open(file_path)?;
@@ -35,20 +37,31 @@ impl ReadFileHandles {
             .expect("file is present since we fetched it or inserted if missing")
             .clone())
     }
+
+    pub fn get_files_for_piece(&mut self, piece_idx: usize) -> Result<FileHandlesForPiece> {
+        let mut file_handles_for_piece = Vec::new();
+        for (file_path, start, end) in self.pieces_to_file_paths_mapper.get(piece_idx).iter() {
+            let f = self.get_file(file_path)?;
+            file_handles_for_piece.push((f, *start, *end));
+        }
+        Ok(file_handles_for_piece)
+    }
 }
 
 pub struct WriteFileHandles {
     file_handles: HashMap<PathBuf, Arc<File>>,
+    pieces_to_file_paths_mapper: Arc<PiecesToFilePathsMapper>,
 }
 
 impl WriteFileHandles {
-    pub fn new() -> WriteFileHandles {
+    pub fn new(pieces_to_file_paths_mapper: Arc<PiecesToFilePathsMapper>) -> WriteFileHandles {
         WriteFileHandles {
             file_handles: HashMap::new(),
+            pieces_to_file_paths_mapper,
         }
     }
 
-    pub fn get_file(&mut self, file_path: &PathBuf) -> Result<Arc<File>> {
+    fn get_file(&mut self, file_path: &PathBuf) -> Result<Arc<File>> {
         if !self.file_handles.contains_key(file_path) {
             if let Some(dir) = file_path.parent() {
                 fs::create_dir_all(dir)?;
@@ -67,30 +80,13 @@ impl WriteFileHandles {
             .expect("file is present since we fetched it or inserted if missing")
             .clone())
     }
-}
 
-pub fn get_files_for_piece_for_r(
-    pieces_to_file_paths_mapper: Arc<PiecesToFilePathsMapper>,
-    read_file_handles: &mut ReadFileHandles,
-    piece_idx: usize,
-) -> Result<FileHandlesForPiece> {
-    let mut file_handles_for_piece = Vec::new();
-    for (file_path, start, end) in pieces_to_file_paths_mapper.get(piece_idx).iter() {
-        let f = read_file_handles.get_file(file_path)?;
-        file_handles_for_piece.push((f, *start, *end));
+    pub fn get_files_for_piece(&mut self, piece_idx: usize) -> Result<FileHandlesForPiece> {
+        let mut file_handles_for_piece = Vec::new();
+        for (file_path, start, end) in self.pieces_to_file_paths_mapper.get(piece_idx).iter() {
+            let f = self.get_file(file_path)?;
+            file_handles_for_piece.push((f, *start, *end));
+        }
+        Ok(file_handles_for_piece)
     }
-    Ok(file_handles_for_piece)
-}
-
-pub fn get_files_for_piece_for_w(
-    pieces_to_file_paths_mapper: Arc<PiecesToFilePathsMapper>,
-    write_file_handles: &mut WriteFileHandles,
-    piece_idx: usize,
-) -> Result<FileHandlesForPiece> {
-    let mut file_handles_for_piece = Vec::new();
-    for (file_path, start, end) in pieces_to_file_paths_mapper.get(piece_idx).iter() {
-        let f = write_file_handles.get_file(file_path)?;
-        file_handles_for_piece.push((f, *start, *end));
-    }
-    Ok(file_handles_for_piece)
 }
