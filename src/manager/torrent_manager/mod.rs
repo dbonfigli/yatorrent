@@ -1,10 +1,10 @@
 use std::path::PathBuf;
-use std::process;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{iter, path::Path};
 
 use rand::RngExt;
+use thiserror::Error;
 use tokio::sync::mpsc::{self, Receiver, Sender, UnboundedReceiver, UnboundedSender};
 
 use crate::manager::bandwidth_tracker::BandwidthTracker;
@@ -108,6 +108,24 @@ struct GlobalRateLimiter {
     upload_rate_limiter: Option<Arc<tokio::sync::Mutex<RateLimiter>>>,
 }
 
+#[derive(Debug, Error)]
+#[error("unrecoverable error: {error}")]
+pub struct UnrecoverableError {
+    // maybe add something structured in the future
+    error: String,
+}
+
+impl UnrecoverableError {
+    pub fn new(error: String) -> UnrecoverableError {
+        UnrecoverableError { error }
+    }
+}
+
+pub enum ShutdownRequest {
+    Success,
+    Error(UnrecoverableError),
+}
+
 pub struct TorrentManager {
     torrent_manager_config: TorrentManagerConfig,
     file_manager_handler: FileManagerHandler,
@@ -122,12 +140,12 @@ pub struct TorrentManager {
     piece_requestor: PieceRequestor,
     pex_handler: PexHandler,
     request_timeout: Duration,
-    shutdown_request_tx: UnboundedSender<i32>, // exit code
-    shutdown_request_rx: UnboundedReceiver<i32>,
+    shutdown_request_tx: UnboundedSender<ShutdownRequest>,
+    shutdown_request_rx: UnboundedReceiver<ShutdownRequest>,
 }
 
 impl TorrentManager {
-    pub fn new(opts: TorrentManagerOptions) -> Self {
+    pub fn new(opts: TorrentManagerOptions) -> Result<Self, UnrecoverableError> {
         let own_peer_id = generate_peer_id();
         let base_path = Path::new(&opts.storage_opts.base_path);
 
@@ -162,27 +180,24 @@ impl TorrentManager {
         };
 
         let mut file_manager_handler = FileManagerHandler::new();
-        let torrent_data_status = opts.storage_opts.files_data.map(
-            |FilesData {
-                 file_list,
-                 piece_length,
-                 piece_hashes,
-             }| {
-                match file_manager_handler.start(base_path, file_list, piece_length, piece_hashes) {
-                    Ok(torrent_data_status) => {
-                        if torrent_data_status.completed() && opts.exit_when_complete {
-                            log::info!("torrent fully downloaded; exiting");
-                            process::exit(0);
-                        }
-                        torrent_data_status
-                    }
-                    Err(e) => {
-                        log::error!("initialization of torrent data failed: {e}");
-                        process::exit(1);
-                    }
+
+        let torrent_data_status = if let Some(files_data) = opts.storage_opts.files_data {
+            match file_manager_handler.start(
+                base_path,
+                files_data.file_list,
+                files_data.piece_length,
+                files_data.piece_hashes,
+            ) {
+                Ok(torrent_data_status) => Some(torrent_data_status),
+                Err(e) => {
+                    return Result::Err(UnrecoverableError::new(format!(
+                        "initialization of torrent data failed: {e}"
+                    )));
                 }
-            },
-        );
+            }
+        } else {
+            None
+        };
 
         let (to_new_incoming_peers_handler_tx, to_new_incoming_peers_handler_rx) =
             mpsc::unbounded_channel();
@@ -223,7 +238,7 @@ impl TorrentManager {
             Ok(metadata_handler) => metadata_handler,
             Err(e) => {
                 log::error!("initialization failed: {e}");
-                process::exit(1);
+                return Err(UnrecoverableError::new(e.to_string()));
             }
         };
 
@@ -236,7 +251,7 @@ impl TorrentManager {
 
         let (shutdown_request_tx, shutdown_request_rx) = mpsc::unbounded_channel();
 
-        TorrentManager {
+        Ok(TorrentManager {
             torrent_manager_config,
             file_manager_handler,
             torrent_data_status,
@@ -256,10 +271,18 @@ impl TorrentManager {
             request_timeout: BASE_REQUEST_TIMEOUT,
             shutdown_request_tx,
             shutdown_request_rx,
-        }
+        })
     }
 
-    pub async fn start(&mut self) {
+    pub async fn start(&mut self) -> Result<(), UnrecoverableError> {
+        if self.torrent_manager_config.exit_when_complete
+            && let Some(torrent_data_status) = self.torrent_data_status.as_ref()
+            && torrent_data_status.completed()
+        {
+            log::info!("torrent fully downloaded; exiting");
+            return Ok(());
+        }
+
         // start dht manager
         self.dht_handler.start_dht_manager(
             self.torrent_manager_config
@@ -287,8 +310,8 @@ impl TorrentManager {
         )
         .await;
 
-        // start control loop to handle channel messages - will block forever
-        self.control_loop().await;
+        // start control loop to handle channel messages
+        return self.control_loop().await;
     }
 }
 

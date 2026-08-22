@@ -148,6 +148,10 @@ async fn main() -> Result<()> {
         let torrent_content = bencoding::Value::new(&contents);
         let metainfo = metadata::metainfo::Metainfo::new(&torrent_content, &contents);
         match metainfo {
+            Err(e) => {
+                log::error!("The .torrent file is invalid: could not parse metainfo: {e}");
+                exit(1)
+            }
             Ok(m) => {
                 log::info!("torrent file metainfo:\n{m}");
                 if m.announce_list.is_empty() {
@@ -165,7 +169,7 @@ async fn main() -> Result<()> {
                         "The .torrent file contains a \"nodes\" field, the torrent is announcing also via specific DHT nodes"
                     );
                 }
-                TorrentManager::new(TorrentManagerOptions {
+                let tm_res = TorrentManager::new(TorrentManagerOptions {
                     info_hash: m.info_hash,
                     network_opts: TorrentManagerNetworkOptions {
                         listening_torrent_wire_protocol_port: args.port,
@@ -191,20 +195,32 @@ async fn main() -> Result<()> {
                     show_peers_stats: args.show_peers_stats,
                     exit_when_complete: args.exit_when_complete,
                     dht_enabled: !args.no_dht,
-                })
-                .start()
-                .await;
-                exit(0);
-            }
-            Err(e) => {
-                log::error!("The .torrent file is invalid: could not parse metainfo: {e}");
-                exit(1)
+                });
+                match tm_res {
+                    Err(e) => {
+                        log::error!("{e}, exiting...");
+                        exit(1);
+                    }
+                    Ok(mut tm) => match tm.start().await {
+                        Ok(_) => {
+                            exit(0);
+                        }
+                        Err(e) => {
+                            log::error!("{e}, exiting...");
+                            exit(1);
+                        }
+                    },
+                }
             }
         }
     } else if let Some(magnet_uri) = args.magnet_uri {
         match magnet::Magnet::new(magnet_uri) {
+            Err(e) => {
+                log::error!("Could not parse magnet link: {e}");
+                exit(1)
+            }
             Ok(magnet) => {
-                TorrentManager::new(TorrentManagerOptions {
+                let tm_res = TorrentManager::new(TorrentManagerOptions {
                     info_hash: magnet.info_hash,
                     network_opts: TorrentManagerNetworkOptions {
                         listening_torrent_wire_protocol_port: args.port,
@@ -226,14 +242,22 @@ async fn main() -> Result<()> {
                     show_peers_stats: args.show_peers_stats,
                     exit_when_complete: args.exit_when_complete,
                     dht_enabled: !args.no_dht,
-                })
-                .start()
-                .await;
-                exit(0);
-            }
-            Err(e) => {
-                log::error!("Could not parse magnet link: {e}");
-                exit(1)
+                });
+                match tm_res {
+                    Err(e) => {
+                        log::error!("{e}, exiting...");
+                        exit(1);
+                    }
+                    Ok(mut tm) => match tm.start().await {
+                        Ok(_) => {
+                            exit(0);
+                        }
+                        Err(e) => {
+                            log::error!("{e}, exiting...");
+                            exit(1);
+                        }
+                    },
+                }
             }
         }
     }

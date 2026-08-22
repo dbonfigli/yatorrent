@@ -12,7 +12,7 @@ use crate::manager::peer::{
     METADATA_MESSAGE_DATA, METADATA_MESSAGE_REJECT, METADATA_MESSAGE_REQUEST, MetadataMessage, Peer,
 };
 use crate::manager::peer_handler::ToNewIncomingPeersHandlerMsg;
-use crate::manager::torrent_manager::TorrentManager;
+use crate::manager::torrent_manager::{ShutdownRequest, TorrentManager, UnrecoverableError};
 use crate::metadata::infodict::{self, ParsedInfodict};
 use crate::util::{FileEntry, HostAndPort};
 use anyhow::Result;
@@ -305,13 +305,15 @@ impl TorrentManager {
                 Ok(t) => {
                     if t.completed() && self.torrent_manager_config.exit_when_complete {
                         log::info!("torrent fully downloaded; exiting");
-                        self.send_shutdown_request(0);
+                        self.send_shutdown_request(ShutdownRequest::Success);
                     }
                     Some(t)
                 }
                 Err(e) => {
                     log::error!("initialization of torrent data failed: {e}");
-                    self.send_shutdown_request(1);
+                    self.send_shutdown_request(ShutdownRequest::Error(UnrecoverableError::new(
+                        e.to_string(),
+                    )));
                     return;
                 }
             };

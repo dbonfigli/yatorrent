@@ -8,7 +8,7 @@ use crate::{
     manager::{
         peer::Peer,
         peer_handler::{ToNewIncomingPeersHandlerMsg, ToPeerMsg},
-        torrent_manager::TorrentManager,
+        torrent_manager::{ShutdownRequest, TorrentManager},
     },
     persistence::{
         file_manager::{
@@ -210,7 +210,7 @@ impl TorrentManager {
                             // even if we block here, we don't care, we will shut down soon
                             log::info!("sending completed event to tracker...");
                             let _ = join_handle.await;
-                            self.send_shutdown_request(0);
+                            self.send_shutdown_request(ShutdownRequest::Success);
                         }
                     }
 

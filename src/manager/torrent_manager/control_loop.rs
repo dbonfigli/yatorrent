@@ -1,6 +1,5 @@
 use std::{
     net::{IpAddr, Ipv4Addr},
-    process,
     time::Duration,
 };
 
@@ -16,7 +15,10 @@ use crate::{
         },
         pex_handler::PexEvent,
         piece_requestor::MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT,
-        torrent_manager::{TorrentManager, file_manager_handler::FileManagerResponse},
+        torrent_manager::{
+            ShutdownRequest, TorrentManager, UnrecoverableError,
+            file_manager_handler::FileManagerResponse,
+        },
     },
     tracker,
     util::{HostAndPort, pretty_info_hash},
@@ -53,10 +55,12 @@ async fn shutdown_signal() {
 }
 
 impl TorrentManager {
-    pub(super) async fn control_loop(&mut self) {
+    pub(super) async fn control_loop(&mut self) -> Result<(), UnrecoverableError> {
+        let mut result = Ok(());
+
         let mut ticker = tokio::time::interval(TICK_INTERVAL);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        let mut exit_code = 0;
+
         let shutdown = shutdown_signal();
         tokio::pin!(shutdown);
 
@@ -69,8 +73,10 @@ impl TorrentManager {
                     break;
                 }
 
-                Some(code) = self.shutdown_request_rx.recv() => {
-                    exit_code = code;
+                Some(shutdown_request) = self.shutdown_request_rx.recv() => {
+                    if let ShutdownRequest::Error(e) = shutdown_request {
+                        result = Err(e);
+                    }
                     break;
                 }
 
@@ -116,7 +122,8 @@ impl TorrentManager {
         }
 
         // graceful shutdown
-        self.shutdown(exit_code).await;
+        self.shutdown().await;
+        result
     }
 
     fn handle_new_peer_from_dht(&mut self, ip: Ipv4Addr, port: u16) {
@@ -227,24 +234,17 @@ impl TorrentManager {
         }
     }
 
-    pub fn send_shutdown_request(&mut self, exit_code: i32) {
+    pub fn send_shutdown_request(&mut self, shutdown_request: ShutdownRequest) {
         self.shutdown_request_tx
-            .send(exit_code)
+            .send(shutdown_request)
             .expect("shutdown_request_tx receiver half closed");
     }
 
-    async fn shutdown(&mut self, exit_code: i32) {
+    async fn shutdown(&mut self) {
         log::info!("sending stopped event to tracker...");
 
-        // on a second Ctrl+C, we just give up waiting for the tracker request
-        tokio::spawn(async move {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("failed to listen for Ctrl+C");
-            process::exit(exit_code);
-        });
-
-        self.tracker_requestor
+        match self
+            .tracker_requestor
             .async_request_to_tracker(
                 tracker::Event::Stopped,
                 &self.peers_ctx.advertised_peers,
@@ -255,9 +255,20 @@ impl TorrentManager {
                 ),
             )
             .await
-            .map(async |join_handle| join_handle.await);
-
-        log::info!("exiting with code {exit_code}");
-        process::exit(exit_code);
+        {
+            Some(tracker_req_join_handle) => {
+                tokio::select!(
+                    _ = tokio::signal::ctrl_c() => {
+                        // on a second Ctrl+C, we just give up waiting for the tracker request
+                        return;
+                    }
+                    _ = tracker_req_join_handle => {
+                        // tracker request completed
+                        return;
+                    }
+                )
+            }
+            None => return,
+        }
     }
 }
