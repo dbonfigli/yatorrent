@@ -235,6 +235,15 @@ impl TorrentManager {
 
     async fn shutdown(&mut self, exit_code: i32) {
         log::info!("sending stopped event to tracker...");
+
+        // on a second Ctrl+C, we just give up waiting for the tracker request
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to listen for Ctrl+C");
+            process::exit(exit_code);
+        });
+
         self.tracker_requestor
             .async_request_to_tracker(
                 tracker::Event::Stopped,
