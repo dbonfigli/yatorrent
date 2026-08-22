@@ -87,6 +87,8 @@ Options:
           Max allowed total upload bandwidth, with associated unit, e.g 10MiB (MiB is different from MB, the value is always bytes regardless of the case of "b", optional, no limit if not provided) [env: MAX_UPLOAD_BANDWIDTH=]
   -e, --exit-when-complete
           Exit the client when the download is complete [env: EXIT_WHEN_COMPLETE=]
+  -n, --no-dht
+          Disable the DHT (Distributed Hash Table) to find peers without a central tracker (enabled by default) [env: NO_DHT=]
   -h, --help
           Print help
   -V, --version
