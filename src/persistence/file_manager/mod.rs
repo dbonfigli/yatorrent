@@ -1,19 +1,27 @@
 use anyhow::{Result, bail};
 use sha1::{Digest, Sha1};
 use size::Size;
+use std::cmp;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::{cmp, fs};
 use thiserror::Error;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{Receiver, UnboundedSender};
 
+use crate::persistence::file_manager::file_handles::{
+    FileHandlesForPiece, ReadFileHandles, WriteFileHandles, get_files_for_piece_for_r,
+    get_files_for_piece_for_w,
+};
+use crate::persistence::file_manager::pieces_to_file_paths_mapper::PiecesToFilePathsMapper;
 use crate::persistence::piece::Piece;
 use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::util::{FileEntry, HostAndPort};
+
+mod file_handles;
+mod pieces_to_file_paths_mapper;
 
 const MAX_CONCURRENT_READ_OPS: usize = 10; // todo: make this dynamic depending on the read speed (spinning disk should have this set to 1)
 
@@ -54,69 +62,6 @@ impl PieceSizer {
         self.total_pieces
     }
 }
-
-struct ReadFileHandles {
-    file_handles: HashMap<PathBuf, Arc<File>>,
-}
-
-impl ReadFileHandles {
-    fn new() -> ReadFileHandles {
-        ReadFileHandles {
-            file_handles: HashMap::new(),
-        }
-    }
-
-    fn get_file(&mut self, file_path: &PathBuf) -> Result<Arc<File>> {
-        // this will fail if the file does not exist, but we have a gate to prevent this if we know we don't have it
-        if !self.file_handles.contains_key(file_path) {
-            let f = File::options().read(true).open(file_path)?;
-            self.file_handles.insert(file_path.clone(), Arc::new(f));
-        }
-        Ok(self
-            .file_handles
-            .get(file_path)
-            .expect("file is present since we fetched it or inserted if missing")
-            .clone())
-    }
-}
-
-struct WriteFileHandles {
-    file_handles: HashMap<PathBuf, Arc<File>>,
-}
-
-impl WriteFileHandles {
-    fn new() -> WriteFileHandles {
-        WriteFileHandles {
-            file_handles: HashMap::new(),
-        }
-    }
-
-    fn get_file(&mut self, file_path: &PathBuf) -> Result<Arc<File>> {
-        if !self.file_handles.contains_key(file_path) {
-            if let Some(dir) = file_path.parent() {
-                fs::create_dir_all(dir)?;
-            }
-            let f = File::options()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(file_path)?;
-            self.file_handles.insert(file_path.clone(), Arc::new(f));
-        }
-        Ok(self
-            .file_handles
-            .get(file_path)
-            .expect("file is present since we fetched it or inserted if missing")
-            .clone())
-    }
-}
-
-// A piece can span many files.
-// The following is the list of files (file handles, start byte as offset of the piece, end byte as offset of the piece) a piece belong to, ordered.
-type FileHandlesForPiece = Vec<(Arc<File>, u64, u64)>;
-type FilePathsForPiece = Vec<(PathBuf, u64, u64)>; // same as FileHandlesForPiece but with file paths
-type FilePathsForPieces = Vec<FilePathsForPiece>; // piece identified by position in the array -> FilePathsForPiece
 
 type PieceCompletionStatus = Vec<bool>; // piece identified by position in array -> download completed / incomplete
 type PieceHashes = Vec<[u8; 20]>; // piece identified by position in array -> hash
@@ -230,7 +175,7 @@ pub fn start_file_manager(
         );
     }
 
-    let file_paths_for_pieces = Arc::new(generate_file_paths_for_pieces(
+    let pieces_to_file_paths_mapper = Arc::new(PiecesToFilePathsMapper::new(
         base_path,
         total_pieces,
         normal_piece_length,
@@ -238,7 +183,7 @@ pub fn start_file_manager(
     ));
 
     let mut last_piece_length = 0;
-    for (_, start, end) in file_paths_for_pieces[total_pieces - 1].iter() {
+    for (_, start, end) in pieces_to_file_paths_mapper.get(total_pieces - 1).iter() {
         last_piece_length += end - start;
     }
     let piece_sizer = PieceSizer {
@@ -247,13 +192,16 @@ pub fn start_file_manager(
         last_piece_length,
     };
 
-    let piece_completion_status =
-        refresh_completed_pieces(&piece_hashes, &piece_sizer, file_paths_for_pieces.clone());
+    let piece_completion_status = refresh_completed_pieces(
+        &piece_hashes,
+        &piece_sizer,
+        pieces_to_file_paths_mapper.clone(),
+    );
 
     log_file_completion_stats(
         base_path,
         &file_list,
-        file_paths_for_pieces.clone(),
+        pieces_to_file_paths_mapper.clone(),
         &piece_completion_status,
     );
 
@@ -263,7 +211,7 @@ pub fn start_file_manager(
     // read request loop
     let piece_completion_status_for_reads = shared_piece_completion_status.clone();
     let piece_sizer_for_reads = piece_sizer.clone();
-    let file_paths_for_pieces_for_reads = file_paths_for_pieces.clone();
+    let pieces_to_file_paths_mapper_for_reads = pieces_to_file_paths_mapper.clone();
     tokio::spawn(async move {
         let mut file_handles = ReadFileHandles::new();
         let fs_reads_semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_READ_OPS));
@@ -277,7 +225,7 @@ pub fn start_file_manager(
                         piece_completion_status_for_reads.clone(),
                         &piece_sizer_for_reads,
                         &mut file_handles,
-                        file_paths_for_pieces_for_reads.clone()
+                        pieces_to_file_paths_mapper_for_reads.clone()
                     ).await;
                 }
                 else => break,
@@ -299,7 +247,7 @@ pub fn start_file_manager(
                         &write_responses_tx,
                         &piece_sizer,
                         shared_piece_completion_status.clone(),
-                        file_paths_for_pieces.clone(),
+                        pieces_to_file_paths_mapper.clone(),
                         &mut file_handles,
                         &piece_hashes,
                         &mut incomplete_pieces
@@ -372,7 +320,7 @@ async fn handle_read_piece_block(
     piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
     piece_sizer: &PieceSizer,
     read_file_handles: &mut ReadFileHandles,
-    file_paths_for_pieces: Arc<FilePathsForPieces>,
+    pieces_to_file_paths_mapper: Arc<PiecesToFilePathsMapper>,
 ) {
     match read_piece_block_pre_checks(
         piece_completion_status,
@@ -393,7 +341,7 @@ async fn handle_read_piece_block(
     }
 
     let file_handles_for_piece = match get_files_for_piece_for_r(
-        file_paths_for_pieces,
+        pieces_to_file_paths_mapper,
         read_file_handles,
         read_piece_block_request.piece_idx,
     ) {
@@ -460,39 +408,13 @@ fn read_piece_block_pre_checks(
     Ok(())
 }
 
-fn get_files_for_piece_for_r(
-    file_paths_for_pieces: Arc<FilePathsForPieces>,
-    read_file_handles: &mut ReadFileHandles,
-    piece_idx: usize,
-) -> Result<FileHandlesForPiece> {
-    let mut file_handles_for_piece = Vec::new();
-    for (file_path, start, end) in file_paths_for_pieces[piece_idx].iter() {
-        let f = read_file_handles.get_file(file_path)?;
-        file_handles_for_piece.push((f, *start, *end));
-    }
-    Ok(file_handles_for_piece)
-}
-
-fn get_files_for_piece_for_w(
-    file_paths_for_pieces: Arc<FilePathsForPieces>,
-    write_file_handles: &mut WriteFileHandles,
-    piece_idx: usize,
-) -> Result<FileHandlesForPiece> {
-    let mut file_handles_for_piece = Vec::new();
-    for (file_path, start, end) in file_paths_for_pieces[piece_idx].iter() {
-        let f = write_file_handles.get_file(file_path)?;
-        file_handles_for_piece.push((f, *start, *end));
-    }
-    Ok(file_handles_for_piece)
-}
-
 fn handle_write_piece_block(
     write_piece_block_request: WritePieceBlockRequest,
     writes_file_manager_to_torrent_manager_tx: &UnboundedSender<WritePieceBlockResponse>,
 
     piece_sizer: &PieceSizer,
     piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
-    file_paths_for_pieces: Arc<FilePathsForPieces>,
+    pieces_to_file_paths_mapper: Arc<PiecesToFilePathsMapper>,
     write_file_handles: &mut WriteFileHandles,
     piece_hashes: &PieceHashes,
     incomplete_pieces: &mut HashMap<usize, Piece>,
@@ -503,7 +425,7 @@ fn handle_write_piece_block(
         write_piece_block_request.block_begin,
         piece_sizer,
         piece_completion_status,
-        file_paths_for_pieces,
+        pieces_to_file_paths_mapper,
         write_file_handles,
         piece_hashes,
         incomplete_pieces,
@@ -524,7 +446,7 @@ fn write_piece_block(
 
     piece_sizer: &PieceSizer,
     piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
-    file_paths_for_pieces: Arc<FilePathsForPieces>,
+    pieces_to_file_paths_mapper: Arc<PiecesToFilePathsMapper>,
     write_file_handles: &mut WriteFileHandles,
     piece_hashes: &PieceHashes,
     incomplete_pieces: &mut HashMap<usize, Piece>,
@@ -580,7 +502,7 @@ fn write_piece_block(
     let mut data_cursor: u64 = 0;
     let mut data_still_to_be_written = data_len;
     let mut piece_cursor_to_begin = 0;
-    for (file_path, file_start, file_end) in file_paths_for_pieces[piece_idx].iter() {
+    for (file_path, file_start, file_end) in pieces_to_file_paths_mapper.get(piece_idx).iter() {
         if data_still_to_be_written == 0 {
             break;
         }
@@ -620,7 +542,7 @@ fn write_piece_block(
         )?;
 
         let file_handles_for_piece =
-            get_files_for_piece_for_w(file_paths_for_pieces, write_file_handles, piece_idx)?;
+            get_files_for_piece_for_w(pieces_to_file_paths_mapper, write_file_handles, piece_idx)?;
         let read_piece_data = match read_data(file_handles_for_piece, 0, piece_len) {
             Ok(data) => data,
             Err(error) => bail!(ShaCheckReadError { piece_idx, error }),
@@ -650,88 +572,10 @@ fn write_piece_block(
     }
 }
 
-fn generate_file_paths_for_pieces(
-    base_path: &Path,
-    total_pieces: usize,
-    piece_length: u64,
-    file_list: &Vec<FileEntry>,
-) -> FilePathsForPieces {
-    let mut file_paths_for_pieces = Vec::with_capacity(total_pieces);
-    let mut current_file_index = 0;
-    let mut current_position_in_file = 0;
-    for piece_index in 0..total_pieces {
-        let mut remaining_piece_bytes_to_allocate = piece_length;
-        let mut files_spanning_piece = Vec::new();
-
-        while remaining_piece_bytes_to_allocate > 0 {
-            if current_file_index >= file_list.len() {
-                // there are no more files in the list
-                if piece_index >= total_pieces - 1 {
-                    // this was the last piece, it is normal that the piece does not span the full piece_length size for the last file
-                    break;
-                } else {
-                    panic!(
-                        "there are no more files, but there are more pieces still to be matched to files, it seem piece_length * #pieces > sum of all the file sizes, this should never happen, the .torrent file is malformed"
-                    )
-                }
-            }
-
-            let FileEntry {
-                path: file_name,
-                size: file_size,
-            } = &file_list[current_file_index];
-            let remaining_bytes_in_file = file_size - current_position_in_file;
-
-            let piece_bytes_fitting_in_file =
-                cmp::min(remaining_bytes_in_file, remaining_piece_bytes_to_allocate);
-
-            let file_name_path = Path::new(file_name);
-            if file_name_path.is_absolute() {
-                panic!(
-                    "the torrent file {} contained a file with absolute path, this is not acceptable",
-                    file_name
-                )
-            }
-            for c in file_name_path.components() {
-                if matches!(c, Component::ParentDir) {
-                    panic!(
-                        "the torrent file {} contained a reference to a parent directory, this is not acceptable",
-                        file_name
-                    )
-                }
-                if matches!(c, Component::Prefix(_)) {
-                    panic!(
-                        "the torrent file {} contained a Windows prefix, this is not acceptable",
-                        file_name
-                    )
-                }
-            }
-
-            let path = Path::new(base_path).join(file_name_path);
-
-            files_spanning_piece.push((
-                path,
-                current_position_in_file,
-                current_position_in_file + piece_bytes_fitting_in_file,
-            ));
-            remaining_piece_bytes_to_allocate -= piece_bytes_fitting_in_file;
-            current_position_in_file += piece_bytes_fitting_in_file;
-            if current_position_in_file >= *file_size {
-                current_position_in_file = 0;
-                current_file_index += 1;
-            }
-        }
-
-        file_paths_for_pieces.push(files_spanning_piece);
-    }
-
-    file_paths_for_pieces
-}
-
 fn refresh_completed_pieces(
     piece_hashes: &PieceHashes,
     piece_sizer: &PieceSizer,
-    file_paths_for_pieces: Arc<FilePathsForPieces>,
+    pieces_to_file_paths_mapper: Arc<PiecesToFilePathsMapper>,
 ) -> PieceCompletionStatus {
     log::info!("checking pieces already downloaded...");
 
@@ -747,7 +591,8 @@ fn refresh_completed_pieces(
             );
         }
 
-        match get_files_for_piece_for_r(file_paths_for_pieces.clone(), &mut file_handles, idx) {
+        match get_files_for_piece_for_r(pieces_to_file_paths_mapper.clone(), &mut file_handles, idx)
+        {
             Err(_) => {
                 piece_completion_status[idx] = false;
             }
@@ -781,7 +626,7 @@ fn refresh_completed_pieces(
 fn get_file_list_with_completion_status(
     base_path: &Path,
     file_list: &Vec<FileEntry>,
-    file_paths_for_pieces: Arc<FilePathsForPieces>,
+    pieces_to_file_paths_mapper: Arc<PiecesToFilePathsMapper>,
     piece_completion_status: &PieceCompletionStatus,
 ) -> Vec<(PathBuf, u64, bool)> {
     let mut file_list_with_completion_status: Vec<(PathBuf, u64, bool)> = file_list
@@ -796,7 +641,8 @@ fn get_file_list_with_completion_status(
         .collect();
 
     let mut cur_file_idx = 0;
-    for (idx, file_paths_for_piece) in file_paths_for_pieces.iter().enumerate() {
+    for idx in 0..piece_completion_status.len() {
+        let file_paths_for_piece = pieces_to_file_paths_mapper.get(idx);
         for (piece_fragment_file_path, _, _) in file_paths_for_piece.iter() {
             if file_list_with_completion_status[cur_file_idx].0 != *piece_fragment_file_path {
                 cur_file_idx += 1;
@@ -811,13 +657,13 @@ fn get_file_list_with_completion_status(
 fn log_file_completion_stats(
     base_path: &Path,
     file_list: &Vec<FileEntry>,
-    file_paths_for_pieces: Arc<FilePathsForPieces>,
+    pieces_to_file_paths_mapper: Arc<PiecesToFilePathsMapper>,
     piece_completion_status: &PieceCompletionStatus,
 ) {
     let file_list_with_completion_status = get_file_list_with_completion_status(
         base_path,
         file_list,
-        file_paths_for_pieces,
+        pieces_to_file_paths_mapper,
         piece_completion_status,
     );
 
@@ -842,116 +688,10 @@ fn log_file_completion_stats(
 #[cfg(test)]
 mod tests {
     use crate::persistence::file_manager::FileEntry;
-    use crate::persistence::file_manager::{
-        generate_file_paths_for_pieces, get_file_list_with_completion_status,
-    };
-    use std::path::{Path, PathBuf};
+    use crate::persistence::file_manager::PiecesToFilePathsMapper;
+    use crate::persistence::file_manager::get_file_list_with_completion_status;
+    use std::path::Path;
     use std::sync::Arc;
-
-    #[test]
-    fn generate_file_paths_for_pieces_1() {
-        let file_list = vec![
-            FileEntry::new("f1".to_string(), 5),
-            FileEntry::new("f2".to_string(), 20),
-            FileEntry::new("f3".to_string(), 5),
-        ];
-        let pieces = vec![
-            b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
-            b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
-            b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
-        ];
-        let piece_length = 10;
-
-        let file_paths_for_pieces = generate_file_paths_for_pieces(
-            Path::new("relative/"),
-            pieces.len(),
-            piece_length,
-            &file_list,
-        );
-        assert_eq!(
-            file_paths_for_pieces,
-            vec![
-                vec![
-                    (PathBuf::from("relative/f1"), 0, 5),
-                    (PathBuf::from("relative/f2"), 0, 5)
-                ],
-                vec![(PathBuf::from("relative/f2"), 5, 15)],
-                vec![
-                    (PathBuf::from("relative/f2"), 15, 20),
-                    (PathBuf::from("relative/f3"), 0, 5)
-                ]
-            ]
-        );
-    }
-
-    #[test]
-    fn generate_file_paths_for_pieces_2() {
-        let file_list = vec![FileEntry::new("f1".to_string(), 5)];
-        let pieces = vec![b"aaaaaaaaaaaaaaaaaaaa".to_owned()];
-        let piece_length = 5;
-
-        let file_paths_for_pieces = generate_file_paths_for_pieces(
-            Path::new("/absolute/"),
-            pieces.len(),
-            piece_length,
-            &file_list,
-        );
-        assert_eq!(
-            file_paths_for_pieces,
-            vec![vec![(PathBuf::from("/absolute/f1"), 0, 5)]]
-        );
-    }
-
-    #[test]
-    fn generate_file_paths_for_pieces_3() {
-        let file_list = vec![FileEntry::new("f1".to_string(), 5)];
-        let pieces = vec![b"aaaaaaaaaaaaaaaaaaaa".to_owned()];
-        let piece_length = 6;
-
-        let file_paths_for_pieces = generate_file_paths_for_pieces(
-            Path::new("hello/moto"),
-            pieces.len(),
-            piece_length,
-            &file_list,
-        );
-
-        assert_eq!(
-            file_paths_for_pieces,
-            vec![vec![(PathBuf::from("hello/moto/f1"), 0, 5)]]
-        );
-    }
-
-    #[test]
-    fn generate_file_paths_for_pieces_4() {
-        let file_list = vec![
-            FileEntry::new("f1".to_string(), 10),
-            FileEntry::new("f2".to_string(), 10),
-            FileEntry::new("f3".to_string(), 5),
-            FileEntry::new("f4".to_string(), 3),
-            FileEntry::new("f5".to_string(), 3),
-        ];
-        let pieces = vec![
-            b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
-            b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
-            b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
-        ];
-        let piece_length = 10;
-
-        let file_paths_for_pieces =
-            generate_file_paths_for_pieces(Path::new("./"), pieces.len(), piece_length, &file_list);
-        assert_eq!(
-            file_paths_for_pieces,
-            vec![
-                vec![(PathBuf::from("./f1"), 0, 10)],
-                vec![(PathBuf::from("./f2"), 0, 10)],
-                vec![
-                    (PathBuf::from("./f3"), 0, 5),
-                    (PathBuf::from("./f4"), 0, 3),
-                    (PathBuf::from("./f5"), 0, 2),
-                ]
-            ]
-        );
-    }
 
     #[test]
     fn test_refresh_completed_files_1() {
@@ -962,7 +702,7 @@ mod tests {
             FileEntry::new("f4".to_string(), 3),
             FileEntry::new("f5".to_string(), 3),
         ];
-        let file_paths_for_pieces = Arc::new(generate_file_paths_for_pieces(
+        let pieces_to_file_paths_mapper = Arc::new(PiecesToFilePathsMapper::new(
             Path::new("./"),
             3,
             10,
@@ -973,7 +713,7 @@ mod tests {
         let res = get_file_list_with_completion_status(
             Path::new("./"),
             &file_list,
-            file_paths_for_pieces,
+            pieces_to_file_paths_mapper,
             &piece_completion_status,
         );
         assert_eq!(
@@ -998,7 +738,7 @@ mod tests {
             FileEntry::new("f5".to_string(), 3),
         ];
 
-        let file_paths_for_pieces = Arc::new(generate_file_paths_for_pieces(
+        let pieces_to_file_paths_mapper = Arc::new(PiecesToFilePathsMapper::new(
             Path::new("./"),
             3,
             10,
@@ -1009,7 +749,7 @@ mod tests {
         let res = get_file_list_with_completion_status(
             Path::new("./"),
             &file_list,
-            file_paths_for_pieces,
+            pieces_to_file_paths_mapper,
             &piece_completion_status,
         );
         assert_eq!(
@@ -1032,7 +772,7 @@ mod tests {
             FileEntry::new("f3".to_string(), 5),
         ];
 
-        let file_paths_for_pieces = Arc::new(generate_file_paths_for_pieces(
+        let pieces_to_file_paths_mapper = Arc::new(PiecesToFilePathsMapper::new(
             Path::new("relative/"),
             3,
             10,
@@ -1043,7 +783,7 @@ mod tests {
         let res = get_file_list_with_completion_status(
             Path::new("relative/"),
             &file_list,
-            file_paths_for_pieces,
+            pieces_to_file_paths_mapper,
             &piece_completion_status,
         );
         assert_eq!(

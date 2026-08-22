@@ -1,0 +1,273 @@
+use std::{
+    cmp,
+    collections::HashMap,
+    path::{Component, Path, PathBuf},
+};
+
+use crate::util::FileEntry;
+
+type FilePathsForPiece = Vec<(PathBuf, u64, u64)>; // same as FileHandlesForPiece but with file paths
+type InternalFileId = usize; // internal id used instead of directly using paths to save on memory
+type FileIdsForPiece = Vec<(InternalFileId, u64, u64)>; // same as FileHandlesForPiece but with internal file ids
+
+pub struct PiecesToFilePathsMapper {
+    piece_id_to_file_paths: Vec<FileIdsForPiece>, // piece identified by position in the array -> FileIdsForPiece
+    file_id_to_path: HashMap<InternalFileId, PathBuf>, // map to track file id -> path
+}
+
+impl PiecesToFilePathsMapper {
+    pub fn new(
+        base_path: &Path,
+        total_pieces: usize,
+        piece_length: u64,
+        file_list: &Vec<FileEntry>,
+    ) -> Self {
+        let mut pieces_to_file_paths_mapper = PiecesToFilePathsMapper {
+            piece_id_to_file_paths: Vec::with_capacity(total_pieces),
+            file_id_to_path: HashMap::new(),
+        };
+
+        let mut current_file_index = 0;
+        let mut current_position_in_file = 0;
+        for piece_index in 0..total_pieces {
+            let mut remaining_piece_bytes_to_allocate = piece_length;
+            let mut files_spanning_piece = Vec::new();
+
+            while remaining_piece_bytes_to_allocate > 0 {
+                if current_file_index >= file_list.len() {
+                    // there are no more files in the list
+                    if piece_index >= total_pieces - 1 {
+                        // this was the last piece, it is normal that the piece does not span the full piece_length size for the last file
+                        break;
+                    } else {
+                        panic!(
+                            "there are no more files, but there are more pieces still to be matched to files, it seem piece_length * #pieces > sum of all the file sizes, this should never happen, the .torrent file is malformed"
+                        )
+                    }
+                }
+
+                let FileEntry {
+                    path: file_name,
+                    size: file_size,
+                } = &file_list[current_file_index];
+                let remaining_bytes_in_file = file_size - current_position_in_file;
+
+                let piece_bytes_fitting_in_file =
+                    cmp::min(remaining_bytes_in_file, remaining_piece_bytes_to_allocate);
+
+                let file_name_path = Path::new(file_name);
+                if file_name_path.is_absolute() {
+                    panic!(
+                        "the torrent file {} contained a file with absolute path, this is not acceptable",
+                        file_name
+                    )
+                }
+                for c in file_name_path.components() {
+                    if matches!(c, Component::ParentDir) {
+                        panic!(
+                            "the torrent file {} contained a reference to a parent directory, this is not acceptable",
+                            file_name
+                        )
+                    }
+                    if matches!(c, Component::Prefix(_)) {
+                        panic!(
+                            "the torrent file {} contained a Windows prefix, this is not acceptable",
+                            file_name
+                        )
+                    }
+                }
+
+                let path = Path::new(base_path).join(file_name_path);
+                pieces_to_file_paths_mapper
+                    .file_id_to_path
+                    .insert(current_file_index, path);
+
+                files_spanning_piece.push((
+                    current_file_index,
+                    current_position_in_file,
+                    current_position_in_file + piece_bytes_fitting_in_file,
+                ));
+
+                remaining_piece_bytes_to_allocate -= piece_bytes_fitting_in_file;
+                current_position_in_file += piece_bytes_fitting_in_file;
+                if current_position_in_file >= *file_size {
+                    current_position_in_file = 0;
+                    current_file_index += 1;
+                }
+            }
+
+            pieces_to_file_paths_mapper
+                .piece_id_to_file_paths
+                .push(files_spanning_piece);
+        }
+
+        pieces_to_file_paths_mapper
+    }
+
+    pub fn get(&self, piece_id: usize) -> FilePathsForPiece {
+        self.piece_id_to_file_paths[piece_id]
+            .iter()
+            .map(|(file_id, start, end)| {
+                (
+                    self.file_id_to_path
+                        .get(file_id)
+                        .expect("must be here since we build file_id_to_path and piece_id_to_file_paths together")
+                        .clone(),
+                    *start,
+                    *end,
+                )
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        persistence::file_manager::pieces_to_file_paths_mapper::PiecesToFilePathsMapper,
+        util::FileEntry,
+    };
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn generate_pieces_to_file_paths_mapper_1() {
+        let file_list = vec![
+            FileEntry::new("f1".to_string(), 5),
+            FileEntry::new("f2".to_string(), 20),
+            FileEntry::new("f3".to_string(), 5),
+        ];
+        let pieces = vec![
+            b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
+            b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
+            b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
+        ];
+        let piece_length = 10;
+
+        let pieces_to_file_paths_mapper = PiecesToFilePathsMapper::new(
+            Path::new("relative/"),
+            pieces.len(),
+            piece_length,
+            &file_list,
+        );
+
+        assert_eq!(
+            pieces_to_file_paths_mapper.file_id_to_path.get(&0).unwrap(),
+            &PathBuf::from("relative/f1")
+        );
+        assert_eq!(
+            pieces_to_file_paths_mapper.file_id_to_path.get(&1).unwrap(),
+            &PathBuf::from("relative/f2")
+        );
+        assert_eq!(
+            pieces_to_file_paths_mapper.file_id_to_path.get(&2).unwrap(),
+            &PathBuf::from("relative/f3")
+        );
+
+        assert_eq!(
+            pieces_to_file_paths_mapper.piece_id_to_file_paths,
+            vec![
+                vec![(0, 0, 5), (1, 0, 5)],
+                vec![(1, 5, 15)],
+                vec![(1, 15, 20), (2, 0, 5)]
+            ]
+        );
+    }
+
+    #[test]
+    fn generate_pieces_to_file_paths_mapper_2() {
+        let file_list = vec![FileEntry::new("f1".to_string(), 5)];
+        let pieces = vec![b"aaaaaaaaaaaaaaaaaaaa".to_owned()];
+        let piece_length = 5;
+
+        let pieces_to_file_paths_mapper = PiecesToFilePathsMapper::new(
+            Path::new("/absolute/"),
+            pieces.len(),
+            piece_length,
+            &file_list,
+        );
+
+        assert_eq!(
+            pieces_to_file_paths_mapper.file_id_to_path.get(&0).unwrap(),
+            &PathBuf::from("/absolute/f1")
+        );
+
+        assert_eq!(
+            pieces_to_file_paths_mapper.piece_id_to_file_paths,
+            vec![vec![(0, 0, 5)]]
+        );
+    }
+
+    #[test]
+    fn generate_pieces_to_file_paths_mapper_3() {
+        let file_list = vec![FileEntry::new("f1".to_string(), 5)];
+        let pieces = vec![b"aaaaaaaaaaaaaaaaaaaa".to_owned()];
+        let piece_length = 6;
+
+        let pieces_to_file_paths_mapper = PiecesToFilePathsMapper::new(
+            Path::new("hello/moto"),
+            pieces.len(),
+            piece_length,
+            &file_list,
+        );
+
+        assert_eq!(
+            pieces_to_file_paths_mapper.file_id_to_path.get(&0).unwrap(),
+            &PathBuf::from("hello/moto/f1")
+        );
+
+        assert_eq!(
+            pieces_to_file_paths_mapper.piece_id_to_file_paths,
+            vec![vec![(0, 0, 5)]]
+        );
+    }
+
+    #[test]
+    fn generate_pieces_to_file_paths_mapper_4() {
+        let file_list = vec![
+            FileEntry::new("f1".to_string(), 10),
+            FileEntry::new("f2".to_string(), 10),
+            FileEntry::new("f3".to_string(), 5),
+            FileEntry::new("f4".to_string(), 3),
+            FileEntry::new("f5".to_string(), 3),
+        ];
+        let pieces = vec![
+            b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
+            b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
+            b"aaaaaaaaaaaaaaaaaaaa".to_owned(),
+        ];
+        let piece_length = 10;
+
+        let pieces_to_file_paths_mapper =
+            PiecesToFilePathsMapper::new(Path::new("./"), pieces.len(), piece_length, &file_list);
+
+        assert_eq!(
+            pieces_to_file_paths_mapper.file_id_to_path.get(&0).unwrap(),
+            &PathBuf::from("./f1")
+        );
+        assert_eq!(
+            pieces_to_file_paths_mapper.file_id_to_path.get(&1).unwrap(),
+            &PathBuf::from("./f2")
+        );
+        assert_eq!(
+            pieces_to_file_paths_mapper.file_id_to_path.get(&2).unwrap(),
+            &PathBuf::from("./f3")
+        );
+        assert_eq!(
+            pieces_to_file_paths_mapper.file_id_to_path.get(&3).unwrap(),
+            &PathBuf::from("./f4")
+        );
+        assert_eq!(
+            pieces_to_file_paths_mapper.file_id_to_path.get(&4).unwrap(),
+            &PathBuf::from("./f5")
+        );
+
+        assert_eq!(
+            pieces_to_file_paths_mapper.piece_id_to_file_paths,
+            vec![
+                vec![(0, 0, 10)],
+                vec![(1, 0, 10)],
+                vec![(2, 0, 5), (3, 0, 3), (4, 0, 2),]
+            ]
+        );
+    }
+}
