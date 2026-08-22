@@ -166,8 +166,12 @@ impl TorrentManager {
         &mut self,
         write_piece_block_response: WritePieceBlockResponse,
     ) {
+        let already_completed;
         match self.torrent_data_status.as_mut() {
-            Some(f) => f.update(&write_piece_block_response),
+            Some(f) => {
+                already_completed = f.completed();
+                f.update(&write_piece_block_response);
+            }
             None => return,
         }
 
@@ -179,11 +183,12 @@ impl TorrentManager {
                     self.piece_requestor
                         .piece_request_completed(&peer_addr, piece_idx);
 
-                    if self
-                        .torrent_data_status
-                        .as_mut()
-                        .expect("invariant checked above")
-                        .completed()
+                    if !already_completed
+                        && self
+                            .torrent_data_status
+                            .as_ref()
+                            .expect("invariant checked above")
+                            .completed()
                     {
                         log::warn!("torrent download completed");
                         self.tracker_requestor
