@@ -169,7 +169,13 @@ impl TorrentManager {
                  piece_hashes,
              }| {
                 match file_manager_handler.start(base_path, file_list, piece_length, piece_hashes) {
-                    Ok(torrent_data_status) => torrent_data_status,
+                    Ok(torrent_data_status) => {
+                        if torrent_data_status.completed() && opts.exit_when_complete {
+                            log::info!("torrent fully downloaded; exiting");
+                            process::exit(0);
+                        }
+                        torrent_data_status
+                    }
                     Err(e) => {
                         log::error!("initialization of torrent data failed: {e}");
                         process::exit(1);

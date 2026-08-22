@@ -302,7 +302,13 @@ impl TorrentManager {
                 piece_length,
                 piece_hashes,
             ) {
-                Ok(t) => Some(t),
+                Ok(t) => {
+                    if t.completed() && self.torrent_manager_config.exit_when_complete {
+                        log::info!("torrent fully downloaded; exiting");
+                        self.send_shutdown_request(0);
+                    }
+                    Some(t)
+                }
                 Err(e) => {
                     log::error!("initialization of torrent data failed: {e}");
                     self.send_shutdown_request(1);
