@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use crate::{
@@ -66,7 +66,7 @@ impl TorrentManager {
             .iter()
             .map(|(_, p)| p.peer_id())
             .collect();
-        let now = SystemTime::now();
+        let now = Instant::now();
         let possible_peers: Vec<(String, AdvertisedPeer)> = self
             .peers_ctx
             .advertised_peers
@@ -86,10 +86,11 @@ impl TorrentManager {
                     // use peers we didn't try to connect to recently
                     // this cool-off time is also important to avoid new connections to peers we attempted few secs ago
                     // and for which a connection attempt is still inflight
-                    && now
-                        .duration_since(advertised_peer.last_connection_attempt)
-                        .unwrap_or_default()
-                        > NEW_CONNECTION_COOL_OFF_PERIOD
+                    && advertised_peer
+                        .last_connection_attempt
+                        .is_none_or(|last_connection_attempt| {
+                            now.duration_since(last_connection_attempt) > NEW_CONNECTION_COOL_OFF_PERIOD
+                        })
             })
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();

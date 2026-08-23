@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
-    time::{Instant, SystemTime},
+    time::Instant,
 };
 
 use crate::{manager::peer::Peer, tracker, util::HostAndPort};
@@ -41,7 +41,7 @@ impl PeersContext {
 #[derive(Clone)]
 pub struct AdvertisedPeer {
     pub peer: tracker::Peer,
-    pub last_connection_attempt: SystemTime,
+    pub last_connection_attempt: Option<Instant>,
     known_since: Instant,
 }
 
@@ -68,7 +68,7 @@ impl AdvertisedPeers {
             possible_peers_mg
                 .entry(peer_addr.clone())
                 .and_modify(|possible_peer_entry| {
-                    possible_peer_entry.last_connection_attempt = SystemTime::now()
+                    possible_peer_entry.last_connection_attempt = Some(Instant::now())
                 });
         }
     }
@@ -80,7 +80,7 @@ impl AdvertisedPeers {
             .expect("another user panicked while holding the lock");
         for peer_addr in peers {
             if let Some(v) = advertised_peers_mg.get_mut(&peer_addr) {
-                v.last_connection_attempt = SystemTime::UNIX_EPOCH;
+                v.last_connection_attempt = None;
             }
         }
     }
@@ -95,7 +95,7 @@ impl AdvertisedPeers {
                 .entry(format!("{}:{}", p.ip, p.port))
                 .or_insert(AdvertisedPeer {
                     peer: p.clone(),
-                    last_connection_attempt: SystemTime::UNIX_EPOCH,
+                    last_connection_attempt: None,
                     known_since: Instant::now(),
                 });
         });
