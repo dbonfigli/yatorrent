@@ -1,6 +1,5 @@
 use std::{
     cmp,
-    collections::HashMap,
     path::{Component, Path, PathBuf},
 };
 
@@ -13,7 +12,7 @@ type FileIdsForPiece = Vec<(InternalFileId, u64, u64)>; // same as FileHandlesFo
 
 pub struct PiecesToFilePathsMapper {
     piece_id_to_file_paths: Vec<FileIdsForPiece>, // piece identified by position in the array -> FileIdsForPiece
-    file_id_to_path: HashMap<InternalFileId, PathBuf>, // map to track file id -> path
+    file_id_to_path: Vec<PathBuf>,                // position in vec is the file id -> path
 }
 
 impl PiecesToFilePathsMapper {
@@ -25,7 +24,7 @@ impl PiecesToFilePathsMapper {
     ) -> Result<Self> {
         let mut pieces_to_file_paths_mapper = PiecesToFilePathsMapper {
             piece_id_to_file_paths: Vec::with_capacity(total_pieces),
-            file_id_to_path: HashMap::new(),
+            file_id_to_path: vec![PathBuf::new(); file_list.len()],
         };
 
         let mut current_file_index = 0;
@@ -79,9 +78,7 @@ impl PiecesToFilePathsMapper {
                 }
 
                 let path = Path::new(base_path).join(file_name_path);
-                pieces_to_file_paths_mapper
-                    .file_id_to_path
-                    .insert(current_file_index, path);
+                pieces_to_file_paths_mapper.file_id_to_path[current_file_index] = path;
 
                 files_spanning_piece.push((
                     current_file_index,
@@ -108,16 +105,7 @@ impl PiecesToFilePathsMapper {
     pub fn get(&self, piece_id: usize) -> FilePathsForPiece {
         self.piece_id_to_file_paths[piece_id]
             .iter()
-            .map(|(file_id, start, end)| {
-                (
-                    self.file_id_to_path
-                        .get(file_id)
-                        .expect("must be here since we build file_id_to_path and piece_id_to_file_paths together")
-                        .clone(),
-                    *start,
-                    *end,
-                )
-            })
+            .map(|(file_id, start, end)| (self.file_id_to_path[*file_id].clone(), *start, *end))
             .collect()
     }
 }
@@ -153,16 +141,16 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            pieces_to_file_paths_mapper.file_id_to_path.get(&0).unwrap(),
-            &PathBuf::from("relative/f1")
+            pieces_to_file_paths_mapper.file_id_to_path[0],
+            PathBuf::from("relative/f1")
         );
         assert_eq!(
-            pieces_to_file_paths_mapper.file_id_to_path.get(&1).unwrap(),
-            &PathBuf::from("relative/f2")
+            pieces_to_file_paths_mapper.file_id_to_path[1],
+            PathBuf::from("relative/f2")
         );
         assert_eq!(
-            pieces_to_file_paths_mapper.file_id_to_path.get(&2).unwrap(),
-            &PathBuf::from("relative/f3")
+            pieces_to_file_paths_mapper.file_id_to_path[2],
+            PathBuf::from("relative/f3")
         );
 
         assert_eq!(
@@ -190,8 +178,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            pieces_to_file_paths_mapper.file_id_to_path.get(&0).unwrap(),
-            &PathBuf::from("/absolute/f1")
+            pieces_to_file_paths_mapper.file_id_to_path[0],
+            PathBuf::from("/absolute/f1")
         );
 
         assert_eq!(
@@ -215,8 +203,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            pieces_to_file_paths_mapper.file_id_to_path.get(&0).unwrap(),
-            &PathBuf::from("hello/moto/f1")
+            pieces_to_file_paths_mapper.file_id_to_path[0],
+            PathBuf::from("hello/moto/f1")
         );
 
         assert_eq!(
@@ -246,24 +234,24 @@ mod tests {
                 .unwrap();
 
         assert_eq!(
-            pieces_to_file_paths_mapper.file_id_to_path.get(&0).unwrap(),
-            &PathBuf::from("./f1")
+            pieces_to_file_paths_mapper.file_id_to_path[0],
+            PathBuf::from("./f1")
         );
         assert_eq!(
-            pieces_to_file_paths_mapper.file_id_to_path.get(&1).unwrap(),
-            &PathBuf::from("./f2")
+            pieces_to_file_paths_mapper.file_id_to_path[1],
+            PathBuf::from("./f2")
         );
         assert_eq!(
-            pieces_to_file_paths_mapper.file_id_to_path.get(&2).unwrap(),
-            &PathBuf::from("./f3")
+            pieces_to_file_paths_mapper.file_id_to_path[2],
+            PathBuf::from("./f3")
         );
         assert_eq!(
-            pieces_to_file_paths_mapper.file_id_to_path.get(&3).unwrap(),
-            &PathBuf::from("./f4")
+            pieces_to_file_paths_mapper.file_id_to_path[3],
+            PathBuf::from("./f4")
         );
         assert_eq!(
-            pieces_to_file_paths_mapper.file_id_to_path.get(&4).unwrap(),
-            &PathBuf::from("./f5")
+            pieces_to_file_paths_mapper.file_id_to_path[4],
+            PathBuf::from("./f5")
         );
 
         assert_eq!(
