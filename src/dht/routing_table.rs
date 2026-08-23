@@ -1,4 +1,4 @@
-use std::{net::Ipv4Addr, time::SystemTime};
+use std::{net::Ipv4Addr, time::Instant};
 
 use derivative::Derivative;
 use num_bigint::BigUint;
@@ -23,9 +23,9 @@ pub struct Node {
     #[derivative(PartialOrd = "ignore", Ord = "ignore", PartialEq = "ignore")]
     pub port: u16,
     #[derivative(PartialOrd = "ignore", Ord = "ignore", PartialEq = "ignore")]
-    pub last_replied: SystemTime,
+    pub last_replied: Option<Instant>,
     #[derivative(PartialOrd = "ignore", Ord = "ignore", PartialEq = "ignore")]
-    pub last_pinged: SystemTime,
+    pub last_pinged: Option<Instant>,
 }
 
 impl Node {
@@ -34,8 +34,8 @@ impl Node {
             id: BigUint::from_bytes_be(&node_id),
             addr,
             port,
-            last_replied: SystemTime::now(),
-            last_pinged: SystemTime::UNIX_EPOCH,
+            last_replied: Some(Instant::now()),
+            last_pinged: None,
         }
     }
 
@@ -44,8 +44,8 @@ impl Node {
             id: BigUint::from_bytes_be(&node_id),
             addr: Ipv4Addr::new(127, 0, 0, 1),
             port: 8000,
-            last_replied: SystemTime::UNIX_EPOCH,
-            last_pinged: SystemTime::UNIX_EPOCH,
+            last_replied: None,
+            last_pinged: None,
         }
     }
 }
@@ -176,7 +176,7 @@ impl Bucket {
             BucketContent::Nodes(bucket_nodes) => {
                 if let Ok(i) = bucket_nodes.binary_search(&node) {
                     // the node is already present, refresh last changed
-                    bucket_nodes[i].last_replied = SystemTime::now();
+                    bucket_nodes[i].last_replied = Some(Instant::now());
                     return false;
                 }
                 if bucket_nodes.len() < K_FACTOR {
@@ -256,7 +256,7 @@ pub fn distance(i: &[u8; 20], j: &[u8; 20]) -> BigUint {
 mod tests {
     use crate::dht::routing_table::{BucketContent, split};
     use num_bigint::BigUint;
-    use std::{net::Ipv4Addr, time::SystemTime};
+    use std::{net::Ipv4Addr, time::Instant};
 
     use super::{Bucket, Node};
 
@@ -308,32 +308,32 @@ mod tests {
             id: BigUint::from(1u8),
             addr: Ipv4Addr::new(127, 0, 0, 1),
             port: 8080,
-            last_replied: SystemTime::UNIX_EPOCH,
-            last_pinged: SystemTime::now(),
+            last_replied: None,
+            last_pinged: Some(Instant::now()),
         };
 
         let n2 = Node {
             id: BigUint::from(1u8),
             addr: Ipv4Addr::new(162, 168, 0, 1),
             port: 8081,
-            last_replied: SystemTime::now(),
-            last_pinged: SystemTime::UNIX_EPOCH,
+            last_replied: Some(Instant::now()),
+            last_pinged: None,
         };
 
         let n3 = Node {
             id: BigUint::from(2u8),
             addr: Ipv4Addr::new(162, 168, 0, 1),
             port: 80,
-            last_replied: SystemTime::now(),
-            last_pinged: SystemTime::UNIX_EPOCH,
+            last_replied: Some(Instant::now()),
+            last_pinged: None,
         };
 
         let n4 = Node {
             id: BigUint::from(3u8),
             addr: Ipv4Addr::new(162, 168, 0, 254),
             port: 8082,
-            last_replied: SystemTime::now(),
-            last_pinged: SystemTime::UNIX_EPOCH,
+            last_replied: Some(Instant::now()),
+            last_pinged: None,
         };
 
         assert_eq!(n1, n2);

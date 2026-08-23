@@ -2,7 +2,7 @@ use std::{
     cmp,
     collections::{HashMap, HashSet},
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    time::{Duration, SystemTime},
+    time::{Duration, Instant},
 };
 
 use num_bigint::BigUint;
@@ -81,14 +81,14 @@ pub struct DhtManager {
     msg_sender: MessageSender,
     routing_table: Bucket,
     token_signing_secret: [u8; 10], // todo: we must rotate this once in a while
-    known_peers: HashMap<[u8; 20], HashMap<(Ipv4Addr, u16), SystemTime>>, // info hash -> hashmap of (ip/port of peers that have it -> last announced)
+    known_peers: HashMap<[u8; 20], HashMap<(Ipv4Addr, u16), Instant>>, // info hash -> hashmap of (ip/port of peers that have it -> last announced)
     inflight_get_peers_requests: HashMap<[u8; 20], GetPeersRequest>, // info hash -> GetPeersRequest
     inflight_find_node_requests: HashMap<[u8; 20], FindNodeRequest>, // random id -> FindNodeRequest
-    last_routing_table_refresh: SystemTime,
+    last_routing_table_refresh: Instant,
 }
 
 struct GetPeersRequest {
-    start_time: SystemTime,
+    start_time: Instant,
     total_requests: usize,
     inflight_requests: usize,
     queried_nodes: HashSet<[u8; 20]>, // nodes for which we asked a get_peers request
@@ -99,7 +99,7 @@ struct GetPeersRequest {
 
 struct FindNodeRequest {
     node_id_to_find: [u8; 20],
-    start_time: SystemTime,
+    start_time: Instant,
     total_requests: usize,
     inflight_requests: usize,
     total_discovered_nodes: usize,
@@ -114,7 +114,7 @@ struct MessageSender {
         Vec<u8>,
         (
             HostAndPort,      // dest addr
-            SystemTime,       // req time
+            Instant,          // req time
             KRPCMessage,      // message
             Option<[u8; 20]>, // optional request id (info hash or random id the request related to) in case it was a get_peers or find_node request
             usize, // depth of the nested request, if it is recursive (e.g. in case of get_peers or find_node)
@@ -130,10 +130,9 @@ impl MessageSender {
     }
 
     pub fn remove_expired(&mut self) {
-        let now = SystemTime::now();
-        self.inflight_requests.retain(|_, (_, t, _, _, _)| {
-            now.duration_since(*t).unwrap_or_default() < INFLIGHT_REQUEST_TIMEOUT
-        })
+        let now: Instant = Instant::now();
+        self.inflight_requests
+            .retain(|_, (_, t, _, _, _)| now.duration_since(*t) < INFLIGHT_REQUEST_TIMEOUT)
     }
 
     pub async fn do_req(
@@ -155,7 +154,7 @@ impl MessageSender {
             tid.to_vec(),
             (
                 dest.clone(),
-                SystemTime::now(),
+                Instant::now(),
                 msg.clone(),
                 request_id,
                 call_depth,
@@ -214,7 +213,7 @@ impl DhtManager {
             known_peers: HashMap::new(),
             inflight_get_peers_requests: HashMap::new(),
             inflight_find_node_requests: HashMap::new(),
-            last_routing_table_refresh: SystemTime::now(),
+            last_routing_table_refresh: Instant::now(),
         }
     }
 
@@ -284,7 +283,7 @@ impl DhtManager {
     }
 
     async fn handle_ticker(&mut self, socket: &UdpSocket) {
-        let now = SystemTime::now();
+        let now = Instant::now();
 
         // expire inflight requests
         self.msg_sender.remove_expired();
@@ -293,9 +292,7 @@ impl DhtManager {
         let expired_get_peers_requests: Vec<[u8; 20]> = self
             .inflight_get_peers_requests
             .iter()
-            .filter(|(_, v)| {
-                now.duration_since(v.start_time).unwrap_or_default() > INFLIGHT_GET_PEERS_TIMEOUT
-            })
+            .filter(|(_, v)| now.duration_since(v.start_time) > INFLIGHT_GET_PEERS_TIMEOUT)
             .map(|(k, _)| *k)
             .collect();
         for info_hash in expired_get_peers_requests {
@@ -308,9 +305,7 @@ impl DhtManager {
         let expired_find_nodes_requests: Vec<[u8; 20]> = self
             .inflight_find_node_requests
             .iter()
-            .filter(|(_, v)| {
-                now.duration_since(v.start_time).unwrap_or_default() > INFLIGHT_FIND_NODE_TIMEOUT
-            })
+            .filter(|(_, v)| now.duration_since(v.start_time) > INFLIGHT_FIND_NODE_TIMEOUT)
             .map(|(k, _)| *k)
             .collect();
         for req_id in expired_find_nodes_requests {
@@ -324,11 +319,13 @@ impl DhtManager {
 
         for n in self.routing_table.as_mut_vec() {
             // ping nodes if not seen a reply in the last 10 minutes and last pinged less than 2 minutes ago
-            if now.duration_since(n.last_replied).unwrap_or_default()
-                > NODE_INACTIVITY_PING_THRESHOLD
-                && now.duration_since(n.last_pinged).unwrap_or_default() > PING_INTERVAL
+            if n.last_replied.is_none_or(|last_replied| {
+                now.duration_since(last_replied) > NODE_INACTIVITY_PING_THRESHOLD
+            }) && n
+                .last_pinged
+                .is_none_or(|last_pinged| now.duration_since(last_pinged) > PING_INTERVAL)
             {
-                n.last_pinged = now;
+                n.last_pinged = Some(now);
                 self.msg_sender
                     .do_req(
                         socket,
@@ -341,9 +338,9 @@ impl DhtManager {
             }
 
             // accumulate nodes to be removed if not active anymore
-            if now.duration_since(n.last_replied).unwrap_or_default()
-                > NODE_NO_INBOUND_TRAFFIC_FAILURE_TIMEOUT
-            {
+            if n.last_replied.is_none_or(|last_replied| {
+                now.duration_since(last_replied) > NODE_NO_INBOUND_TRAFFIC_FAILURE_TIMEOUT
+            }) {
                 nodes_to_be_removed.push(n.clone());
             }
         }
@@ -361,11 +358,7 @@ impl DhtManager {
         }
 
         // every 1m randomly find new nodes - this is out of official bep05 specs, we do this to have a bigger routing table - maybe remove this
-        if now
-            .duration_since(self.last_routing_table_refresh)
-            .unwrap_or_default()
-            > ROUTING_TABLE_REFRESH_TIME
-        {
+        if now.duration_since(self.last_routing_table_refresh) > ROUTING_TABLE_REFRESH_TIME {
             self.last_routing_table_refresh = now;
             let mut random_id: [u8; 20] = [0u8; 20];
             for i in 0..20 {
@@ -387,7 +380,7 @@ impl DhtManager {
 
         let get_node_request = FindNodeRequest {
             node_id_to_find: node_id,
-            start_time: SystemTime::now(),
+            start_time: Instant::now(),
             total_requests: 1,
             inflight_requests: 1,
             total_discovered_nodes: 0,
@@ -422,7 +415,7 @@ impl DhtManager {
         let closest_nodes = self.routing_table.closest_nodes(&info_hash);
 
         let get_peers_request = GetPeersRequest {
-            start_time: SystemTime::now(),
+            start_time: Instant::now(),
             total_requests: closest_nodes.len(),
             inflight_requests: closest_nodes.len(),
             queried_nodes: closest_nodes
@@ -1069,11 +1062,11 @@ impl DhtManager {
                         .0);
                     s.remove(&oldest);
                 }
-                s.insert((new_peer_addr, new_peer_port), SystemTime::now());
+                s.insert((new_peer_addr, new_peer_port), Instant::now());
             }
             None => {
                 let mut s = HashMap::new();
-                s.insert((new_peer_addr, new_peer_port), SystemTime::now());
+                s.insert((new_peer_addr, new_peer_port), Instant::now());
                 self.known_peers.insert(info_hash, s);
             }
         }

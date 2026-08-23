@@ -1,6 +1,6 @@
 use std::{
     net::Ipv4Addr,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant},
 };
 
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -22,7 +22,7 @@ pub struct DhtHandler {
     to_dht_manager_rx: Option<UnboundedReceiver<ToDhtManagerMsg>>, // optional bc we will move it to the dht manager at start, todo: should we move creation of this channel there?
     dht_to_torrent_manager_rx: UnboundedReceiver<DhtToTorrentManagerMsg>,
     dht_to_torrent_manager_tx: UnboundedSender<DhtToTorrentManagerMsg>,
-    last_get_peers_requested_time: SystemTime,
+    last_get_peers_requested_time: Instant,
 }
 
 impl DhtHandler {
@@ -40,7 +40,7 @@ impl DhtHandler {
             dht_nodes,
             to_dht_manager_tx,
             to_dht_manager_rx: Some(to_dht_manager_rx),
-            last_get_peers_requested_time: SystemTime::now() - DHT_NEW_PEER_COOL_OFF_PERIOD
+            last_get_peers_requested_time: Instant::now() - DHT_NEW_PEER_COOL_OFF_PERIOD
                 + DHT_BOOTSTRAP_TIME, // try to wait a bit before the first request, in hope that the dht has been bootstrapped, so that we don't waste time for the first request with an empty routing table
             dht_to_torrent_manager_rx,
             dht_to_torrent_manager_tx,
@@ -78,12 +78,8 @@ impl DhtHandler {
             return;
         }
 
-        let now = SystemTime::now();
-        if now
-            .duration_since(self.last_get_peers_requested_time)
-            .unwrap_or_default()
-            > DHT_NEW_PEER_COOL_OFF_PERIOD
-        {
+        let now = Instant::now();
+        if now.duration_since(self.last_get_peers_requested_time) > DHT_NEW_PEER_COOL_OFF_PERIOD {
             self.last_get_peers_requested_time = now;
             _ = self
                 .to_dht_manager_tx
