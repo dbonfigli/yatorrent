@@ -1,7 +1,7 @@
 use std::{
     cmp::min,
     collections::HashMap,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Result, bail};
@@ -21,7 +21,7 @@ const METADATA_BIG_REJECT_THRESHOLD: i64 = 50 * 1024 * 1024;
 struct MetadataPieceDownloadStatus {
     downloaded: bool,
     request_destination_peer: HostAndPort,
-    request_time: SystemTime,
+    request_time: Option<Instant>,
 }
 
 pub struct MetadataPieceRequest {
@@ -45,7 +45,7 @@ fn metadata_pieces_from_size(size: i64, default_value: bool) -> Vec<MetadataPiec
         MetadataPieceDownloadStatus {
             downloaded: default_value,
             request_destination_peer: "0.0.0.0:0".to_string(),
-            request_time: SystemTime::UNIX_EPOCH
+            request_time: None
         };
         (size as f64 / METADATA_PIECE_SIZE_B as f64).ceil() as usize
     ]
@@ -64,7 +64,7 @@ impl MetadataStore {
                 MetadataPieceDownloadStatus {
                     downloaded: false,
                     request_destination_peer: "0.0.0.0:0".to_string(),
-                    request_time: SystemTime::UNIX_EPOCH
+                    request_time: None,
                 };
                 1
             ],
@@ -148,7 +148,7 @@ impl MetadataStore {
         if piece_data.len() < (raw_metadata_end - raw_metadata_start) {
             // peer sent us less data than expected for this piece, avoid panic on copy_from_slice
             // in this case will ask for again for this piece immediatelly
-            self.metadata_piece_download_status[piece_idx].request_time = SystemTime::UNIX_EPOCH;
+            self.metadata_piece_download_status[piece_idx].request_time = None;
             return;
         }
 
@@ -204,7 +204,7 @@ impl MetadataStore {
         // get inflight requests
         let mut inflight_metadata_piece_requests_per_peer: HashMap<HostAndPort, i64> =
             HashMap::new();
-        let now = SystemTime::now();
+        let now = Instant::now();
         for MetadataPieceDownloadStatus {
             downloaded,
             request_destination_peer,
@@ -212,8 +212,9 @@ impl MetadataStore {
         } in self.metadata_piece_download_status.iter()
         {
             if *downloaded
-                || now.duration_since(*request_time).unwrap_or_default()
-                    > METADATA_PIECE_REQUEST_TIMEOUT
+                || request_time.is_some_and(|request_time| {
+                    now.duration_since(request_time) > METADATA_PIECE_REQUEST_TIMEOUT
+                })
             {
                 continue;
             }
@@ -229,10 +230,12 @@ impl MetadataStore {
             .iter()
             .filter(|(_, peer)| {
                 peer.support_metadata_extension()
-                    && now
-                        .duration_since(peer.get_last_metadata_request_rejection())
-                        .unwrap_or_default()
-                        > PEER_METADATA_REQUEST_REJECTION_COOL_OFF_PERIOD
+                    && peer
+                        .get_last_metadata_request_rejection()
+                        .is_none_or(|last_rejection| {
+                            now.duration_since(last_rejection)
+                                > PEER_METADATA_REQUEST_REJECTION_COOL_OFF_PERIOD
+                        })
             })
             .map(|(peer_addr, _)| {
                 let outstanding_req = inflight_metadata_piece_requests_per_peer
@@ -252,10 +255,11 @@ impl MetadataStore {
         let mut metadata_pieces_to_request: Vec<usize> = Vec::new();
         for n in 0..self.metadata_piece_download_status.len() {
             if !self.metadata_piece_download_status[n].downloaded
-                && now
-                    .duration_since(self.metadata_piece_download_status[n].request_time)
-                    .unwrap_or_default()
-                    > METADATA_PIECE_REQUEST_TIMEOUT
+                && self.metadata_piece_download_status[n]
+                    .request_time
+                    .is_none_or(|request_time| {
+                        now.duration_since(request_time) > METADATA_PIECE_REQUEST_TIMEOUT
+                    })
             {
                 metadata_pieces_to_request.push(n);
             }
@@ -280,7 +284,7 @@ impl MetadataStore {
                     MetadataPieceDownloadStatus {
                         downloaded: false,
                         request_destination_peer: peer_addr.clone(),
-                        request_time: now,
+                        request_time: Some(now),
                     };
                 new_metadata_piece_requests.push(MetadataPieceRequest {
                     destination_peer: peer_addr.clone(),

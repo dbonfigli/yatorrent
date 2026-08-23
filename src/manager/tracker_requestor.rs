@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::Instant;
 use tokio::task::JoinHandle;
 
 use crate::manager::torrent_manager::peer_context::AdvertisedPeers;
@@ -9,7 +9,7 @@ use crate::tracker::{Event, NoTrackerError, Response, TrackerClient};
 
 pub struct TrackerRequestor {
     tracker_client: Arc<Mutex<TrackerClient>>,
-    last_tracker_request_time: SystemTime,
+    last_tracker_request_time: Option<Instant>,
     completed_sent_to_tracker: bool,
     info_hash: [u8; 20],
 }
@@ -27,7 +27,7 @@ impl TrackerRequestor {
                 trackers_url,
                 listening_torrent_wire_protocol_port,
             ))),
-            last_tracker_request_time: SystemTime::UNIX_EPOCH,
+            last_tracker_request_time: None,
             completed_sent_to_tracker: false,
             info_hash,
         }
@@ -49,10 +49,10 @@ impl TrackerRequestor {
             drop(tracker_client_mg);
             tracker_request_interval
         };
-        if let Ok(elapsed) = SystemTime::now().duration_since(self.last_tracker_request_time)
-            && elapsed > tracker_request_interval
-        {
-            let event = if self.last_tracker_request_time == SystemTime::UNIX_EPOCH {
+        if self.last_tracker_request_time.is_none_or(|last_req_time| {
+            Instant::now().duration_since(last_req_time) > tracker_request_interval
+        }) {
+            let event = if self.last_tracker_request_time.is_none() {
                 Event::Started
             } else {
                 Event::None
@@ -84,7 +84,7 @@ impl TrackerRequestor {
             self.completed_sent_to_tracker = true;
         }
 
-        self.last_tracker_request_time = SystemTime::now();
+        self.last_tracker_request_time = Some(Instant::now());
         let (uploaded_bytes, downloaded_bytes) = uploaded_downloaded_bytes;
         let tracker_client_mg = self
             .tracker_client

@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -19,7 +19,7 @@ pub enum PexEvent {
 }
 
 pub struct AddedDroppedEvent {
-    pub event_timestamp: SystemTime,
+    pub event_timestamp: Instant,
     pub peer: HostAndPort,
     pub event_type: PexEvent,
 }
@@ -37,13 +37,12 @@ impl PexHandler {
 
     pub async fn send_pex_messages(&mut self, peers: &mut HashMap<HostAndPort, Peer>) {
         // remove old added / dropped events
-        let now = SystemTime::now();
+        let now = Instant::now();
         self.added_dropped_peer_events.retain(
             |AddedDroppedEvent {
                  event_timestamp, ..
              }| {
-                now.duration_since(*event_timestamp).unwrap_or_default()
-                    < ADDED_DROPPED_PEER_EVENTS_RETENTION
+                now.duration_since(*event_timestamp) < ADDED_DROPPED_PEER_EVENTS_RETENTION
             },
         );
 
@@ -60,7 +59,7 @@ impl PexHandler {
         self.added_dropped_peer_events
             .retain(|e| e.peer != peer_addr);
         self.added_dropped_peer_events.push(AddedDroppedEvent {
-            event_timestamp: SystemTime::now(),
+            event_timestamp: Instant::now(),
             peer: peer_addr,
             event_type: pex_event,
         });

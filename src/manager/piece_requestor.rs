@@ -11,7 +11,7 @@ use rand::seq::SliceRandom;
 use std::{
     cmp::{Ordering, max, min},
     collections::HashMap,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant},
 };
 
 pub const MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT: usize = 500; // same as libtorrent, but we can go up to 2000 if needed
@@ -35,7 +35,7 @@ const CHOKED_PEER_ASSIGMENTS_GRACE_PERIOD: Duration = Duration::from_secs(15);
 
 pub struct PieceRequestor {
     outstanding_piece_assignments: HashMap<usize, HostAndPort>, // piece idx -> peer_addr
-    outstanding_piece_block_requests: HashMap<HostAndPort, HashMap<BlockRequest, SystemTime>>, // peer_addr -> BlockRequest -> request time
+    outstanding_piece_block_requests: HashMap<HostAndPort, HashMap<BlockRequest, Instant>>, // peer_addr -> BlockRequest -> request time
     requested_pieces: HashMap<HostAndPort, HashMap<usize, (Piece, bool)>>, // peer_addr -> piece idx -> (piece status with all the requested fragments, all possible block requests already perfomed)
 }
 
@@ -89,17 +89,11 @@ impl PieceRequestor {
                     None
                 }
                 Some(t) => {
-                    let now = SystemTime::now();
-                    if let Ok(latency) = now.duration_since(t) {
-                        if latency > BLOCK_DELAYED_ARRIVAL_LOG_THRESHOLD {
-                            log::debug!(
-                                "requested block from {peer_addr} arrived after {latency:#?}",
-                            );
-                        }
-                        Some(latency)
-                    } else {
-                        None
+                    let latency = Instant::now().duration_since(t);
+                    if latency > BLOCK_DELAYED_ARRIVAL_LOG_THRESHOLD {
+                        log::debug!("requested block from {peer_addr} arrived after {latency:#?}");
                     }
+                    Some(latency)
                 }
             }
         } else {
@@ -132,10 +126,10 @@ impl PieceRequestor {
         for peer_addr in self.requested_pieces.keys() {
             if let Some(peer) = peers.get(peer_addr)
                 && peer.is_peer_choking()
-                && SystemTime::now()
-                    .duration_since(peer.peer_choking_since())
-                    .unwrap_or_default()
-                    > CHOKED_PEER_ASSIGMENTS_GRACE_PERIOD
+                && peer.peer_choking_since().is_some_and(|choking_since| {
+                    Instant::now().duration_since(choking_since)
+                        > CHOKED_PEER_ASSIGMENTS_GRACE_PERIOD
+                })
             {
                 peers_to_remove.push(peer_addr.clone());
             }
@@ -154,12 +148,12 @@ impl PieceRequestor {
         self.remove_assigments_to_choked(peers);
 
         let mut requests_to_cancel = Vec::<(HostAndPort, BlockRequest)>::new();
-        let now = SystemTime::now();
+        let now = Instant::now();
         self.outstanding_piece_block_requests.iter_mut().for_each(
             |(peer_addr, outstanding_block_requests_for_peer)| {
                 outstanding_block_requests_for_peer.retain(
                     |block_request, req_time| {
-                        if now.duration_since(*req_time).unwrap_or_default() < request_timeout {
+                        if now.duration_since(*req_time) < request_timeout {
                             true
                         } else {
                             log::debug!("removed stale request to peer: {}: (piece idx: {}, block begin: {}, length: {})",
@@ -380,7 +374,7 @@ impl PieceRequestor {
                     self.outstanding_piece_block_requests
                         .entry(peer_addr.clone())
                         .or_default()
-                        .insert(request, SystemTime::now());
+                        .insert(request, Instant::now());
                     incomplete_piece.add_fragment(begin, end);
                 }
             }

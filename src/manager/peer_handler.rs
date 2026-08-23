@@ -1,7 +1,7 @@
 use core::fmt;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use tokio::io::AsyncWriteExt;
@@ -64,7 +64,7 @@ pub enum PeerError {
     Others,
 }
 
-pub type ToPeerCancelMsg = (BlockRequest, SystemTime); // block request, cancel time
+pub type ToPeerCancelMsg = (BlockRequest, Instant); // block request, cancel time
 
 pub async fn connect_to_new_peer(
     host: String,
@@ -557,7 +557,7 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
     mut to_peer_cancel_rx: Receiver<ToPeerCancelMsg>,
     upload_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
 ) {
-    let mut cancellations = HashMap::<BlockRequest, SystemTime>::new();
+    let mut cancellations = HashMap::<BlockRequest, Instant>::new();
     while let Some(manager_msg) = to_peer_rx.recv().await {
         match manager_msg {
             ToPeerMsg::Send(proto_msg) => {
@@ -588,10 +588,7 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                     }
                     // remove cancellations requested more than CANCELLATION_DURATION in the past
                     cancellations.retain(|_, cancel_time| {
-                        SystemTime::now()
-                            .duration_since(*cancel_time)
-                            .unwrap_or_default()
-                            < CANCELLATION_DURATION
+                        Instant::now().duration_since(*cancel_time) < CANCELLATION_DURATION
                     });
                     // avoid sending if there is a cancellation
                     let block_request = BlockRequest {

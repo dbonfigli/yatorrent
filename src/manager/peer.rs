@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -51,20 +51,20 @@ pub struct Peer {
     peer_addr: HostAndPort,
     peer_id: [u8; 20],
     am_choking: bool,
-    am_choking_since: SystemTime,
+    am_choking_since: Option<Instant>,
     am_interested: bool,
     peer_choking: bool,
-    peer_choking_since: SystemTime,
+    peer_choking_since: Option<Instant>,
     peer_interested: bool, // we are not really considering this now, should we use this as pre filter for incoming requests?
     haves: Option<Vec<bool>>, // this will be initialized after we have the metadata
     to_peer_tx: Sender<ToPeerMsg>,
-    last_sent: SystemTime, // to understand when to send keepalived messages
+    last_sent: Option<Instant>, // to understand when to send keepalived messages
     to_peer_cancel_tx: Sender<ToPeerCancelMsg>,
     outstanding_incoming_piece_block_requests: usize,
     ut_pex_id: u8,
-    last_pex_message_sent: SystemTime,
+    last_pex_message_sent: Option<Instant>,
     ut_metadata_id: u8,
-    last_metadata_request_rejection: SystemTime,
+    last_metadata_request_rejection: Option<Instant>,
     corruption_errors: u32,
     reqq: usize, // reqq received from peer
     bandwidth_tracker: BandwidthTracker,
@@ -89,20 +89,20 @@ impl Peer {
             peer_addr,
             peer_id,
             am_choking: true,
-            am_choking_since: SystemTime::UNIX_EPOCH,
+            am_choking_since: None,
             am_interested: false,
             peer_choking: true,
-            peer_choking_since: SystemTime::UNIX_EPOCH,
+            peer_choking_since: None,
             peer_interested: false,
             haves: num_pieces.map(|n| vec![false; n]),
             to_peer_tx,
-            last_sent: SystemTime::now(), // initally set it to now as there is no need to send them after the handshake
+            last_sent: Some(Instant::now()), // initally set it to now as there is no need to send keepalives after the handshake
             to_peer_cancel_tx,
             outstanding_incoming_piece_block_requests: 0,
             ut_pex_id: 0, // i.e. no support for pex on this peer, initially
-            last_pex_message_sent: SystemTime::UNIX_EPOCH,
+            last_pex_message_sent: None,
             ut_metadata_id: 0, // i.e. no support for metadata on this peer, initially
-            last_metadata_request_rejection: SystemTime::UNIX_EPOCH,
+            last_metadata_request_rejection: None,
             corruption_errors: 0, // number of corrupted block received by this peer
             reqq: DEFAULT_MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER, // the number of outstanding request messages this client supports without dropping any
             bandwidth_tracker: BandwidthTracker::new(),
@@ -142,11 +142,11 @@ impl Peer {
     pub fn set_am_choking(&mut self, chocking: bool) {
         self.am_choking = chocking;
         if chocking {
-            self.am_choking_since = SystemTime::now();
+            self.am_choking_since = Some(Instant::now());
         }
     }
 
-    pub fn get_am_choking_since(&self) -> SystemTime {
+    pub fn get_am_choking_since(&self) -> Option<Instant> {
         self.am_choking_since
     }
 
@@ -164,10 +164,10 @@ impl Peer {
 
     pub fn set_peer_choking(&mut self, choking: bool) {
         self.peer_choking = choking;
-        self.peer_choking_since = SystemTime::now();
+        self.peer_choking_since = Some(Instant::now());
     }
 
-    pub fn peer_choking_since(&self) -> SystemTime {
+    pub fn peer_choking_since(&self) -> Option<Instant> {
         self.peer_choking_since
     }
 
@@ -209,7 +209,7 @@ impl Peer {
                 self.to_peer_tx.capacity()
             );
         }
-        self.last_sent = SystemTime::now();
+        self.last_sent = Some(Instant::now());
         let _ = self.to_peer_tx.send(msg).await;
         // ignore errors: it can happen that the channel is closed on the other side if the rx handler loop exited due to network errors,
         // and the peer is still lingering in self.peers because the control message about the error is not yet handled
@@ -218,7 +218,7 @@ impl Peer {
     pub fn try_send(&mut self, msg: ToPeerMsg) {
         match self.to_peer_tx.try_send(msg) {
             Ok(_) => {
-                self.last_sent = SystemTime::now();
+                self.last_sent = Some(Instant::now());
             }
             Err(Full(o)) => {
                 log::debug!(
@@ -235,8 +235,9 @@ impl Peer {
     }
 
     pub async fn send_keepalive(&mut self) {
-        if let Ok(elapsed) = SystemTime::now().duration_since(self.last_sent)
-            && elapsed > KEEP_ALIVE_FREQ
+        if self
+            .last_sent
+            .is_none_or(|last_sent| Instant::now().duration_since(last_sent) > KEEP_ALIVE_FREQ)
         {
             self.send(ToPeerMsg::Send(Message::KeepAlive)).await;
         }
@@ -248,7 +249,7 @@ impl Peer {
         // and so the cancellation would have no effect
         let _ = self
             .to_peer_cancel_tx
-            .try_send((block_request, SystemTime::now()));
+            .try_send((block_request, Instant::now()));
     }
 
     pub fn get_outstanding_incoming_piece_block_requests(&self) -> usize {
@@ -277,7 +278,7 @@ impl Peer {
         self.ut_pex_id = ut_pex_id;
     }
 
-    pub fn get_last_pex_message_sent(&self) -> SystemTime {
+    pub fn get_last_pex_message_sent(&self) -> Option<Instant> {
         self.last_pex_message_sent
     }
 
@@ -295,7 +296,7 @@ impl Peer {
         if !dropped.is_empty() {
             h.insert(b"dropped".to_vec(), Str(dropped));
         }
-        self.last_pex_message_sent = SystemTime::now();
+        self.last_pex_message_sent = Some(Instant::now());
         if !h.is_empty() {
             let pex_msg = Message::Extended {
                 extension_protocol_id: self.ut_pex_id,
@@ -323,12 +324,12 @@ impl Peer {
         self.ut_metadata_id != 0
     }
 
-    pub fn get_last_metadata_request_rejection(&self) -> SystemTime {
+    pub fn get_last_metadata_request_rejection(&self) -> Option<Instant> {
         self.last_metadata_request_rejection
     }
 
-    pub fn set_last_metadata_request_rejection(&mut self, last_rejection_tike: SystemTime) {
-        self.last_metadata_request_rejection = last_rejection_tike
+    pub fn set_last_metadata_request_rejection(&mut self, last_rejection_time: Instant) {
+        self.last_metadata_request_rejection = Some(last_rejection_time)
     }
 
     pub async fn send_metadata_extension_message(&mut self, metadata_message: MetadataMessage) {
@@ -464,17 +465,16 @@ impl Peer {
 
     pub async fn send_pex_extension_message_for_latest_peer_events(
         &mut self,
-        latest_pex_update: SystemTime,
+        latest_pex_update: Instant,
         added_dropped_peer_events: &Vec<AddedDroppedEvent>,
     ) {
         if !self.support_pex_extension() {
             return;
         }
-        if latest_pex_update
-            .duration_since(self.get_last_pex_message_sent())
-            .unwrap_or_default()
-            <= PEX_MESSAGE_COOL_OFF_PERIOD
-        {
+
+        if self.get_last_pex_message_sent().is_some_and(|last_sent| {
+            latest_pex_update.duration_since(last_sent) <= PEX_MESSAGE_COOL_OFF_PERIOD
+        }) {
             return;
         }
 
@@ -484,7 +484,10 @@ impl Peer {
             .filter(
                 |AddedDroppedEvent {
                      event_timestamp, ..
-                 }| *event_timestamp > self.get_last_pex_message_sent(),
+                 }| {
+                    self.get_last_pex_message_sent()
+                        .is_none_or(|last_sent| *event_timestamp > last_sent)
+                },
             )
             .fold(
                 HashMap::new(),

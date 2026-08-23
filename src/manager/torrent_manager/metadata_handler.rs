@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::time::SystemTime;
+use std::time::Instant;
 
 use anyhow::Error;
 use sha1::{Digest, Sha1};
@@ -146,7 +146,7 @@ impl MetadataHandler {
             }
             METADATA_MESSAGE_REJECT => {
                 if let Some(peer) = peers.get_mut(&peer_addr) {
-                    peer.set_last_metadata_request_rejection(SystemTime::now());
+                    peer.set_last_metadata_request_rejection(Instant::now());
                 }
             }
             _ => {
