@@ -145,10 +145,9 @@ impl TorrentManager {
     async fn unchoke_peers(&mut self) {
         let now = Instant::now();
         for peer in self.peers_ctx.peers.values_mut() {
-            if peer.get_am_choking()
-                && peer
-                    .get_am_choking_since()
-                    .is_none_or(|t| now.duration_since(t) > MIN_CHOKE_TIME)
+            if peer
+                .get_am_choking_since()
+                .is_some_and(|t| now.duration_since(t) > MIN_CHOKE_TIME)
                 && !should_choke(
                     self.peers_channels.incoming_peer_messages_tx.capacity(),
                     peer.get_outstanding_incoming_piece_block_requests(),

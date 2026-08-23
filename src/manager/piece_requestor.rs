@@ -125,7 +125,6 @@ impl PieceRequestor {
         let mut peers_to_remove = Vec::new();
         for peer_addr in self.requested_pieces.keys() {
             if let Some(peer) = peers.get(peer_addr)
-                && peer.is_peer_choking()
                 && peer.peer_choking_since().is_some_and(|choking_since| {
                     Instant::now().duration_since(choking_since)
                         > CHOKED_PEER_ASSIGMENTS_GRACE_PERIOD
@@ -201,7 +200,7 @@ impl PieceRequestor {
                     None => continue,
                     Some(p) => p,
                 };
-                if peer.is_peer_choking() {
+                if peer.peer_choking_since().is_some() {
                     continue;
                 }
                 let reqs_for_piece = self.generate_requests_to_send_for_piece(
@@ -261,7 +260,7 @@ impl PieceRequestor {
 
     fn any_peer_can_allocate_requests(&self, peers: &HashMap<HostAndPort, Peer>) -> bool {
         peers.iter().any(|(peer_addr, peer)| {
-            !peer.is_peer_choking()
+            peer.peer_choking_since().is_none()
                 && self.peer_can_allocate_requests(peer_addr, max_outstanding_reqs(peer))
         })
     }
@@ -275,7 +274,7 @@ impl PieceRequestor {
         let mut peers_ready_for_new_requests = peers
             .iter()
             .filter(|(peer_addr, peer)| {
-                !peer.is_peer_choking()
+                peer.peer_choking_since().is_none()
                     && peer.have_piece(piece_idx)
                     && self
                         .outstanding_piece_block_requests
@@ -401,7 +400,7 @@ impl PieceRequestor {
         peer: &Peer,
         torrent_data_status: &TorrentDataStatus,
     ) -> Vec<BlockRequest> {
-        if peer.is_peer_choking() {
+        if peer.peer_choking_since().is_some() {
             return Vec::new();
         }
         let mut requests_to_send: Vec<BlockRequest> = Vec::new();

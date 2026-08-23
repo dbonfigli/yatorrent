@@ -50,10 +50,8 @@ pub struct Peer {
     // if the connection was initiate by the peer
     peer_addr: HostAndPort,
     peer_id: [u8; 20],
-    am_choking: bool,
     am_choking_since: Option<Instant>,
     am_interested: bool,
-    peer_choking: bool,
     peer_choking_since: Option<Instant>,
     peer_interested: bool, // we are not really considering this now, should we use this as pre filter for incoming requests?
     haves: Option<Vec<bool>>, // this will be initialized after we have the metadata
@@ -88,11 +86,13 @@ impl Peer {
         Peer {
             peer_addr,
             peer_id,
-            am_choking: true,
-            am_choking_since: None,
+            // at start, a peer starts choked and we start also choked
+            // we need to set the choke time back in time so that we immediatelly
+            // unchoke if possible
+            am_choking_since: Some(Instant::now() - Duration::from_mins(60)),
             am_interested: false,
-            peer_choking: true,
-            peer_choking_since: None,
+            // same considerations as am_choking_since
+            peer_choking_since: Some(Instant::now() - Duration::from_mins(60)),
             peer_interested: false,
             haves: num_pieces.map(|n| vec![false; n]),
             to_peer_tx,
@@ -135,14 +135,11 @@ impl Peer {
         self.peer_addr.clone()
     }
 
-    pub fn get_am_choking(&self) -> bool {
-        self.am_choking
-    }
-
-    pub fn set_am_choking(&mut self, chocking: bool) {
-        self.am_choking = chocking;
-        if chocking {
+    pub fn set_am_choking(&mut self, choking: bool) {
+        if choking {
             self.am_choking_since = Some(Instant::now());
+        } else {
+            self.am_choking_since = None;
         }
     }
 
@@ -158,13 +155,12 @@ impl Peer {
         self.am_interested = interested;
     }
 
-    pub fn is_peer_choking(&self) -> bool {
-        self.peer_choking
-    }
-
     pub fn set_peer_choking(&mut self, choking: bool) {
-        self.peer_choking = choking;
-        self.peer_choking_since = Some(Instant::now());
+        if choking {
+            self.peer_choking_since = Some(Instant::now());
+        } else {
+            self.peer_choking_since = None;
+        }
     }
 
     pub fn peer_choking_since(&self) -> Option<Instant> {

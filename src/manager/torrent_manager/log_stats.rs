@@ -56,15 +56,13 @@ impl TorrentManager {
             known_peers = self.peers_ctx.advertised_peers.len(),
             bad_peers = self.peers_ctx.bad_peers_count(),
             connected_peers = self.peers_ctx.peers.len(),
-            unchoked_peers =
-                self.peers_ctx
-                    .peers
-                    .iter()
-                    .fold(0, |acc, (_, p)| if !p.is_peer_choking() {
-                        acc + 1
-                    } else {
-                        acc
-                    }),
+            unchoked_peers = self.peers_ctx.peers.iter().fold(0, |acc, (_, p)| {
+                if p.peer_choking_since().is_none() {
+                    acc + 1
+                } else {
+                    acc
+                }
+            }),
             cur_ch_cap = INCOMING_PEER_MESSAGES_CHANNEL_CAPACITY
                 - self.peers_channels.incoming_peer_messages_tx.capacity(),
             read_reqs = self.file_manager_handler.inflight_read_reqs(),
@@ -84,7 +82,7 @@ impl TorrentManager {
                 .get_pending_block_requests_for_peer(peer_addr);
             let bandwidth_up = peer.get_bandwidth_tracker().bandwidth_up();
             let bandwidth_down = peer.get_bandwidth_tracker().bandwidth_down();
-            if (!peer.is_peer_choking() && pending_block_requests > 0)
+            if (peer.peer_choking_since().is_none() && pending_block_requests > 0)
                 || bandwidth_down > 0.0
                 || bandwidth_up > 0.0
             {
@@ -93,7 +91,7 @@ impl TorrentManager {
                     bandwidth_tracker = peer.get_bandwidth_tracker(),
                     assigned_pieces = self.piece_requestor.get_assigned_pieces_for_peer(peer_addr),
                     client_version = peer.get_client_version(),
-                    choking = if peer.is_peer_choking() {
+                    choking = if peer.peer_choking_since().is_some() {
                         format!("{}{}", ", ".normal(), "choked".yellow())
                     } else {
                         "".to_string()

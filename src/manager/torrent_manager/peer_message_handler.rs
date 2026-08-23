@@ -235,7 +235,7 @@ impl TorrentManager {
             return;
         }
 
-        if !peer.get_am_choking()
+        if peer.get_am_choking_since().is_none()
             && util::should_choke(
                 // todo: choking algorithm is really naive, must improve it to avoid saturating upload
                 self.peers_channels.incoming_peer_messages_tx.capacity(),
@@ -248,7 +248,7 @@ impl TorrentManager {
             peer.set_am_choking(true);
         }
 
-        if peer.get_am_choking() {
+        if peer.get_am_choking_since().is_some() {
             if peer.supports_fast_extension() {
                 peer.send(ToPeerMsg::Send(Message::Reject(block_request)))
                     .await;
