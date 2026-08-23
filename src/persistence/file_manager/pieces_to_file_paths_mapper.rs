@@ -6,13 +6,15 @@ use std::{
 use crate::util::FileEntry;
 use anyhow::{Result, bail};
 
-type FilePathsForPiece = Vec<(PathBuf, u64, u64)>; // same as FileHandlesForPiece but with file paths
+// A piece can span many files.
+// The following is the list of files (file paths, start byte as offset of the piece, end byte as offset of the piece) a piece belong to, ordered.
+type FilePathsForPiece = Vec<(PathBuf, u64, u64)>;
 type InternalFileId = usize; // internal id used instead of directly using paths to save on memory
-type FileIdsForPiece = Vec<(InternalFileId, u64, u64)>; // same as FileHandlesForPiece but with internal file ids
+type FileIdsForPiece = Vec<(InternalFileId, u64, u64)>; // same as FilePathsForPiece but with internal file ids
 
 pub struct PiecesToFilePathsMapper {
-    piece_id_to_file_paths: Vec<FileIdsForPiece>, // piece identified by position in the array -> FileIdsForPiece
-    file_id_to_path: Vec<PathBuf>,                // position in vec is the file id -> path
+    piece_id_to_file_info: Vec<FileIdsForPiece>, // piece identified by position in the array -> FileIdsForPiece
+    file_id_to_path: Vec<PathBuf>,               // position in vec is the file id -> path
 }
 
 impl PiecesToFilePathsMapper {
@@ -23,7 +25,7 @@ impl PiecesToFilePathsMapper {
         file_list: &Vec<FileEntry>,
     ) -> Result<Self> {
         let mut pieces_to_file_paths_mapper = PiecesToFilePathsMapper {
-            piece_id_to_file_paths: Vec::with_capacity(total_pieces),
+            piece_id_to_file_info: Vec::with_capacity(total_pieces),
             file_id_to_path: vec![PathBuf::new(); file_list.len()],
         };
 
@@ -40,6 +42,7 @@ impl PiecesToFilePathsMapper {
                         // this was the last piece, it is normal that the piece does not span the full piece_length size for the last file
                         break;
                     } else {
+                        // with the validation on the caller of this function, this is effectively impossible
                         bail!(
                             "there are no more files, but there are more pieces still to be matched to files, it seem piece_length * #pieces > sum of all the file sizes, this should never happen, the .torrent file is malformed"
                         )
@@ -50,6 +53,13 @@ impl PiecesToFilePathsMapper {
                     path: file_name,
                     size: file_size,
                 } = &file_list[current_file_index];
+
+                if *file_size == 0 {
+                    // torrent allow zero byte files, in such cases, move on
+                    current_file_index += 1;
+                    continue;
+                }
+
                 let remaining_bytes_in_file = file_size - current_position_in_file;
 
                 let piece_bytes_fitting_in_file =
@@ -73,7 +83,7 @@ impl PiecesToFilePathsMapper {
             }
 
             pieces_to_file_paths_mapper
-                .piece_id_to_file_paths
+                .piece_id_to_file_info
                 .push(files_spanning_piece);
         }
 
@@ -81,7 +91,7 @@ impl PiecesToFilePathsMapper {
     }
 
     pub fn get(&self, piece_id: usize) -> FilePathsForPiece {
-        self.piece_id_to_file_paths[piece_id]
+        self.piece_id_to_file_info[piece_id]
             .iter()
             .map(|(file_id, start, end)| (self.file_id_to_path[*file_id].clone(), *start, *end))
             .collect()
@@ -132,7 +142,7 @@ mod tests {
         );
 
         assert_eq!(
-            pieces_to_file_paths_mapper.piece_id_to_file_paths,
+            pieces_to_file_paths_mapper.piece_id_to_file_info,
             vec![
                 vec![(0, 0, 5), (1, 0, 5)],
                 vec![(1, 5, 15)],
@@ -161,7 +171,7 @@ mod tests {
         );
 
         assert_eq!(
-            pieces_to_file_paths_mapper.piece_id_to_file_paths,
+            pieces_to_file_paths_mapper.piece_id_to_file_info,
             vec![vec![(0, 0, 5)]]
         );
     }
@@ -186,7 +196,7 @@ mod tests {
         );
 
         assert_eq!(
-            pieces_to_file_paths_mapper.piece_id_to_file_paths,
+            pieces_to_file_paths_mapper.piece_id_to_file_info,
             vec![vec![(0, 0, 5)]]
         );
     }
@@ -196,6 +206,7 @@ mod tests {
         let file_list = vec![
             FileEntry::new("f1".to_string(), 10),
             FileEntry::new("f2".to_string(), 10),
+            FileEntry::new("f3zero".to_string(), 0),
             FileEntry::new("f3".to_string(), 5),
             FileEntry::new("f4".to_string(), 3),
             FileEntry::new("f5".to_string(), 3),
@@ -220,24 +231,24 @@ mod tests {
             PathBuf::from("./f2")
         );
         assert_eq!(
-            pieces_to_file_paths_mapper.file_id_to_path[2],
+            pieces_to_file_paths_mapper.file_id_to_path[3],
             PathBuf::from("./f3")
         );
         assert_eq!(
-            pieces_to_file_paths_mapper.file_id_to_path[3],
+            pieces_to_file_paths_mapper.file_id_to_path[4],
             PathBuf::from("./f4")
         );
         assert_eq!(
-            pieces_to_file_paths_mapper.file_id_to_path[4],
+            pieces_to_file_paths_mapper.file_id_to_path[5],
             PathBuf::from("./f5")
         );
 
         assert_eq!(
-            pieces_to_file_paths_mapper.piece_id_to_file_paths,
+            pieces_to_file_paths_mapper.piece_id_to_file_info,
             vec![
                 vec![(0, 0, 10)],
                 vec![(1, 0, 10)],
-                vec![(2, 0, 5), (3, 0, 3), (4, 0, 2),]
+                vec![(3, 0, 5), (4, 0, 3), (5, 0, 2),]
             ]
         );
     }

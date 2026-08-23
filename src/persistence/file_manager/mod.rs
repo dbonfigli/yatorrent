@@ -1,12 +1,12 @@
 use anyhow::{Result, bail};
 use sha1::{Digest, Sha1};
 use size::Size;
-use std::cmp;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::{cmp, fs};
 use thiserror::Error;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{Receiver, UnboundedSender};
@@ -158,8 +158,6 @@ pub fn start_file_manager(
     mut write_requests_rx: Receiver<WritePieceBlockRequest>,
     write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
 ) -> Result<TorrentDataStatus> {
-    validate_file_paths(&file_list)?;
-
     let mut total_file_size = 0;
     for FileEntry { size, .. } in file_list.iter() {
         total_file_size += size;
@@ -175,6 +173,9 @@ pub fn start_file_manager(
             "the total file size of all files does not cover all the declared pieces and piece_length we have, the .torrent file / metedata could be malformed"
         );
     }
+
+    validate_file_paths(&file_list)?;
+    create_zero_length_files(base_path, &file_list)?;
 
     let pieces_to_file_paths_mapper = Arc::new(PiecesToFilePathsMapper::new(
         base_path,
@@ -699,6 +700,21 @@ fn validate_file_paths(file_list: &Vec<FileEntry>) -> Result<()> {
     Ok(())
 }
 
+fn create_zero_length_files(base_path: &Path, file_list: &Vec<FileEntry>) -> Result<()> {
+    // bittorrent allow zero lenght files, we don't need to download them, we can just create them here
+    for f in file_list {
+        if f.size > 0 {
+            continue;
+        }
+        let file_path = base_path.join(&f.path);
+        if let Some(dir) = file_path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        File::create(file_path)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use crate::persistence::file_manager::FileEntry;
@@ -715,7 +731,7 @@ mod tests {
         assert!(res.is_err());
     }
 
-        #[test]
+    #[test]
     fn test_validate_file_paths_2() {
         let file_list = vec![FileEntry::new("/f1".to_string(), 10)];
         let res = validate_file_paths(&file_list);
