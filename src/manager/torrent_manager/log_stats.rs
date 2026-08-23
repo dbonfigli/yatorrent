@@ -29,18 +29,15 @@ impl TorrentManager {
                 .as_ref()
                 .map(|f| f.num_pieces().to_string())
                 .unwrap_or("?".to_string()),
-            metadata_pieces = match self.metadata_handler.total_metadata_pieces() {
-                0 => format!(
-                    ", metadata pieces: {}/?",
-                    self.metadata_handler.total_metadata_pieces_downloaded()
-                ),
-                total_metadata_pieces => {
-                    let total_downloaded = self.metadata_handler.total_metadata_pieces_downloaded();
-                    if total_metadata_pieces == total_downloaded {
-                        "".to_string()
-                    } else {
-                        format!(", metadata pieces: {total_downloaded}/{total_metadata_pieces}")
-                    }
+            metadata_pieces = if self.metadata_handler.raw_metadata_size().is_none() {
+                ", metadata pieces: 0/?".to_string()
+            } else {
+                let total_downloaded = self.metadata_handler.total_metadata_pieces_downloaded();
+                let total_metadata_pieces = self.metadata_handler.total_metadata_pieces();
+                if total_metadata_pieces == total_downloaded {
+                    "".to_string()
+                } else {
+                    format!(", metadata pieces: {total_downloaded}/{total_metadata_pieces}")
                 }
             },
             bandwidth_tracker = self.bandwidth_tracker,
