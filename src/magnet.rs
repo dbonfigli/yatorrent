@@ -19,13 +19,37 @@ impl Magnet {
             None => bail!("No info hash found in magnet URI"),
             Some((_, info_hash)) => {
                 if let Some(info_hash) = info_hash.strip_prefix("urn:btih:") {
-                    if info_hash.len() != 40 {
-                        bail!("Info hash must be 40 hex characters long");
+                    match info_hash.len() {
+                        40 => {
+                            // hex encoded info hash
+                            let info_hash = hex::decode(info_hash)?;
+                            info_hash.try_into().expect(
+                                "a properly decoded 40 hex chart string must always be 20b long",
+                            )
+                        }
+                        32 => {
+                            // allow lowercase letters on base32 representation
+                            let info_hash = info_hash.to_ascii_uppercase();
+
+                            // base32 encoded info hash
+                            let decoded = base32::decode(
+                                base32::Alphabet::Rfc4648 { padding: false },
+                                &info_hash,
+                            );
+                            let decoded = match decoded {
+                                Some(decoded) => decoded,
+                                None => bail!("Invalid Base32 info hash"),
+                            };
+                            let info_hash = match decoded.try_into() {
+                                Ok(hash) => hash,
+                                Err(_) => bail!("Base32 info hash must decode to exactly 20 bytes"),
+                            };
+                            info_hash
+                        }
+                        _ => bail!(
+                            "Info hash must be either 40 hex characters or 32 Base32 characters long"
+                        ),
                     }
-                    let info_hash = hex::decode(info_hash)?;
-                    info_hash
-                        .try_into()
-                        .expect("a properly decoded 40 hex chart string must always be 20b long")
                 } else if info_hash.starts_with("urn:btmh:") {
                     bail!("Multi hash formatted info hash (urn:btmh) not yet supported");
                 } else {
@@ -109,6 +133,32 @@ mod tests {
         assert_eq!(
             magnet.peer_addresses,
             vec!["example.com:6881", "192.168.1.1:6882", "[2001:db8::1]:6883"]
+        );
+    }
+
+    #[test]
+    fn test_valid_magnet_uri_base32() {
+        let uri = "magnet:?xt=urn:btih:ZHQVOY7XELZD5GFCTXWN7LRUDOMNKMCW&tr=http%3A%2F%2Ftracker.example.com%3A6969%2Fannounce&x.pe=example.com:6881&x.pe=192.168.1.1:6882&x.pe=[2001:db8::1]:6883";
+
+        let magnet = Magnet::new(uri.to_string()).expect("should be a valid magnet");
+
+        // The Base32 and hex representations should produce the same 20 bytes.
+        assert_eq!(
+            hex::encode(magnet.info_hash),
+            "c9e15763f722f23e98a29decdfae341b98d53056"
+        );
+    }
+
+    #[test]
+    fn test_valid_magnet_uri_base32_lowercase() {
+        let uri = "magnet:?xt=urn:btih:ZHQVOY7XELZD5GFCTXWN7LRUDOMNKMCw&tr=http%3A%2F%2Ftracker.example.com%3A6969%2Fannounce&x.pe=example.com:6881&x.pe=192.168.1.1:6882&x.pe=[2001:db8::1]:6883";
+
+        let magnet = Magnet::new(uri.to_string()).expect("should be a valid magnet");
+
+        // The Base32 and hex representations should produce the same 20 bytes.
+        assert_eq!(
+            hex::encode(magnet.info_hash),
+            "c9e15763f722f23e98a29decdfae341b98d53056"
         );
     }
 
