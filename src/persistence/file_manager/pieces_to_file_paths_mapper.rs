@@ -1,6 +1,6 @@
 use std::{
     cmp,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 use crate::util::FileEntry;
@@ -55,29 +55,7 @@ impl PiecesToFilePathsMapper {
                 let piece_bytes_fitting_in_file =
                     cmp::min(remaining_bytes_in_file, remaining_piece_bytes_to_allocate);
 
-                let file_name_path = Path::new(file_name);
-                if file_name_path.is_absolute() {
-                    bail!(
-                        "the torrent file {} contained a file with absolute path, this is not acceptable",
-                        file_name
-                    )
-                }
-                for c in file_name_path.components() {
-                    if matches!(c, Component::ParentDir) {
-                        bail!(
-                            "the torrent file {} contained a reference to a parent directory, this is not acceptable",
-                            file_name
-                        )
-                    }
-                    if matches!(c, Component::Prefix(_)) {
-                        bail!(
-                            "the torrent file {} contained a Windows prefix, this is not acceptable",
-                            file_name
-                        )
-                    }
-                }
-
-                let path = Path::new(base_path).join(file_name_path);
+                let path = base_path.join(file_name);
                 pieces_to_file_paths_mapper.file_id_to_path[current_file_index] = path;
 
                 files_spanning_piece.push((

@@ -5,7 +5,7 @@ use std::cmp;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tokio::runtime::Handle;
@@ -158,6 +158,8 @@ pub fn start_file_manager(
     mut write_requests_rx: Receiver<WritePieceBlockRequest>,
     write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
 ) -> Result<TorrentDataStatus> {
+    validate_file_paths(&file_list)?;
+
     let mut total_file_size = 0;
     for FileEntry { size, .. } in file_list.iter() {
         total_file_size += size;
@@ -667,13 +669,65 @@ fn log_file_completion_stats(
     }
 }
 
+fn validate_file_paths(file_list: &Vec<FileEntry>) -> Result<()> {
+    for FileEntry {
+        path: file_name, ..
+    } in file_list
+    {
+        let file_name_path = Path::new(file_name);
+        if file_name_path.is_absolute() {
+            bail!(
+                "the torrent file {} contained a file with absolute path, this is not acceptable",
+                file_name
+            )
+        }
+        for c in file_name_path.components() {
+            if matches!(c, Component::ParentDir) {
+                bail!(
+                    "the torrent file {} contained a reference to a parent directory, this is not acceptable",
+                    file_name
+                )
+            }
+            if matches!(c, Component::Prefix(_)) {
+                bail!(
+                    "the torrent file {} contained a Windows prefix, this is not acceptable",
+                    file_name
+                )
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use crate::persistence::file_manager::FileEntry;
     use crate::persistence::file_manager::PiecesToFilePathsMapper;
     use crate::persistence::file_manager::get_file_list_with_completion_status;
+    use crate::persistence::file_manager::validate_file_paths;
     use std::path::Path;
     use std::sync::Arc;
+
+    #[test]
+    fn test_validate_file_paths_1() {
+        let file_list = vec![FileEntry::new("../f1".to_string(), 10)];
+        let res = validate_file_paths(&file_list);
+        assert!(res.is_err());
+    }
+
+        #[test]
+    fn test_validate_file_paths_2() {
+        let file_list = vec![FileEntry::new("/f1".to_string(), 10)];
+        let res = validate_file_paths(&file_list);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_validate_file_paths_3() {
+        let file_list = vec![FileEntry::new("./f1".to_string(), 10)];
+        let res = validate_file_paths(&file_list);
+        assert!(res.is_ok());
+    }
 
     #[test]
     fn test_refresh_completed_files_1() {
