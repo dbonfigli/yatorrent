@@ -2,13 +2,13 @@ use size::{Size, Style};
 use std::{
     collections::VecDeque,
     fmt::{self, Display},
-    time::{Duration, SystemTime},
+    time::Instant,
 };
 
 const BANDWIDTH_POLL_COUNT: usize = 3;
 
 struct BandwidthPoll {
-    poll_time: SystemTime,
+    poll_time: Instant,
     bandwidth_up: f64,     // B/s
     bandwidth_down: f64,   // B/s
     uploaded_bytes: u64,   // total uploaded bytes up to this poll
@@ -19,7 +19,7 @@ pub struct BandwidthTracker {
     bandwidth_polls: VecDeque<BandwidthPoll>,
     uploaded_bytes: u64,
     downloaded_bytes: u64,
-    last_download_increase_time: SystemTime,
+    last_download_increase_time: Instant,
 }
 
 impl BandwidthTracker {
@@ -28,14 +28,14 @@ impl BandwidthTracker {
             bandwidth_polls: VecDeque::new(),
             uploaded_bytes: 0,
             downloaded_bytes: 0,
-            last_download_increase_time: SystemTime::now(),
+            last_download_increase_time: Instant::now(),
         }
     }
 
     pub fn update(&mut self) {
         if self.bandwidth_polls.is_empty() {
             self.bandwidth_polls.push_front(BandwidthPoll {
-                poll_time: SystemTime::now(),
+                poll_time: Instant::now(),
                 bandwidth_up: 0.,
                 bandwidth_down: 0.,
                 uploaded_bytes: self.uploaded_bytes,
@@ -49,10 +49,9 @@ impl BandwidthTracker {
             .front()
             .expect("invariant checked above");
 
-        let now = SystemTime::now();
+        let now = Instant::now();
         let elapsed_s = now
             .duration_since(latest_bandwith_poll.poll_time)
-            .unwrap_or_default()
             .as_secs_f64();
         if elapsed_s == 0. {
             return;
@@ -84,11 +83,11 @@ impl BandwidthTracker {
     pub fn add_downloaded_bytes(&mut self, bytes: u64) {
         self.downloaded_bytes += bytes;
         if bytes > 0 {
-            self.last_download_increase_time = SystemTime::now();
+            self.last_download_increase_time = Instant::now();
         }
     }
 
-    pub fn last_download_increase_time(&self) -> SystemTime {
+    pub fn last_download_increase_time(&self) -> Instant {
         self.last_download_increase_time
     }
 
@@ -135,10 +134,7 @@ impl BandwidthTracker {
             .expect("invariant checked above");
 
         let tot_down = (front.downloaded_bytes - back.downloaded_bytes) as f64;
-        let poll_interval = front
-            .poll_time
-            .duration_since(back.poll_time)
-            .unwrap_or(Duration::from_secs(1)); // avoid division by zero, but this should not be possible
+        let poll_interval = front.poll_time.duration_since(back.poll_time);
         tot_down / poll_interval.as_secs_f64()
     }
 
@@ -163,10 +159,7 @@ impl BandwidthTracker {
             .expect("invariant checked above");
 
         let tot_up = (front.uploaded_bytes - back.uploaded_bytes) as f64;
-        let poll_interval = front
-            .poll_time
-            .duration_since(back.poll_time)
-            .unwrap_or(Duration::from_secs(1)); // avoid division by zero, but this should not be possible
+        let poll_interval = front.poll_time.duration_since(back.poll_time);
         tot_up / poll_interval.as_secs_f64()
     }
 }

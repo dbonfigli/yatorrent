@@ -1,4 +1,4 @@
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant};
 
 use colored::Colorize;
 use size::{Size, Style};
@@ -120,9 +120,8 @@ impl TorrentManager {
         self.piece_requestor
             .get_pending_block_requests_for_peer(&peer.get_peer_addr())
             > 0
-            && SystemTime::now()
+            && Instant::now()
                 .duration_since(peer.get_bandwidth_tracker().last_download_increase_time())
-                .unwrap_or_default()
                 > TIME_TO_CONSIDER_DOWNLOAD_STALLED
     }
 }
