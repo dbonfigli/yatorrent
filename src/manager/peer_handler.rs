@@ -378,6 +378,9 @@ async fn handshake(
         info_hash: peer_info_hash,
         peer_id,
     } = stream.handshake(info_hash, own_peer_id).await?;
+    if peer_protocol != "BitTorrent protocol" {
+        bail!("peer used unsupported handshake protocol: {peer_protocol:?}");
+    }
     if peer_id == own_peer_id {
         bail!("we are connecting to ouself");
     }
