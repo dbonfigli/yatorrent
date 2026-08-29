@@ -6,9 +6,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, bail};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
 use tokio::sync::mpsc::{Sender, UnboundedSender};
+use tokio::sync::{Mutex, Semaphore};
 use tokio::time::{sleep, timeout};
 
 use crate::bencoding::Value;
@@ -20,6 +20,9 @@ use crate::util::{HostAndPort, force_string, pretty_info_hash, version_string};
 
 pub const MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER: i64 = 500;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+// Keep a burst of half-open inbound connections from consuming an unbounded
+// number of sockets and Tokio tasks while their handshakes time out.
+const MAX_PENDING_INCOMING_HANDSHAKES: usize = 32;
 const CANCELLATION_DURATION: Duration = Duration::from_secs(120);
 const PEER_NO_INBOUND_TRAFFIC_FAILURE_TIMEOUT: Duration = Duration::from_secs(180);
 
@@ -237,6 +240,7 @@ pub async fn run_new_incoming_peers_handler(
         TcpListener::bind(format!("0.0.0.0:{tcp_wire_protocol_listening_port}"))
             .await
             .expect("failed binding to torrent protocol tcp port");
+    let pending_handshakes = Arc::new(Semaphore::new(MAX_PENDING_INCOMING_HANDSHAKES));
 
     tokio::spawn(async move {
         loop {
@@ -261,12 +265,25 @@ pub async fn run_new_incoming_peers_handler(
                 continue;
             }
 
+            let pending_handshake_permit = match pending_handshakes.clone().try_acquire_owned() {
+                Ok(permit) => permit,
+                Err(_) => {
+                    log::debug!(
+                        "rejecting incoming connection from {}: pending handshake limit reached ({MAX_PENDING_INCOMING_HANDSHAKES})",
+                        addr_or_unknown(&stream)
+                    );
+                    _ = stream.shutdown().await;
+                    continue;
+                }
+            };
+
             let piece_completion_status_for_spawn = piece_completion_status.clone();
             let metadata_size_for_spawn = metadata_size.clone();
             let own_peer_id_for_spawn = own_peer_id.clone();
             let peer_handler_to_torrent_manager_tx_for_spawn =
                 peer_handler_to_torrent_manager_tx.clone();
             tokio::spawn(async move {
+                let _pending_handshake_permit = pending_handshake_permit; // hold the permit till the end of the task
                 let pcs_lock = piece_completion_status_for_spawn.lock().await;
                 let pcs = pcs_lock.clone();
                 drop(pcs_lock);
