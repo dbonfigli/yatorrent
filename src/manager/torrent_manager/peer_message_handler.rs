@@ -387,8 +387,14 @@ impl TorrentManager {
                 "unknown".to_string()
             };
             if let Some(Value::Int(reqq)) = d.get(b"reqq".as_slice()) {
-                peer.set_reqq(*reqq as usize);
-                log::debug!("{peer_addr} (version: {client_version}) has reqq: {reqq}");
+                if let Ok(reqq) = usize::try_from(*reqq)
+                    && reqq > 0
+                {
+                    peer.set_reqq(reqq);
+                    log::debug!("{peer_addr} (version: {client_version}) has reqq: {reqq}");
+                } else {
+                    log::debug!("ignoring invalid reqq {reqq} from {peer_addr}");
+                }
             }
             peer.set_client_version(client_version);
         }
