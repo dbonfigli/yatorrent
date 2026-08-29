@@ -319,15 +319,28 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
         }
         match type_message_buf[0] {
             // choke
-            0 => Ok(Message::Choke),
+            0 => {
+                validate_fixed_message_size(size_message, 1, "choke")?;
+                Ok(Message::Choke)
+            }
             // unchoke
-            1 => Ok(Message::Unchoke),
+            1 => {
+                validate_fixed_message_size(size_message, 1, "unchoke")?;
+                Ok(Message::Unchoke)
+            }
             // interested
-            2 => Ok(Message::Interested),
+            2 => {
+                validate_fixed_message_size(size_message, 1, "interested")?;
+                Ok(Message::Interested)
+            }
             // not interested
-            3 => Ok(Message::NotInterested),
+            3 => {
+                validate_fixed_message_size(size_message, 1, "not interested")?;
+                Ok(Message::NotInterested)
+            }
             // have
             4 => {
+                validate_fixed_message_size(size_message, 5, "have")?;
                 let mut buf: [u8; 4] = [0; 4];
                 if let Err(e) = self.read_exact(&mut buf).await {
                     return Err(e.into());
@@ -349,6 +362,7 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
             }
             // request
             6 => {
+                validate_fixed_message_size(size_message, 13, "request")?;
                 let mut index_buf: [u8; 4] = [0; 4];
                 if let Err(e) = self.read_exact(&mut index_buf).await {
                     return Err(e.into());
@@ -393,6 +407,7 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
             }
             // cancel
             8 => {
+                validate_fixed_message_size(size_message, 13, "cancel")?;
                 let mut index_buf: [u8; 4] = [0; 4];
                 if let Err(e) = self.read_exact(&mut index_buf).await {
                     return Err(e.into());
@@ -413,6 +428,7 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
             }
             // port
             9 => {
+                validate_fixed_message_size(size_message, 3, "port")?;
                 let mut buf: [u8; 2] = [0; 2];
                 if let Err(e) = self.read_exact(&mut buf).await {
                     return Err(e.into());
@@ -421,6 +437,7 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
             }
             // suggest
             13 => {
+                validate_fixed_message_size(size_message, 5, "suggest")?;
                 let mut buf: [u8; 4] = [0; 4];
                 if let Err(e) = self.read_exact(&mut buf).await {
                     return Err(e.into());
@@ -428,11 +445,18 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
                 Ok(Message::Suggest(u32::from_be_bytes(buf)))
             }
             // have all
-            14 => Ok(Message::HaveAll),
+            14 => {
+                validate_fixed_message_size(size_message, 1, "have all")?;
+                Ok(Message::HaveAll)
+            }
             // have none
-            15 => Ok(Message::HaveNone),
+            15 => {
+                validate_fixed_message_size(size_message, 1, "have none")?;
+                Ok(Message::HaveNone)
+            }
             // reject
             16 => {
+                validate_fixed_message_size(size_message, 13, "reject")?;
                 let mut index_buf: [u8; 4] = [0; 4];
                 if let Err(e) = self.read_exact(&mut index_buf).await {
                     return Err(e.into());
@@ -453,6 +477,7 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
             }
             // allowed fast
             17 => {
+                validate_fixed_message_size(size_message, 5, "allowed fast")?;
                 let mut buf: [u8; 4] = [0; 4];
                 if let Err(e) = self.read_exact(&mut buf).await {
                     return Err(e.into());
@@ -487,6 +512,13 @@ impl ProtocolReadHalf for ReadHalf<TcpStream> {
             .into()),
         }
     }
+}
+
+fn validate_fixed_message_size(size: u32, expected: u32, message_name: &str) -> Result<()> {
+    if size != expected {
+        bail!("malformed {message_name} message: declared size {size}, expected {expected}");
+    }
+    Ok(())
 }
 
 fn decode_bitfield(buf: Vec<u8>) -> Vec<bool> {
@@ -535,6 +567,14 @@ fn encode_bitfield(bitfield: Vec<bool>) -> Vec<u8> {
 mod tests {
     use super::decode_bitfield;
     use super::encode_bitfield;
+    use super::validate_fixed_message_size;
+
+    #[test]
+    fn fixed_message_size_is_validated() {
+        assert!(validate_fixed_message_size(5, 5, "have").is_ok());
+        assert!(validate_fixed_message_size(4, 5, "have").is_err());
+        assert!(validate_fixed_message_size(6, 5, "have").is_err());
+    }
 
     #[test]
     fn decode_bitfield_test() {
