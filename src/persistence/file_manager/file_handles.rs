@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use std::{
     collections::HashMap,
     fs::{self, File},
@@ -6,6 +6,7 @@ use std::{
     sync::Arc,
 };
 
+use super::SymlinkPathError;
 use crate::persistence::file_manager::pieces_to_file_paths_mapper::PiecesToFilePathsMapper;
 
 // A piece can span many files.
@@ -28,6 +29,13 @@ impl ReadFileHandles {
     fn get_file(&mut self, file_path: &PathBuf) -> Result<Arc<File>> {
         // this will fail if the file does not exist, but we have a gate to prevent this if we know we don't have it
         if !self.file_handles.contains_key(file_path) {
+            if fs::symlink_metadata(file_path)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            {
+                bail!(SymlinkPathError {
+                    path: file_path.clone()
+                });
+            }
             let f = File::options().read(true).open(file_path)?;
             self.file_handles.insert(file_path.clone(), Arc::new(f));
         }
@@ -65,6 +73,13 @@ impl WriteFileHandles {
         if !self.file_handles.contains_key(file_path) {
             if let Some(dir) = file_path.parent() {
                 fs::create_dir_all(dir)?;
+            }
+            if fs::symlink_metadata(file_path)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            {
+                bail!(SymlinkPathError {
+                    path: file_path.clone()
+                });
             }
             let f = File::options()
                 .read(true)

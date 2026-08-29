@@ -8,12 +8,12 @@ use crate::{
     manager::{
         peer::Peer,
         peer_handler::{ToNewIncomingPeersHandlerMsg, ToPeerMsg},
-        torrent_manager::{ShutdownRequest, TorrentManager},
+        torrent_manager::{ShutdownRequest, TorrentManager, UnrecoverableError},
     },
     persistence::{
         file_manager::{
             self, ReadPieceBlockRequest, ReadPieceBlockResponse, ShaCheckReadError,
-            ShaCorruptedError, WritePieceBlockRequest, WritePieceBlockResponse,
+            ShaCorruptedError, SymlinkPathError, WritePieceBlockRequest, WritePieceBlockResponse,
         },
         torrent_data_status::TorrentDataStatus,
     },
@@ -242,6 +242,12 @@ impl TorrentManager {
                 }
             }
             Err(e) => {
+                if e.downcast_ref::<SymlinkPathError>().is_some() {
+                    self.send_shutdown_request(ShutdownRequest::Error(UnrecoverableError::new(
+                        format!("unsafe torrent storage path detected: {e}"),
+                    )));
+                    return;
+                }
                 log::error!("cannot write block received from {}: {e}", peer_addr);
 
                 let peer = match self.peers_ctx.peers.get_mut(&peer_addr) {
@@ -283,6 +289,14 @@ impl TorrentManager {
         &mut self,
         read_piece_block_response: ReadPieceBlockResponse,
     ) {
+        if let Err(e) = &read_piece_block_response.response
+            && e.downcast_ref::<SymlinkPathError>().is_some()
+        {
+            self.send_shutdown_request(ShutdownRequest::Error(UnrecoverableError::new(format!(
+                "unsafe torrent storage path detected: {e}"
+            ))));
+            return;
+        }
         let peer = match self
             .peers_ctx
             .peers

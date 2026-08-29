@@ -41,6 +41,12 @@ pub struct ShaCheckReadError {
     error: anyhow::Error,
 }
 
+#[derive(Error, Debug)]
+#[error("refusing to access torrent data through symlink {path}")]
+pub struct SymlinkPathError {
+    path: PathBuf,
+}
+
 #[derive(Clone)]
 struct PieceSizer {
     total_pieces: usize,
@@ -158,23 +164,36 @@ pub fn start_file_manager(
     mut write_requests_rx: Receiver<WritePieceBlockRequest>,
     write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
 ) -> Result<TorrentDataStatus> {
-    let mut total_file_size = 0;
+    let mut total_file_size = 0u64;
     for FileEntry { size, .. } in file_list.iter() {
-        total_file_size += size;
+        total_file_size = total_file_size
+            .checked_add(*size)
+            .ok_or_else(|| anyhow::anyhow!("total torrent file size overflows u64"))?;
     }
     let total_pieces = piece_hashes.len();
-    if total_file_size > normal_piece_length * total_pieces as u64 {
+    if total_pieces == 0 {
+        bail!("the torrent metadata does not contain any piece hashes");
+    }
+    let total_pieces_u64 = u64::try_from(total_pieces)
+        .map_err(|_| anyhow::anyhow!("number of torrent pieces does not fit u64"))?;
+    let maximum_file_size = normal_piece_length
+        .checked_mul(total_pieces_u64)
+        .ok_or_else(|| anyhow::anyhow!("torrent piece length times piece count overflows u64"))?;
+    if total_file_size > maximum_file_size {
         bail!(
             "the total file size of all files exceed the #pieces * piece_length we have, the .torrent file / metedata could be malformed"
         );
     }
-    if total_file_size <= (normal_piece_length * (total_pieces as u64 - 1)) {
+    let minimum_file_size = normal_piece_length
+        .checked_mul(total_pieces_u64 - 1)
+        .ok_or_else(|| anyhow::anyhow!("torrent piece length times piece count overflows u64"))?;
+    if total_file_size <= minimum_file_size {
         bail!(
             "the total file size of all files does not cover all the declared pieces and piece_length we have, the .torrent file / metedata could be malformed"
         );
     }
 
-    validate_file_paths(&file_list)?;
+    validate_file_paths(base_path, &file_list)?;
     create_zero_length_files(base_path, &file_list)?;
 
     let pieces_to_file_paths_mapper = Arc::new(PiecesToFilePathsMapper::new(
@@ -670,7 +689,7 @@ fn log_file_completion_stats(
     }
 }
 
-fn validate_file_paths(file_list: &Vec<FileEntry>) -> Result<()> {
+fn validate_file_paths(base_path: &Path, file_list: &[FileEntry]) -> Result<()> {
     for FileEntry {
         path: file_name, ..
     } in file_list
@@ -694,6 +713,22 @@ fn validate_file_paths(file_list: &Vec<FileEntry>) -> Result<()> {
                     "the torrent file {} contained a Windows prefix, this is not acceptable",
                     file_name
                 )
+            }
+        }
+        reject_symlink_components(base_path, file_name_path)?;
+    }
+    Ok(())
+}
+
+fn reject_symlink_components(base_path: &Path, relative_path: &Path) -> Result<()> {
+    let mut current = base_path.to_path_buf();
+    for component in relative_path.components() {
+        if let Component::Normal(component) = component {
+            current.push(component);
+            if fs::symlink_metadata(&current)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            {
+                bail!(SymlinkPathError { path: current });
             }
         }
     }
@@ -727,21 +762,21 @@ mod tests {
     #[test]
     fn test_validate_file_paths_1() {
         let file_list = vec![FileEntry::new("../f1".to_string(), 10)];
-        let res = validate_file_paths(&file_list);
+        let res = validate_file_paths(Path::new("./"), &file_list);
         assert!(res.is_err());
     }
 
     #[test]
     fn test_validate_file_paths_2() {
         let file_list = vec![FileEntry::new("/f1".to_string(), 10)];
-        let res = validate_file_paths(&file_list);
+        let res = validate_file_paths(Path::new("./"), &file_list);
         assert!(res.is_err());
     }
 
     #[test]
     fn test_validate_file_paths_3() {
         let file_list = vec![FileEntry::new("./f1".to_string(), 10)];
-        let res = validate_file_paths(&file_list);
+        let res = validate_file_paths(Path::new("./"), &file_list);
         assert!(res.is_ok());
     }
 
