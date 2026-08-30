@@ -503,30 +503,22 @@ impl TorrentManager {
         }
 
         let data_len = data.len() as u64;
-        let peer = match self.peers_ctx.peers.get_mut(&peer_addr) {
-            Some(peer) => peer,
-            None => return,
-        };
-        let rtt = self.piece_requestor.block_request_completed(
-            &peer_addr,
-            &BlockRequest {
-                piece_idx,
-                block_begin: begin,
-                data_len: data.len() as u32,
-            },
-        );
-        if let Some(rtt) = rtt {
-            peer.update_rtt(rtt);
-        } else {
-            log::debug!(
-                "ignoring unsolicited or expired piece block from {peer_addr}: piece {piece_idx}, begin {begin}, length {}",
-                data.len()
-            );
-            return;
-        }
         self.bandwidth_tracker.add_downloaded_bytes(data_len);
-        peer.get_bandwidth_tracker_mut()
-            .add_downloaded_bytes(data_len);
+        if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
+            peer.get_bandwidth_tracker_mut()
+                .add_downloaded_bytes(data_len);
+            let rtt = self.piece_requestor.block_request_completed(
+                &peer_addr,
+                &BlockRequest {
+                    piece_idx,
+                    block_begin: begin,
+                    data_len: data.len() as u32,
+                },
+            );
+            if let Some(rtt) = rtt {
+                peer.update_rtt(rtt);
+            }
+        }
 
         // since we completed receiving a piece block, we can try to send more requests immediately to this peer, without waiting for a tick
         self.send_pieces_reqs_to_peer(peer_addr.clone()).await;
