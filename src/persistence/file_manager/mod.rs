@@ -8,7 +8,6 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::{cmp, fs};
 use thiserror::Error;
-use tokio::runtime::Handle;
 use tokio::sync::mpsc::{Receiver, UnboundedSender};
 
 use crate::persistence::file_manager::file_handles::{
@@ -86,7 +85,13 @@ pub struct WritePieceBlockRequestReference {
 pub struct TorrentDataStatusUpdates {
     pub piece_is_completed: bool,
     pub wasted_bytes: usize,
-    pub incomplete_piece: Option<Piece>,
+    pub incomplete_piece: Option<Written>,
+}
+
+pub struct Written {
+    pub block_begin: u64,
+    pub data_len: u64,
+    pub piece_len: u64,
 }
 
 pub struct WritePieceBlockResponse {
@@ -250,28 +255,26 @@ pub fn start_file_manager(
     });
 
     // write request loop
-    let handle = Handle::current();
-    std::thread::spawn(move || {
-        handle.block_on(async move {
-            let mut file_handles = WriteFileHandles::new(pieces_to_file_paths_mapper);
-            let mut incomplete_pieces = HashMap::new();
-            loop {
-                tokio::select! {
-                    Some(write_piece_block_request) = write_requests_rx.recv() => {
-                        handle_write_piece_block(
-                        write_piece_block_request,
-                        &write_responses_tx,
-                        &piece_sizer,
-                        shared_piece_completion_status.clone(),
-                        &mut file_handles,
-                        &piece_hashes,
-                        &mut incomplete_pieces
-                        );
-                    }
-                    else => break,
+    tokio::spawn(async move {
+        let file_handles = Arc::new(WriteFileHandles::new(pieces_to_file_paths_mapper));
+        let incomplete_pieces = Arc::new(Mutex::new(HashMap::new()));
+        let piece_hashes = Arc::new(piece_hashes);
+        loop {
+            tokio::select! {
+                Some(write_piece_block_request) = write_requests_rx.recv() => {
+                    handle_write_piece_block(
+                    write_piece_block_request,
+                    &write_responses_tx,
+                    Arc::new(piece_sizer.clone()),
+                    shared_piece_completion_status.clone(),
+                    file_handles.clone(),
+                    piece_hashes.clone(),
+                    incomplete_pieces.clone()
+                    );
                 }
+                else => break,
             }
-        })
+        }
     });
 
     Ok(TorrentDataStatus::new(
@@ -423,158 +426,300 @@ fn handle_write_piece_block(
     write_piece_block_request: WritePieceBlockRequest,
     writes_file_manager_to_torrent_manager_tx: &UnboundedSender<WritePieceBlockResponse>,
 
-    piece_sizer: &PieceSizer,
+    piece_sizer: Arc<PieceSizer>,
     piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
-    write_file_handles: &mut WriteFileHandles,
-    piece_hashes: &PieceHashes,
-    incomplete_pieces: &mut HashMap<usize, Piece>,
+    write_file_handles: Arc<WriteFileHandles>,
+    piece_hashes: Arc<PieceHashes>,
+    incomplete_pieces: Arc<Mutex<HashMap<usize, Piece>>>,
 ) {
-    let result = write_piece_block(
-        write_piece_block_request.piece_idx,
-        write_piece_block_request.data,
-        write_piece_block_request.block_begin,
-        piece_sizer,
-        piece_completion_status,
-        write_file_handles,
-        piece_hashes,
-        incomplete_pieces,
-    );
-    _ = writes_file_manager_to_torrent_manager_tx.send(WritePieceBlockResponse {
-        request: WritePieceBlockRequestReference {
-            requestor_peer_addr: write_piece_block_request.requestor_peer_addr,
-            piece_idx: write_piece_block_request.piece_idx,
-        },
-        response: result,
-    });
-}
-
-fn write_piece_block(
-    piece_idx: usize,
-    data: Vec<u8>,
-    block_begin: u64, // position in the piece where to start writing data
-
-    piece_sizer: &PieceSizer,
-    piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
-    write_file_handles: &mut WriteFileHandles,
-    piece_hashes: &PieceHashes,
-    incomplete_pieces: &mut HashMap<usize, Piece>,
-) -> Result<TorrentDataStatusUpdates> {
-    if piece_idx >= piece_sizer.total_pieces() {
-        bail!(
-            "cannot write block: piece idx {piece_idx} would overflow total pieces ({})",
-            piece_sizer.total_pieces()
-        );
+    if write_piece_block_request.piece_idx >= piece_sizer.total_pieces() {
+        _ = writes_file_manager_to_torrent_manager_tx.send(WritePieceBlockResponse {
+            request: WritePieceBlockRequestReference {
+                requestor_peer_addr: write_piece_block_request.requestor_peer_addr,
+                piece_idx: write_piece_block_request.piece_idx,
+            },
+            response: Err(anyhow::anyhow!(
+                "cannot write block: piece idx {} would overflow total pieces ({})",
+                write_piece_block_request.piece_idx,
+                piece_sizer.total_pieces(),
+            )),
+        });
+        return;
     }
 
-    if data.is_empty() {
-        bail!("cannot write block: the block carries no data");
+    if write_piece_block_request.data.is_empty() {
+        _ = writes_file_manager_to_torrent_manager_tx.send(WritePieceBlockResponse {
+            request: WritePieceBlockRequestReference {
+                requestor_peer_addr: write_piece_block_request.requestor_peer_addr,
+                piece_idx: write_piece_block_request.piece_idx,
+            },
+            response: Err(anyhow::anyhow!(
+                "cannot write block: the block carries no data",
+            )),
+        });
+        return;
     }
 
     // avoid useless writes if we already have the piece
     let piece_completion_status_mg = piece_completion_status
         .lock()
         .expect("another user panicked while holding the lock");
-    let completed = piece_completion_status_mg[piece_idx];
+    let completed = piece_completion_status_mg[write_piece_block_request.piece_idx];
     drop(piece_completion_status_mg);
     if completed {
-        log::trace!("we already have the piece {piece_idx}, will avoid to writing it again");
-        return Ok(TorrentDataStatusUpdates {
-            piece_is_completed: true,
-            wasted_bytes: data.len(),
-            incomplete_piece: None,
-        });
-    }
-
-    let piece_len = piece_sizer.piece_length(piece_idx);
-    let data_len = data.len() as u64;
-    if block_begin + data_len > piece_len {
-        bail!("cannot write block: data would overflow the piece");
-    }
-
-    let piece = incomplete_pieces
-        .entry(piece_idx)
-        .or_insert(Piece::new(piece_len));
-
-    if piece.contains(block_begin, block_begin + data_len - 1) {
         log::trace!(
-            "we already have written all the data in this block (begin: {block_begin} length: {data_len}) for piece {piece_idx}, will avoid writing it again"
+            "we already have the piece {}, will avoid to writing it again",
+            write_piece_block_request.piece_idx
         );
-        return Ok(TorrentDataStatusUpdates {
-            piece_is_completed: false,
-            wasted_bytes: data.len(),
-            incomplete_piece: Some(piece.clone()),
+        _ = writes_file_manager_to_torrent_manager_tx.send(WritePieceBlockResponse {
+            request: WritePieceBlockRequestReference {
+                requestor_peer_addr: write_piece_block_request.requestor_peer_addr,
+                piece_idx: write_piece_block_request.piece_idx,
+            },
+            response: Ok(TorrentDataStatusUpdates {
+                piece_is_completed: true,
+                wasted_bytes: write_piece_block_request.data.len(),
+                incomplete_piece: None,
+            }),
         });
+        return;
     }
 
+    let piece_len = piece_sizer.piece_length(write_piece_block_request.piece_idx);
+    let data_len = write_piece_block_request.data.len() as u64;
+    if write_piece_block_request.block_begin + data_len > piece_len {
+        _ = writes_file_manager_to_torrent_manager_tx.send(WritePieceBlockResponse {
+            request: WritePieceBlockRequestReference {
+                requestor_peer_addr: write_piece_block_request.requestor_peer_addr,
+                piece_idx: write_piece_block_request.piece_idx,
+            },
+            response: Err(anyhow::anyhow!(
+                "cannot write block: data would overflow the piece",
+            )),
+        });
+        return;
+    }
+
+    let mut incomplete_pieces_mg = incomplete_pieces
+        .lock()
+        .expect("another user panicked while holding the lock");
+    let piece = incomplete_pieces_mg
+        .entry(write_piece_block_request.piece_idx)
+        .or_insert(Piece::new(piece_len));
+    let piece_copy = piece.clone();
+    drop(incomplete_pieces_mg);
+
+    if piece_copy.contains(
+        write_piece_block_request.block_begin,
+        write_piece_block_request.block_begin + data_len - 1,
+    ) {
+        log::trace!(
+            "we already have written all the data in this block (begin: {} length: {}) for piece {}, will avoid writing it again",
+            write_piece_block_request.block_begin,
+            data_len,
+            write_piece_block_request.piece_idx,
+        );
+        _ = writes_file_manager_to_torrent_manager_tx.send(WritePieceBlockResponse {
+            request: WritePieceBlockRequestReference {
+                requestor_peer_addr: write_piece_block_request.requestor_peer_addr,
+                piece_idx: write_piece_block_request.piece_idx,
+            },
+            response: Ok(TorrentDataStatusUpdates {
+                piece_is_completed: false,
+                wasted_bytes: write_piece_block_request.data.len(),
+                incomplete_piece: Some(Written {
+                    block_begin: write_piece_block_request.block_begin,
+                    data_len,
+                    piece_len: piece_sizer.piece_length(write_piece_block_request.piece_idx),
+                }),
+            }),
+        });
+        return;
+    }
+
+    let writes_file_manager_to_torrent_manager_tx_for_spawn =
+        writes_file_manager_to_torrent_manager_tx.clone();
+    tokio::task::spawn_blocking(move || {
+        wr(
+            write_piece_block_request,
+            write_file_handles,
+            writes_file_manager_to_torrent_manager_tx_for_spawn,
+            piece_hashes,
+            piece_completion_status,
+            piece_sizer,
+            incomplete_pieces,
+        );
+    });
+}
+
+fn wr(
+    write_piece_block_request: WritePieceBlockRequest,
+    write_file_handles: Arc<WriteFileHandles>,
+    writes_file_manager_to_torrent_manager_tx: UnboundedSender<WritePieceBlockResponse>,
+    piece_hashes: Arc<PieceHashes>,
+    piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
+    piece_sizer: Arc<PieceSizer>,
+    incomplete_pieces: Arc<Mutex<HashMap<usize, Piece>>>,
+) {
+    let data_len = write_piece_block_request.data.len() as u64;
     // finally write this block
     let mut data_cursor: u64 = 0;
     let mut data_still_to_be_written = data_len;
     let mut piece_cursor_to_begin = 0;
-    let file_handles_for_piece = write_file_handles.get_files_for_piece(piece_idx)?;
+    let file_handles_for_piece =
+        match write_file_handles.get_files_for_piece(write_piece_block_request.piece_idx) {
+            Ok(x) => x,
+            Err(e) => {
+                _ = writes_file_manager_to_torrent_manager_tx.send(WritePieceBlockResponse {
+                    request: WritePieceBlockRequestReference {
+                        requestor_peer_addr: write_piece_block_request.requestor_peer_addr,
+                        piece_idx: write_piece_block_request.piece_idx,
+                    },
+                    response: Err(e.into()),
+                });
+                return;
+            }
+        };
     for (file, file_start, file_end) in file_handles_for_piece.iter() {
         if data_still_to_be_written == 0 {
             break;
         }
         let mut file_start = *file_start;
         let file_end = *file_end;
-        if block_begin - piece_cursor_to_begin < file_end - file_start {
-            file_start += block_begin - piece_cursor_to_begin;
-            piece_cursor_to_begin = block_begin;
+        if write_piece_block_request.block_begin - piece_cursor_to_begin < file_end - file_start {
+            file_start += write_piece_block_request.block_begin - piece_cursor_to_begin;
+            piece_cursor_to_begin = write_piece_block_request.block_begin;
         } else {
             piece_cursor_to_begin += file_end - file_start;
             continue;
         }
         let data_to_write = cmp::min(file_end - file_start, data_still_to_be_written);
-        write_at(
+        if let Err(e) = write_at(
             &file,
-            &data[data_cursor as usize..(data_cursor + data_to_write) as usize],
+            &write_piece_block_request.data
+                [data_cursor as usize..(data_cursor + data_to_write) as usize],
             file_start,
-        )?;
+        ) {
+            _ = writes_file_manager_to_torrent_manager_tx.send(WritePieceBlockResponse {
+                request: WritePieceBlockRequestReference {
+                    requestor_peer_addr: write_piece_block_request.requestor_peer_addr.clone(),
+                    piece_idx: write_piece_block_request.piece_idx,
+                },
+                response: Err(e.into()),
+            });
+        }
         data_cursor += data_to_write;
         data_still_to_be_written -= data_to_write;
     }
 
-    piece.add_fragment(block_begin, block_begin + data_len - 1);
+    let mut incomplete_pieces_mg = incomplete_pieces.lock().expect("ok");
+    let piece =
+        if let Some(piece) = incomplete_pieces_mg.get_mut(&write_piece_block_request.piece_idx) {
+            piece
+        } else {
+            return;
+        };
+    piece.add_fragment(
+        write_piece_block_request.block_begin,
+        write_piece_block_request.block_begin + data_len - 1,
+    );
+    let piece_is_complete = piece.complete();
+    drop(incomplete_pieces_mg);
 
     // check if piece is completed
-    if piece.complete() {
-        incomplete_pieces.remove(&piece_idx);
+    if piece_is_complete {
+        let mut incomplete_pieces_mg = incomplete_pieces.lock().expect("ok");
+        incomplete_pieces_mg.remove(&write_piece_block_request.piece_idx);
+        drop(incomplete_pieces_mg);
 
-        read_piece_block_pre_checks(
+        if let Err(e) = read_piece_block_pre_checks(
             piece_completion_status.clone(),
-            piece_sizer,
-            piece_idx,
+            &piece_sizer,
+            write_piece_block_request.piece_idx,
             0,
-            piece_len,
+            piece_sizer.piece_length(write_piece_block_request.piece_idx),
             false,
-        )?;
+        ) {
+            _ = writes_file_manager_to_torrent_manager_tx.send(WritePieceBlockResponse {
+                request: WritePieceBlockRequestReference {
+                    requestor_peer_addr: write_piece_block_request.requestor_peer_addr,
+                    piece_idx: write_piece_block_request.piece_idx,
+                },
+                response: Err(e.into()),
+            });
 
-        let read_piece_data = match read_data(file_handles_for_piece, 0, piece_len) {
+            return;
+        }
+
+        let read_piece_data = match read_data(
+            file_handles_for_piece,
+            0,
+            piece_sizer.piece_length(write_piece_block_request.piece_idx),
+        ) {
             Ok(data) => data,
-            Err(error) => bail!(ShaCheckReadError { piece_idx, error }),
+            Err(error) => {
+                _ = writes_file_manager_to_torrent_manager_tx.send(WritePieceBlockResponse {
+                    request: WritePieceBlockRequestReference {
+                        requestor_peer_addr: write_piece_block_request.requestor_peer_addr,
+                        piece_idx: write_piece_block_request.piece_idx,
+                    },
+                    response: Err(anyhow::anyhow!(ShaCheckReadError {
+                        piece_idx: write_piece_block_request.piece_idx,
+                        error
+                    })),
+                });
+                return;
+            }
         };
 
         let piece_sha: [u8; 20] = Sha1::digest(read_piece_data).into();
-        if piece_sha != piece_hashes[piece_idx] {
-            bail!(ShaCorruptedError { piece_idx });
+        if piece_sha != piece_hashes[write_piece_block_request.piece_idx] {
+            _ = writes_file_manager_to_torrent_manager_tx.send(WritePieceBlockResponse {
+                request: WritePieceBlockRequestReference {
+                    requestor_peer_addr: write_piece_block_request.requestor_peer_addr,
+                    piece_idx: write_piece_block_request.piece_idx,
+                },
+                response: Err(anyhow::anyhow!(ShaCorruptedError {
+                    piece_idx: write_piece_block_request.piece_idx
+                })),
+            });
+            return;
         } else {
             let mut piece_completion_status_mg = piece_completion_status
                 .lock()
                 .expect("another user panicked while holding the lock");
-            piece_completion_status_mg[piece_idx] = true;
+            piece_completion_status_mg[write_piece_block_request.piece_idx] = true;
             drop(piece_completion_status_mg);
         }
-        Ok(TorrentDataStatusUpdates {
-            piece_is_completed: true,
-            wasted_bytes: 0,
-            incomplete_piece: None,
-        })
+
+        _ = writes_file_manager_to_torrent_manager_tx.send(WritePieceBlockResponse {
+            request: WritePieceBlockRequestReference {
+                requestor_peer_addr: write_piece_block_request.requestor_peer_addr,
+                piece_idx: write_piece_block_request.piece_idx,
+            },
+            response: Ok(TorrentDataStatusUpdates {
+                piece_is_completed: true,
+                wasted_bytes: 0,
+                incomplete_piece: None,
+            }),
+        });
+        return;
     } else {
-        Ok(TorrentDataStatusUpdates {
-            piece_is_completed: false,
-            wasted_bytes: 0,
-            incomplete_piece: Some(piece.clone()),
-        })
+        _ = writes_file_manager_to_torrent_manager_tx.send(WritePieceBlockResponse {
+            request: WritePieceBlockRequestReference {
+                requestor_peer_addr: write_piece_block_request.requestor_peer_addr,
+                piece_idx: write_piece_block_request.piece_idx,
+            },
+            response: Ok(TorrentDataStatusUpdates {
+                piece_is_completed: false,
+                wasted_bytes: 0,
+                incomplete_piece: Some(Written {
+                    block_begin: write_piece_block_request.block_begin,
+                    data_len,
+                    piece_len: piece_sizer.piece_length(write_piece_block_request.piece_idx),
+                }),
+            }),
+        });
     }
 }
 
