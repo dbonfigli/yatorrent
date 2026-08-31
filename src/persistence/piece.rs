@@ -68,6 +68,43 @@ impl Piece {
         }
     }
 
+    pub fn remove_fragment(&mut self, begin: u64, end: u64) {
+        assert!(begin <= end && end < self.length);
+
+        let mut fragments = Vec::with_capacity(self.fragments.len());
+
+        for fragment in self.fragments.drain(..) {
+            // No overlap, keep it as is
+            if end < fragment.begin || begin > fragment.end {
+                fragments.push(fragment);
+                continue;
+            }
+
+            // The removal completely covers this fragment, completely remove it
+            if begin <= fragment.begin && end >= fragment.end {
+                continue;
+            }
+
+            // Removal overlaps the beginning of the fragment
+            if begin <= fragment.begin {
+                fragments.push(Fragment::new(end + 1, fragment.end));
+                continue;
+            }
+
+            // Removal overlaps the end of the fragment
+            if end >= fragment.end {
+                fragments.push(Fragment::new(fragment.begin, begin - 1));
+                continue;
+            }
+
+            // Removal is strictly inside the fragment, so split it
+            fragments.push(Fragment::new(fragment.begin, begin - 1));
+            fragments.push(Fragment::new(end + 1, fragment.end));
+        }
+
+        self.fragments = fragments;
+    }
+
     pub fn complete(&self) -> bool {
         if self.length == 0
             || (self.fragments.len() == 1
@@ -849,6 +886,197 @@ mod tests {
             fragments: vec![Fragment::new(1, 40)],
         };
         assert_eq!(piece, expect);
+    }
+
+    #[test]
+    fn test_remove_fragment() {
+        // Remove from the beginning of a fragment.
+        let mut piece = Piece {
+            length: 50,
+            fragments: vec![Fragment::new(10, 20)],
+        };
+        piece.remove_fragment(10, 14);
+        assert_eq!(
+            piece,
+            Piece {
+                length: 50,
+                fragments: vec![Fragment::new(15, 20)],
+            }
+        );
+
+        // Remove from the end of a fragment.
+        let mut piece = Piece {
+            length: 50,
+            fragments: vec![Fragment::new(10, 20)],
+        };
+        piece.remove_fragment(16, 20);
+        assert_eq!(
+            piece,
+            Piece {
+                length: 50,
+                fragments: vec![Fragment::new(10, 15)],
+            }
+        );
+
+        // Remove the entire fragment.
+        let mut piece = Piece {
+            length: 50,
+            fragments: vec![
+                Fragment::new(0, 5),
+                Fragment::new(10, 20),
+                Fragment::new(30, 40),
+            ],
+        };
+        piece.remove_fragment(10, 20);
+        assert_eq!(
+            piece,
+            Piece {
+                length: 50,
+                fragments: vec![Fragment::new(0, 5), Fragment::new(30, 40),],
+            }
+        );
+
+        // Remove from the middle of a fragment, splitting it in two.
+        let mut piece = Piece {
+            length: 50,
+            fragments: vec![Fragment::new(10, 20)],
+        };
+        piece.remove_fragment(14, 16);
+        assert_eq!(
+            piece,
+            Piece {
+                length: 50,
+                fragments: vec![Fragment::new(10, 13), Fragment::new(17, 20),],
+            }
+        );
+
+        // Remove a single value from the middle.
+        let mut piece = Piece {
+            length: 50,
+            fragments: vec![Fragment::new(10, 20)],
+        };
+        piece.remove_fragment(15, 15);
+        assert_eq!(
+            piece,
+            Piece {
+                length: 50,
+                fragments: vec![Fragment::new(10, 14), Fragment::new(16, 20),],
+            }
+        );
+
+        // Remove a range that does not overlap any fragment.
+        let mut piece = Piece {
+            length: 50,
+            fragments: vec![
+                Fragment::new(0, 5),
+                Fragment::new(10, 20),
+                Fragment::new(30, 40),
+            ],
+        };
+        piece.remove_fragment(6, 9);
+        assert_eq!(
+            piece,
+            Piece {
+                length: 50,
+                fragments: vec![
+                    Fragment::new(0, 5),
+                    Fragment::new(10, 20),
+                    Fragment::new(30, 40),
+                ],
+            }
+        );
+
+        // Remove across multiple fragments.
+        let mut piece = Piece {
+            length: 50,
+            fragments: vec![
+                Fragment::new(0, 5),
+                Fragment::new(10, 20),
+                Fragment::new(30, 40),
+            ],
+        };
+        piece.remove_fragment(3, 32);
+        assert_eq!(
+            piece,
+            Piece {
+                length: 50,
+                fragments: vec![Fragment::new(0, 2), Fragment::new(33, 40),],
+            }
+        );
+
+        // Remove everything that is currently present.
+        let mut piece = Piece {
+            length: 50,
+            fragments: vec![
+                Fragment::new(0, 5),
+                Fragment::new(10, 20),
+                Fragment::new(30, 40),
+            ],
+        };
+        piece.remove_fragment(0, 49);
+        assert_eq!(
+            piece,
+            Piece {
+                length: 50,
+                fragments: vec![],
+            }
+        );
+
+        // Remove before the first fragment.
+        let mut piece = Piece {
+            length: 50,
+            fragments: vec![Fragment::new(10, 20), Fragment::new(30, 40)],
+        };
+        piece.remove_fragment(0, 9);
+        assert_eq!(
+            piece,
+            Piece {
+                length: 50,
+                fragments: vec![Fragment::new(10, 20), Fragment::new(30, 40),],
+            }
+        );
+
+        // Remove after the last fragment.
+        let mut piece = Piece {
+            length: 50,
+            fragments: vec![Fragment::new(10, 20), Fragment::new(30, 40)],
+        };
+        piece.remove_fragment(41, 49);
+        assert_eq!(
+            piece,
+            Piece {
+                length: 50,
+                fragments: vec![Fragment::new(10, 20), Fragment::new(30, 40),],
+            }
+        );
+
+        // Remove a range that partially overlaps the first fragment.
+        let mut piece = Piece {
+            length: 50,
+            fragments: vec![Fragment::new(10, 20), Fragment::new(30, 40)],
+        };
+        piece.remove_fragment(5, 15);
+        assert_eq!(
+            piece,
+            Piece {
+                length: 50,
+                fragments: vec![Fragment::new(16, 20), Fragment::new(30, 40),],
+            }
+        );
+
+        // Remove a range that partially overlaps the last fragment.
+        let mut piece = Piece {
+            length: 50,
+            fragments: vec![Fragment::new(10, 20), Fragment::new(30, 40)],
+        };
+        piece.remove_fragment(35, 45);
+        assert_eq!(
+            piece,
+            Piece {
+                length: 50,
+                fragments: vec![Fragment::new(10, 20), Fragment::new(30, 34),],
+            }
+        );
     }
 
     #[test]

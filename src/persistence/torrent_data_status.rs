@@ -99,13 +99,15 @@ impl TorrentDataStatus {
                     self.incomplete_pieces
                         .remove(&write_piece_block_response.request.piece_idx);
                 } else {
-                    self.incomplete_pieces.insert(
-                        write_piece_block_response.request.piece_idx,
-                        updates
-                            .incomplete_piece
-                            .clone()
-                            .expect("this is always present if piece_is_completed == false"),
-                    );
+                    if let Some(written) = updates.written.as_ref() {
+                        self.incomplete_pieces
+                            .entry(write_piece_block_response.request.piece_idx)
+                            .or_insert(Piece::new(written.piece_len))
+                            .add_fragment(
+                                written.block_begin,
+                                written.block_begin + written.data_len - 1,
+                            );
+                    };
                 }
             }
             Err(e) => {

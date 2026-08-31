@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{Error, Result, anyhow, bail};
 use sha1::{Digest, Sha1};
 use size::Size;
 use std::collections::HashMap;
@@ -8,7 +8,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::{cmp, fs};
 use thiserror::Error;
-use tokio::runtime::Handle;
+use tokio::sync::Semaphore;
 use tokio::sync::mpsc::{Receiver, UnboundedSender};
 
 use crate::persistence::file_manager::file_handles::{
@@ -22,8 +22,9 @@ use crate::util::{FileEntry, HostAndPort};
 mod file_handles;
 mod pieces_to_file_paths_mapper;
 
-const MAX_CONCURRENT_READ_OPS: usize = 10; // todo: make this dynamic depending on the read speed (spinning disk should have this set to 1)
-
+// todo: make this dynamic depending on the read and write speed (spinning disk should have concurrent read/write ops set 1)
+const MAX_CONCURRENT_READ_OPS: usize = 10;
+const MAX_CONCURRENT_WRITE_OPS: usize = 5;
 #[derive(Error, Debug)]
 #[error(
     "the sha of the data we just wrote for piece {piece_idx} do not match the sha we expect, marking this piece as missing"
@@ -38,7 +39,7 @@ pub struct ShaCorruptedError {
 )]
 pub struct ShaCheckReadError {
     piece_idx: usize,
-    error: anyhow::Error,
+    error: Error,
 }
 
 #[derive(Error, Debug)]
@@ -86,7 +87,13 @@ pub struct WritePieceBlockRequestReference {
 pub struct TorrentDataStatusUpdates {
     pub piece_is_completed: bool,
     pub wasted_bytes: usize,
-    pub incomplete_piece: Option<Piece>,
+    pub written: Option<Written>, // what has bee written, if any
+}
+
+pub struct Written {
+    pub block_begin: u64,
+    pub data_len: u64,
+    pub piece_len: u64,
 }
 
 pub struct WritePieceBlockResponse {
@@ -104,6 +111,21 @@ pub struct ReadPieceBlockRequest {
 pub struct ReadPieceBlockResponse {
     pub request: ReadPieceBlockRequest,
     pub response: Result<Vec<u8>>,
+}
+
+#[derive(Clone)]
+struct IncompletePiece {
+    committed_piece: Piece,   // piece with info about data really written
+    unconfirmed_piece: Piece, // piece with ifno about data that we declared we are writing, i.e. writes are in flight and we do not know they completed
+}
+
+impl IncompletePiece {
+    fn new(piece_len: u64) -> Self {
+        IncompletePiece {
+            committed_piece: Piece::new(piece_len),
+            unconfirmed_piece: Piece::new(piece_len),
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -168,17 +190,17 @@ pub fn start_file_manager(
     for FileEntry { size, .. } in file_list.iter() {
         total_file_size = total_file_size
             .checked_add(*size)
-            .ok_or_else(|| anyhow::anyhow!("total torrent file size overflows u64"))?;
+            .ok_or_else(|| anyhow!("total torrent file size overflows u64"))?;
     }
     let total_pieces = piece_hashes.len();
     if total_pieces == 0 {
         bail!("the torrent metadata does not contain any piece hashes");
     }
     let total_pieces_u64 = u64::try_from(total_pieces)
-        .map_err(|_| anyhow::anyhow!("number of torrent pieces does not fit u64"))?;
+        .map_err(|_| anyhow!("number of torrent pieces does not fit u64"))?;
     let maximum_file_size = normal_piece_length
         .checked_mul(total_pieces_u64)
-        .ok_or_else(|| anyhow::anyhow!("torrent piece length times piece count overflows u64"))?;
+        .ok_or_else(|| anyhow!("torrent piece length times piece count overflows u64"))?;
     if total_file_size > maximum_file_size {
         bail!(
             "the total file size of all files exceed the #pieces * piece_length we have, the .torrent file / metedata could be malformed"
@@ -186,7 +208,7 @@ pub fn start_file_manager(
     }
     let minimum_file_size = normal_piece_length
         .checked_mul(total_pieces_u64 - 1)
-        .ok_or_else(|| anyhow::anyhow!("torrent piece length times piece count overflows u64"))?;
+        .ok_or_else(|| anyhow!("torrent piece length times piece count overflows u64"))?;
     if total_file_size <= minimum_file_size {
         bail!(
             "the total file size of all files does not cover all the declared pieces and piece_length we have, the .torrent file / metedata could be malformed"
@@ -250,28 +272,28 @@ pub fn start_file_manager(
     });
 
     // write request loop
-    let handle = Handle::current();
-    std::thread::spawn(move || {
-        handle.block_on(async move {
-            let mut file_handles = WriteFileHandles::new(pieces_to_file_paths_mapper);
-            let mut incomplete_pieces = HashMap::new();
-            loop {
-                tokio::select! {
-                    Some(write_piece_block_request) = write_requests_rx.recv() => {
-                        handle_write_piece_block(
-                        write_piece_block_request,
-                        &write_responses_tx,
-                        &piece_sizer,
-                        shared_piece_completion_status.clone(),
-                        &mut file_handles,
-                        &piece_hashes,
-                        &mut incomplete_pieces
-                        );
-                    }
-                    else => break,
+    tokio::spawn(async move {
+        let fs_writes_semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_WRITE_OPS));
+        let mut file_handles = WriteFileHandles::new(pieces_to_file_paths_mapper);
+        let piece_hashes = Arc::new(piece_hashes);
+        let incomplete_pieces = Arc::new(Mutex::new(HashMap::new()));
+        loop {
+            tokio::select! {
+                Some(write_piece_block_request) = write_requests_rx.recv() => {
+                    handle_write_piece_block(
+                    write_piece_block_request,
+                    fs_writes_semaphore.clone(),
+                    write_responses_tx.clone(),
+                    shared_piece_completion_status.clone(),
+                    Arc::new(piece_sizer.clone()),
+                    &mut file_handles,
+                    piece_hashes.clone(),
+                    incomplete_pieces.clone(),
+                    ).await;
                 }
+                else => break,
             }
-        })
+        }
     });
 
     Ok(TorrentDataStatus::new(
@@ -328,45 +350,41 @@ fn read_data(
 }
 
 async fn handle_read_piece_block(
-    read_piece_block_request: ReadPieceBlockRequest,
-    fs_reads_semaphore: Arc<tokio::sync::Semaphore>,
-    reads_file_manager_to_torrent_manager_tx: &UnboundedSender<ReadPieceBlockResponse>,
+    read_request: ReadPieceBlockRequest,
+    fs_reads_semaphore: Arc<Semaphore>,
+    read_responses_tx: &UnboundedSender<ReadPieceBlockResponse>,
 
     piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
     piece_sizer: &PieceSizer,
-    read_file_handles: &mut ReadFileHandles,
+    file_handles: &mut ReadFileHandles,
 ) {
-    match read_piece_block_pre_checks(
+    if let Err(e) = read_piece_block_pre_checks(
         piece_completion_status,
         piece_sizer,
-        read_piece_block_request.piece_idx,
-        read_piece_block_request.block_begin,
-        read_piece_block_request.block_length,
+        read_request.piece_idx,
+        read_request.block_begin,
+        read_request.block_length,
         true,
     ) {
-        Ok(_) => {}
+        let _ = read_responses_tx.send(ReadPieceBlockResponse {
+            request: read_request,
+            response: Err(e),
+        });
+        return;
+    }
+
+    let file_handles_for_piece = match file_handles.get_files_for_piece(read_request.piece_idx) {
+        Ok(f) => f,
         Err(e) => {
-            let _ = reads_file_manager_to_torrent_manager_tx.send(ReadPieceBlockResponse {
-                request: read_piece_block_request,
-                response: Result::Err(e),
+            let _ = read_responses_tx.send(ReadPieceBlockResponse {
+                request: read_request,
+                response: Err(e),
             });
             return;
         }
-    }
+    };
 
-    let file_handles_for_piece =
-        match read_file_handles.get_files_for_piece(read_piece_block_request.piece_idx) {
-            Ok(f) => f,
-            Err(e) => {
-                let _ = reads_file_manager_to_torrent_manager_tx.send(ReadPieceBlockResponse {
-                    request: read_piece_block_request,
-                    response: Result::Err(e),
-                });
-                return;
-            }
-        };
-
-    let reads_file_manager_to_torrent_manager_tx = reads_file_manager_to_torrent_manager_tx.clone();
+    let read_responses_tx_for_spawn = read_responses_tx.clone();
     let permit = fs_reads_semaphore
         .acquire_owned()
         .await
@@ -374,12 +392,12 @@ async fn handle_read_piece_block(
     tokio::task::spawn_blocking(move || {
         let result = read_data(
             file_handles_for_piece,
-            read_piece_block_request.block_begin,
-            read_piece_block_request.block_length,
+            read_request.block_begin,
+            read_request.block_length,
         );
         drop(permit);
-        let _ = reads_file_manager_to_torrent_manager_tx.send(ReadPieceBlockResponse {
-            request: read_piece_block_request,
+        let _ = read_responses_tx_for_spawn.send(ReadPieceBlockResponse {
+            request: read_request,
             response: result,
         });
     });
@@ -419,163 +437,341 @@ fn read_piece_block_pre_checks(
     Ok(())
 }
 
-fn handle_write_piece_block(
-    write_piece_block_request: WritePieceBlockRequest,
-    writes_file_manager_to_torrent_manager_tx: &UnboundedSender<WritePieceBlockResponse>,
+async fn handle_write_piece_block(
+    write_request: WritePieceBlockRequest,
+    fs_writes_semaphore: Arc<Semaphore>,
+    write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
 
-    piece_sizer: &PieceSizer,
     piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
-    write_file_handles: &mut WriteFileHandles,
-    piece_hashes: &PieceHashes,
-    incomplete_pieces: &mut HashMap<usize, Piece>,
+    piece_sizer: Arc<PieceSizer>,
+    file_handles: &mut WriteFileHandles,
+    piece_hashes: Arc<PieceHashes>,
+    incomplete_pieces: Arc<Mutex<HashMap<usize, IncompletePiece>>>,
 ) {
-    let result = write_piece_block(
-        write_piece_block_request.piece_idx,
-        write_piece_block_request.data,
-        write_piece_block_request.block_begin,
-        piece_sizer,
-        piece_completion_status,
-        write_file_handles,
-        piece_hashes,
-        incomplete_pieces,
-    );
-    _ = writes_file_manager_to_torrent_manager_tx.send(WritePieceBlockResponse {
-        request: WritePieceBlockRequestReference {
-            requestor_peer_addr: write_piece_block_request.requestor_peer_addr,
-            piece_idx: write_piece_block_request.piece_idx,
-        },
-        response: result,
+    if write_request.piece_idx >= piece_sizer.total_pieces() {
+        send_write_piece_block_reply(
+            &write_responses_tx,
+            &write_request,
+            Err(anyhow!(
+                "cannot write block: piece idx {} would overflow total pieces ({})",
+                write_request.piece_idx,
+                piece_sizer.total_pieces(),
+            )),
+        );
+        return;
+    }
+
+    if write_request.data.is_empty() {
+        send_write_piece_block_reply(
+            &write_responses_tx,
+            &write_request,
+            Err(anyhow!("cannot write block: the block carries no data")),
+        );
+        return;
+    }
+
+    let piece_len = piece_sizer.piece_length(write_request.piece_idx);
+    let data_len = write_request.data.len() as u64;
+    if write_request.block_begin + data_len > piece_len {
+        send_write_piece_block_reply(
+            &write_responses_tx,
+            &write_request,
+            Err(anyhow!("cannot write block: data would overflow the piece")),
+        );
+        return;
+    }
+
+    {
+        // avoid useless writes if we already have the piece
+        let completed = piece_completion_status
+            .lock()
+            .expect("another user panicked while holding the lock")[write_request.piece_idx];
+        if completed {
+            log::trace!(
+                "we already have the piece {}, will avoid to writing it again",
+                write_request.piece_idx
+            );
+            send_write_piece_block_reply(
+                &write_responses_tx,
+                &write_request,
+                Ok(TorrentDataStatusUpdates {
+                    piece_is_completed: true,
+                    wasted_bytes: write_request.data.len(),
+                    written: None,
+                }),
+            );
+            return;
+        }
+    }
+
+    let file_handles_for_piece = match file_handles.get_files_for_piece(write_request.piece_idx) {
+        Ok(file_handles_for_piece) => file_handles_for_piece,
+        Err(e) => {
+            send_write_piece_block_reply(&write_responses_tx, &write_request, Err(e.into()));
+            return;
+        }
+    };
+
+    {
+        let mut incomplete_pieces_mg = incomplete_pieces
+            .lock()
+            .expect("another user panicked while holding the lock");
+        let incomplete_piece = incomplete_pieces_mg
+            .entry(write_request.piece_idx)
+            .or_insert(IncompletePiece::new(piece_len));
+        // we are doing this check because we never want to let other writes go ahead if the piece hash verification is in flight,
+        // otherwise we risk that bad data overwrites good data already on disk after we confirm the piece.
+        // Here contains return true only if the unconfirmed piece fully contains the block
+        // so partially overlapping write block requests would not be skipped, and that is really bad;
+        // luckly we always make consistent requests, never overlapping blocks, so this is not a concern
+        // but it can become one if ever we ask overlapping blocks - be really cautious here
+        // todo: create a new "overlaps" function in Piece
+        let writes_already_scheduled = incomplete_piece.unconfirmed_piece.contains(
+            write_request.block_begin,
+            write_request.block_begin + data_len - 1,
+        );
+        if writes_already_scheduled {
+            log::trace!(
+                "all the data in this block (begin: {} length: {}) for piece {} is already written or writes are already inflight, will avoid writing it again",
+                write_request.block_begin,
+                data_len,
+                write_request.piece_idx,
+            );
+            send_write_piece_block_reply(
+                &write_responses_tx,
+                &write_request,
+                Ok(TorrentDataStatusUpdates {
+                    piece_is_completed: false,
+                    wasted_bytes: write_request.data.len(),
+                    written: None,
+                }),
+            );
+            return;
+        } else {
+            // we are about to write data to this piece, keep track of it in unconfirmed_piece
+            // from now on, on handling this piece block write, if it fails, we have to remove it on unconfirmed_piece
+            incomplete_piece.unconfirmed_piece.add_fragment(
+                write_request.block_begin,
+                write_request.block_begin + data_len - 1,
+            );
+        }
+    };
+
+    let permit = fs_writes_semaphore
+        .acquire_owned()
+        .await
+        .expect("semaphore cannot be closed");
+    tokio::task::spawn_blocking(move || {
+        do_write_piece_block(
+            write_request,
+            write_responses_tx,
+            piece_hashes,
+            piece_completion_status,
+            piece_sizer,
+            incomplete_pieces,
+            file_handles_for_piece,
+        );
+        drop(permit);
     });
 }
 
-fn write_piece_block(
-    piece_idx: usize,
-    data: Vec<u8>,
-    block_begin: u64, // position in the piece where to start writing data
-
-    piece_sizer: &PieceSizer,
+fn do_write_piece_block(
+    write_request: WritePieceBlockRequest,
+    write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
+    piece_hashes: Arc<PieceHashes>,
     piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
-    write_file_handles: &mut WriteFileHandles,
-    piece_hashes: &PieceHashes,
-    incomplete_pieces: &mut HashMap<usize, Piece>,
-) -> Result<TorrentDataStatusUpdates> {
-    if piece_idx >= piece_sizer.total_pieces() {
-        bail!(
-            "cannot write block: piece idx {piece_idx} would overflow total pieces ({})",
-            piece_sizer.total_pieces()
-        );
-    }
-
-    if data.is_empty() {
-        bail!("cannot write block: the block carries no data");
-    }
-
-    // avoid useless writes if we already have the piece
-    let piece_completion_status_mg = piece_completion_status
-        .lock()
-        .expect("another user panicked while holding the lock");
-    let completed = piece_completion_status_mg[piece_idx];
-    drop(piece_completion_status_mg);
-    if completed {
-        log::trace!("we already have the piece {piece_idx}, will avoid to writing it again");
-        return Ok(TorrentDataStatusUpdates {
-            piece_is_completed: true,
-            wasted_bytes: data.len(),
-            incomplete_piece: None,
-        });
-    }
-
-    let piece_len = piece_sizer.piece_length(piece_idx);
-    let data_len = data.len() as u64;
-    if block_begin + data_len > piece_len {
-        bail!("cannot write block: data would overflow the piece");
-    }
-
-    let piece = incomplete_pieces
-        .entry(piece_idx)
-        .or_insert(Piece::new(piece_len));
-
-    if piece.contains(block_begin, block_begin + data_len - 1) {
-        log::trace!(
-            "we already have written all the data in this block (begin: {block_begin} length: {data_len}) for piece {piece_idx}, will avoid writing it again"
-        );
-        return Ok(TorrentDataStatusUpdates {
-            piece_is_completed: false,
-            wasted_bytes: data.len(),
-            incomplete_piece: Some(piece.clone()),
-        });
-    }
-
-    // finally write this block
+    piece_sizer: Arc<PieceSizer>,
+    incomplete_pieces: Arc<Mutex<HashMap<usize, IncompletePiece>>>,
+    file_handles_for_piece: FileHandlesForPiece,
+) {
+    let data_len = write_request.data.len() as u64;
     let mut data_cursor: u64 = 0;
     let mut data_still_to_be_written = data_len;
     let mut piece_cursor_to_begin = 0;
-    let file_handles_for_piece = write_file_handles.get_files_for_piece(piece_idx)?;
     for (file, file_start, file_end) in file_handles_for_piece.iter() {
         if data_still_to_be_written == 0 {
             break;
         }
         let mut file_start = *file_start;
         let file_end = *file_end;
-        if block_begin - piece_cursor_to_begin < file_end - file_start {
-            file_start += block_begin - piece_cursor_to_begin;
-            piece_cursor_to_begin = block_begin;
+        if write_request.block_begin - piece_cursor_to_begin < file_end - file_start {
+            file_start += write_request.block_begin - piece_cursor_to_begin;
+            piece_cursor_to_begin = write_request.block_begin;
         } else {
             piece_cursor_to_begin += file_end - file_start;
             continue;
         }
         let data_to_write = cmp::min(file_end - file_start, data_still_to_be_written);
-        write_at(
+        if let Err(e) = write_at(
             &file,
-            &data[data_cursor as usize..(data_cursor + data_to_write) as usize],
+            &write_request.data[data_cursor as usize..(data_cursor + data_to_write) as usize],
             file_start,
-        )?;
+        ) {
+            // remove uncommitted piece block that failed to be written
+            if let Some(incomplete_piece) = incomplete_pieces
+                .lock()
+                .expect("another user panicked while holding the lock")
+                .get_mut(&write_request.piece_idx)
+            {
+                incomplete_piece.unconfirmed_piece.remove_fragment(
+                    write_request.block_begin,
+                    write_request.block_begin + data_len - 1,
+                );
+            }
+
+            send_write_piece_block_reply(&write_responses_tx, &write_request, Err(e.into()));
+            return;
+        }
         data_cursor += data_to_write;
         data_still_to_be_written -= data_to_write;
     }
 
-    piece.add_fragment(block_begin, block_begin + data_len - 1);
+    let piece_is_complete = {
+        match incomplete_pieces
+            .lock()
+            .expect("another user panicked while holding the lock")
+            .get_mut(&write_request.piece_idx)
+        {
+            Some(incomplete_piece) => {
+                incomplete_piece.committed_piece.add_fragment(
+                    write_request.block_begin,
+                    write_request.block_begin + data_len - 1,
+                );
+                incomplete_piece.committed_piece.complete()
+            }
+            None => {
+                send_write_piece_block_reply(
+                    &write_responses_tx,
+                    &write_request,
+                    Err(anyhow!(
+                        "we could not find the incomplete piece for a write request, this should never happen"
+                    )),
+                    // because none should ever remove the incomplete piece unless the piece is complete, and write requests
+                    // are rejected if the piece is completed and or data is already scheduled to be written
+                );
+                return;
+            }
+        }
+    };
 
-    // check if piece is completed
-    if piece.complete() {
-        incomplete_pieces.remove(&piece_idx);
-
-        read_piece_block_pre_checks(
+    if !piece_is_complete {
+        send_write_piece_block_reply(
+            &write_responses_tx,
+            &write_request,
+            Ok(TorrentDataStatusUpdates {
+                piece_is_completed: false,
+                wasted_bytes: 0,
+                written: Some(Written {
+                    block_begin: write_request.block_begin,
+                    data_len,
+                    piece_len: piece_sizer.piece_length(write_request.piece_idx),
+                }),
+            }),
+        );
+    } else {
+        match verify_completed_piece(
+            &write_request,
             piece_completion_status.clone(),
             piece_sizer,
-            piece_idx,
-            0,
-            piece_len,
-            false,
-        )?;
+            file_handles_for_piece,
+            piece_hashes,
+        ) {
+            Ok(()) => {
+                // it is important that we set piece completion status first
+                // then we remove the entry in incomplete pieces to avoid race conditions
+                {
+                    piece_completion_status
+                        .lock()
+                        .expect("another user panicked while holding the lock")
+                        [write_request.piece_idx] = true;
+                }
+                {
+                    incomplete_pieces
+                        .lock()
+                        .expect("another user panicked while holding the lock")
+                        .remove(&write_request.piece_idx);
+                }
 
-        let read_piece_data = match read_data(file_handles_for_piece, 0, piece_len) {
-            Ok(data) => data,
-            Err(error) => bail!(ShaCheckReadError { piece_idx, error }),
-        };
-
-        let piece_sha: [u8; 20] = Sha1::digest(read_piece_data).into();
-        if piece_sha != piece_hashes[piece_idx] {
-            bail!(ShaCorruptedError { piece_idx });
-        } else {
-            let mut piece_completion_status_mg = piece_completion_status
-                .lock()
-                .expect("another user panicked while holding the lock");
-            piece_completion_status_mg[piece_idx] = true;
-            drop(piece_completion_status_mg);
+                send_write_piece_block_reply(
+                    &write_responses_tx,
+                    &write_request,
+                    Ok(TorrentDataStatusUpdates {
+                        piece_is_completed: true,
+                        wasted_bytes: 0,
+                        written: None,
+                    }),
+                );
+            }
+            Err(e) => {
+                {
+                    incomplete_pieces
+                        .lock()
+                        .expect("another user panicked while holding the lock")
+                        .remove(&write_request.piece_idx);
+                }
+                send_write_piece_block_reply(&write_responses_tx, &write_request, Err(e.into()));
+            }
         }
-        Ok(TorrentDataStatusUpdates {
-            piece_is_completed: true,
-            wasted_bytes: 0,
-            incomplete_piece: None,
-        })
-    } else {
-        Ok(TorrentDataStatusUpdates {
-            piece_is_completed: false,
-            wasted_bytes: 0,
-            incomplete_piece: Some(piece.clone()),
-        })
     }
+}
+
+fn send_write_piece_block_reply(
+    writes_file_manager_to_torrent_manager_tx: &UnboundedSender<WritePieceBlockResponse>,
+    write_piece_block_request: &WritePieceBlockRequest,
+    write_piece_block_result: Result<TorrentDataStatusUpdates>,
+) {
+    _ = writes_file_manager_to_torrent_manager_tx.send(WritePieceBlockResponse {
+        request: WritePieceBlockRequestReference {
+            requestor_peer_addr: write_piece_block_request.requestor_peer_addr.clone(),
+            piece_idx: write_piece_block_request.piece_idx,
+        },
+        response: write_piece_block_result,
+    });
+}
+
+fn verify_completed_piece(
+    write_piece_block_request: &WritePieceBlockRequest,
+    piece_completion_status: Arc<Mutex<Vec<bool>>>,
+    piece_sizer: Arc<PieceSizer>,
+    file_handles_for_piece: FileHandlesForPiece,
+    piece_hashes: Arc<PieceHashes>,
+) -> Result<()> {
+    let piece_idx = write_piece_block_request.piece_idx;
+    if let Err(error) = read_piece_block_pre_checks(
+        piece_completion_status.clone(),
+        &piece_sizer,
+        piece_idx,
+        0,
+        piece_sizer.piece_length(piece_idx),
+        false,
+    ) {
+        return Err(anyhow!(ShaCheckReadError {
+            piece_idx: piece_idx,
+            error
+        }));
+    }
+
+    let read_piece_data = match read_data(
+        file_handles_for_piece,
+        0,
+        piece_sizer.piece_length(piece_idx),
+    ) {
+        Ok(data) => data,
+        Err(error) => {
+            return Err(anyhow!(ShaCheckReadError {
+                piece_idx: piece_idx,
+                error
+            }));
+        }
+    };
+
+    // we are in a spawn_blocking context so in theory this sha verification could starve the cpu since thread pools are not bound to CPUs available;
+    // in practice, writes and then the read of the whole piece above are dominating time so we don't expect to incur in such situation
+    let piece_sha: [u8; 20] = Sha1::digest(read_piece_data).into();
+    if piece_sha != piece_hashes[piece_idx] {
+        return Err(anyhow!(ShaCorruptedError { piece_idx }));
+    }
+    Ok(())
 }
 
 fn refresh_completed_pieces(
