@@ -112,13 +112,19 @@ impl PieceRequestor {
         }
     }
 
-    pub fn block_write_failed(&mut self, peer_addr: &HostAndPort, piece_idx: usize) {
-        // ideally we should just change the piece in self.requested_pieces so that that block is removed from Piece
-        // but at the moment there is no way to remove a block from a Piece,
-        // so we discard the whole piece assigment, with the drawback of potentially requesting blocks
-        // already requested that are inflight and not yet written to disk
-        // todo: optimize this, add remove_fragment to Piece
-        self.piece_request_completed(peer_addr, piece_idx);
+    pub fn block_write_failed(
+        &mut self,
+        peer_addr: &HostAndPort,
+        piece_idx: usize,
+        begin: u64,
+        end: u64,
+    ) {
+        // a block write failed, so we also need to remove this block from the requested piece tracking in order to re-request it
+        if let Some(requested_pieces) = self.requested_pieces.get_mut(peer_addr)
+            && let Some((piece, _)) = requested_pieces.get_mut(&piece_idx)
+        {
+            piece.remove_fragment(begin, end);
+        }
     }
 
     fn remove_assigments_to_choked(&mut self, peers: &HashMap<HostAndPort, Peer>) {

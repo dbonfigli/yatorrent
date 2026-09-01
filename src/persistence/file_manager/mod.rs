@@ -111,18 +111,13 @@ pub struct WritePieceBlockRequest {
 pub struct WritePieceBlockRequestReference {
     pub requestor_peer_addr: HostAndPort,
     pub piece_idx: usize,
+    pub block_begin: u64,
+    pub data_len: u64,
 }
 
 pub struct TorrentDataStatusUpdates {
     pub piece_is_completed: bool,
     pub wasted_bytes: usize,
-    pub written: Option<Written>, // what has bee written, if any
-}
-
-pub struct Written {
-    pub block_begin: u64,
-    pub data_len: u64,
-    pub piece_len: u64,
 }
 
 pub struct WritePieceBlockResponse {
@@ -519,7 +514,6 @@ async fn handle_write_piece_block(
                 Ok(TorrentDataStatusUpdates {
                     piece_is_completed: true,
                     wasted_bytes: write_request.data.len(),
-                    written: None,
                 }),
             );
             return;
@@ -545,7 +539,6 @@ async fn handle_write_piece_block(
                 Ok(TorrentDataStatusUpdates {
                     piece_is_completed: false,
                     wasted_bytes: write_request.data.len(),
-                    written: None,
                 }),
             );
             return;
@@ -660,11 +653,6 @@ fn do_write_piece_block(
             Ok(TorrentDataStatusUpdates {
                 piece_is_completed: false,
                 wasted_bytes: 0,
-                written: Some(Written {
-                    block_begin: write_request.block_begin,
-                    data_len,
-                    piece_len: piece_sizer.piece_length(write_request.piece_idx),
-                }),
             }),
         );
     } else {
@@ -691,7 +679,6 @@ fn do_write_piece_block(
                     Ok(TorrentDataStatusUpdates {
                         piece_is_completed: true,
                         wasted_bytes: 0,
-                        written: None,
                     }),
                 );
             }
@@ -718,6 +705,8 @@ fn send_write_piece_block_reply(
         request: WritePieceBlockRequestReference {
             requestor_peer_addr: write_piece_block_request.requestor_peer_addr.clone(),
             piece_idx: write_piece_block_request.piece_idx,
+            block_begin: write_piece_block_request.block_begin,
+            data_len: write_piece_block_request.data.len() as u64,
         },
         response: write_piece_block_result,
     });

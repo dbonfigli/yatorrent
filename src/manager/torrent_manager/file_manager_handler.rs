@@ -266,8 +266,12 @@ impl TorrentManager {
                 } else {
                     // only a block write failed, tell piece requestor this so to remove
                     // it from downloading piece tracking
+                    let begin = write_piece_block_response.request.block_begin;
+                    let end = write_piece_block_response.request.block_begin
+                        + write_piece_block_response.request.data_len
+                        - 1;
                     self.piece_requestor
-                        .block_write_failed(&peer_addr, piece_idx);
+                        .block_write_failed(&peer_addr, piece_idx, begin, end);
                 }
 
                 // keep track of corruptions, remove if too many

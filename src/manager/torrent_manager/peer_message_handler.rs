@@ -523,6 +523,11 @@ impl TorrentManager {
         // since we completed receiving a piece block, we can try to send more requests immediately to this peer, without waiting for a tick
         self.send_pieces_reqs_to_peer(peer_addr.clone()).await;
 
+        // ideally we should discard this if we were not tracking it on piece_requestor
+        // to avoid malicius soliciting of not requested data that could corrupt our own
+        // in practice for the moment we need to accept all because on the endgame phase
+        // we greatly reduce the ttl so it could be too short and discard even legit replies
+
         // send data to file manager to persist it
         let _ = self
             .file_manager_handler

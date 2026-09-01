@@ -89,25 +89,25 @@ impl TorrentDataStatus {
     }
 
     pub fn update(&mut self, write_piece_block_response: &WritePieceBlockResponse) {
+        let piece_idx = write_piece_block_response.request.piece_idx;
+        let piece_length = self.piece_length(piece_idx);
         match &write_piece_block_response.response {
             Ok(updates) => {
                 self.wasted_bytes += updates.wasted_bytes;
 
                 if updates.piece_is_completed {
-                    self.missing_pieces
-                        .remove(&write_piece_block_response.request.piece_idx);
-                    self.incomplete_pieces
-                        .remove(&write_piece_block_response.request.piece_idx);
+                    self.missing_pieces.remove(&piece_idx);
+                    self.incomplete_pieces.remove(&piece_idx);
                 } else {
-                    if let Some(written) = updates.written.as_ref() {
-                        self.incomplete_pieces
-                            .entry(write_piece_block_response.request.piece_idx)
-                            .or_insert(Piece::new(written.piece_len))
-                            .add_fragment(
-                                written.block_begin,
-                                written.block_begin + written.data_len - 1,
-                            );
-                    };
+                    self.incomplete_pieces
+                        .entry(piece_idx)
+                        .or_insert(Piece::new(piece_length))
+                        .add_fragment(
+                            write_piece_block_response.request.block_begin,
+                            write_piece_block_response.request.block_begin
+                                + write_piece_block_response.request.data_len
+                                - 1,
+                        );
                 }
             }
             Err(e) => {
@@ -115,8 +115,7 @@ impl TorrentDataStatus {
                     || e.downcast_ref::<ShaCheckReadError>().is_some()
                 {
                     // we could not verify the whole piece, wipe current download status and start over
-                    self.incomplete_pieces
-                        .remove(&write_piece_block_response.request.piece_idx);
+                    self.incomplete_pieces.remove(&piece_idx);
                 }
             }
         }
