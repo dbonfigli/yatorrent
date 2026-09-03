@@ -70,15 +70,15 @@ impl PieceSizer {
 
 #[derive(Clone)]
 struct IncompletePiece {
-    committed_piece: Piece,   // piece with info about data really written
-    unconfirmed_piece: Piece, // piece with ifno about data that we declared we are writing, i.e. writes are in flight and we do not know they completed
+    committed_piece: Piece, // piece with info about data really written
+    claimed_piece: Piece, // piece with info about data that we declared we are writing, i.e. writes are in flight and we do not know they completed. committed_piece holds always a subset of claimed_piece.
 }
 
 impl IncompletePiece {
     fn new(piece_len: u64) -> Self {
         IncompletePiece {
             committed_piece: Piece::new(piece_len),
-            unconfirmed_piece: Piece::new(piece_len),
+            claimed_piece: Piece::new(piece_len),
         }
     }
 }
@@ -519,16 +519,16 @@ async fn handle_write_piece_block(
             return;
         }
 
-        // avoid concurrent writes on the same piece
+        // avoid concurrent writes on the same block
         let incomplete_piece = piece_status
             .incomplete_piece
             .get_or_insert_with(|| IncompletePiece::new(piece_len));
-        if incomplete_piece.unconfirmed_piece.overlaps(
+        if incomplete_piece.claimed_piece.overlaps(
             write_request.block_begin,
             write_request.block_begin + data_len - 1,
         ) {
             log::trace!(
-                "all the data in this block (begin: {} length: {}) for piece {} is already written or writes are already inflight, will avoid writing it again",
+                "some or all of the data in this block (begin: {} length: {}) for piece {} is already written or writes are already inflight, will avoid writing it again so to not corrupt possible pieces already confirmed",
                 write_request.block_begin,
                 data_len,
                 write_request.piece_idx,
@@ -544,9 +544,9 @@ async fn handle_write_piece_block(
             return;
         }
 
-        // we are about to write data to this piece, keep track of it in unconfirmed_piece
-        // from now on, on handling this piece block write, if it fails, we have to remove it on unconfirmed_piece
-        incomplete_piece.unconfirmed_piece.add_fragment(
+        // we are about to write data to this piece, keep track of it in claimed_piece
+        // from now on, on handling this piece block write, if it fails, we have to remove it on claimed_piece
+        incomplete_piece.claimed_piece.add_fragment(
             write_request.block_begin,
             write_request.block_begin + data_len - 1,
         );
@@ -606,7 +606,7 @@ fn do_write_piece_block(
                 .expect("another user panicked while holding the lock")[write_request.piece_idx]
                 .incomplete_piece
             {
-                incomplete_piece.unconfirmed_piece.remove_fragment(
+                incomplete_piece.claimed_piece.remove_fragment(
                     write_request.block_begin,
                     write_request.block_begin + data_len - 1,
                 );
