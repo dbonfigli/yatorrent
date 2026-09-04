@@ -13,11 +13,11 @@ Yatorrent is a fast and lightweight BitTorrent client written from scratch in Ru
 
 ## Supported Platforms
 
-Yatorrent is cross-platform: runs on Linux, macOS, and Windows.
+It is cross-platform: runs on Linux, macOS, and Windows.
 
 ## Performance
 
-Yatorrent has been tested to saturate a 1 Gb/s internet connection while maintaining low CPU usage. Memory at such speeds has always been under 50 MB/s. When used locally alongside other local clients, download speeds have instead been limited by disk I/O, reaching the maximum throughput the storage device can sustain, tested with up to 300MB/s.
+It has been tested to saturate a 1 Gb/s internet connection while maintaining low CPU usage. Memory at such speeds has always been under 50 MB. When used locally alongside other local clients, download speeds have instead been limited by disk I/O, reaching the maximum throughput the storage device can sustain, tested with up to 300MB/s.
 
 ## Quick Start
 
