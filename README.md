@@ -1,6 +1,6 @@
 # YATORRENT - yet another torrent client
 
-Yatorrent is a fast, lightweight BitTorrent client written from scratch in Rust, implementing the Torrent protocol v1.0 ([BEP 3](http://bittorrent.org/beps/bep_0003.html), [detailed spec](https://wiki.theory.org/BitTorrentSpecification)) over TCP, with the following extensions:
+Yatorrent is a fast and lightweight BitTorrent client written from scratch in Rust, implementing the Torrent protocol v1.0 ([BEP 3](http://bittorrent.org/beps/bep_0003.html), [detailed spec](https://wiki.theory.org/BitTorrentSpecification)) over TCP, with the following extensions:
 
 - [BEP 5 - DHT Protocol](http://bittorrent.org/beps/bep_0005.html);
 - [BEP 6 - Fast Extension](https://www.bittorrent.org/beps/bep_0006.html);
@@ -17,7 +17,7 @@ Yatorrent is cross-platform: runs on Linux, macOS, and Windows.
 
 ## Performance
 
-Yatorrent has been tested to saturate a 1 Gb/s internet connection while maintaining low CPU usage. When used locally alongside other local clients, download speeds have instead been limited by disk I/O, reaching the maximum throughput the storage device can sustain, tested with up to 300MB/s.
+Yatorrent has been tested to saturate a 1 Gb/s internet connection while maintaining low CPU usage. Memory at such speeds has always been under 50 MB/s. When used locally alongside other local clients, download speeds have instead been limited by disk I/O, reaching the maximum throughput the storage device can sustain, tested with up to 300MB/s.
 
 ## Quick Start
 
@@ -55,7 +55,7 @@ and in another, the magnet link to also specify `x.pe` to directly know the othe
 ```
 $ ./target/release/yatorrent -m "magnet:?xt=urn:btih:dafc8c076ca2f3ed376eeae7c76a0d6be2415c45&x.pe=127.0.0.1:8000" -b ~/Downloads/ubuntu2 -s -p 8102 -d 8101
 ```
-You can run as many clients as you want to test multiple local clients, as log as you select different prots with `-p` and `-d`, they will be able to know each other also via PEX.
+You can run as many clients as you want to test multiple local clients, as log as you select different ports with `-p` and `-d`, they will be able to know each other also via PEX.
 
 ### Usage
 
