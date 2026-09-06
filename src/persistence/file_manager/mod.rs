@@ -72,6 +72,8 @@ impl PieceSizer {
 struct IncompletePiece {
     committed_piece: Piece, // piece with info about data really written
     claimed_piece: Piece, // piece with info about data that we declared we are writing, i.e. writes are in flight and we do not know they completed. committed_piece holds always a subset of claimed_piece.
+    incremental_hash: Sha1,
+    already_hashed_to: u64, // until which byte we have already hashed in incremental_hash (not inclusive)
 }
 
 impl IncompletePiece {
@@ -79,6 +81,8 @@ impl IncompletePiece {
         IncompletePiece {
             committed_piece: Piece::new(piece_len),
             claimed_piece: Piece::new(piece_len),
+            incremental_hash: Sha1::new(),
+            already_hashed_to: 0,
         }
     }
 }
@@ -618,7 +622,7 @@ fn do_write_piece_block(
         data_still_to_be_written -= data_to_write;
     }
 
-    let piece_is_complete = {
+    let (piece_is_complete, hash_good, already_hashed_to) = {
         match &mut piece_completion_status
             .lock()
             .expect("another user panicked while holding the lock")[write_request.piece_idx]
@@ -629,7 +633,49 @@ fn do_write_piece_block(
                     write_request.block_begin,
                     write_request.block_begin + data_len - 1,
                 );
-                incomplete_piece.committed_piece.complete()
+                if incomplete_piece.already_hashed_to as u64 == write_request.block_begin {
+                    // log::warn!(
+                    //     "conitguous! {} {}",
+                    //     incomplete_piece.already_hashed_to,
+                    //     write_request.block_begin
+                    // );
+                    incomplete_piece
+                        .incremental_hash
+                        .update(&write_request.data);
+                    incomplete_piece.already_hashed_to =
+                        write_request.block_begin + write_request.data.len() as u64;
+                } else {
+                    // log::warn!(
+                    //     "not conitguous! {} {}",
+                    //     incomplete_piece.already_hashed_to,
+                    //     write_request.block_begin
+                    // )
+                }
+
+                if incomplete_piece.already_hashed_to
+                    >= piece_sizer.piece_length(write_request.piece_idx)
+                {
+                    let piece_sha: [u8; 20] =
+                        incomplete_piece.incremental_hash.clone().finalize().into();
+                    if piece_sha != piece_hashes[write_request.piece_idx] {
+                        log::warn!("hash error!!!!");
+                        (incomplete_piece.committed_piece.complete(), false, 0)
+                    } else {
+                        //log::warn!("hash ok!");
+                        (incomplete_piece.committed_piece.complete(), true, 0)
+                    }
+                } else {
+                    // log::warn!(
+                    //     "only some {} {}",
+                    //     i.already_hashed_to,
+                    //     piece_sizer.piece_length(piece_idx)
+                    // );
+                    (
+                        incomplete_piece.committed_piece.complete(),
+                        false,
+                        incomplete_piece.already_hashed_to,
+                    )
+                }
             }
             None => {
                 send_write_piece_block_reply(
@@ -662,6 +708,8 @@ fn do_write_piece_block(
             piece_sizer,
             file_handles_for_piece,
             piece_hashes,
+            already_hashed_to,
+            hash_good,
         ) {
             Ok(()) => {
                 {
@@ -718,15 +766,50 @@ fn verify_completed_piece(
     piece_sizer: Arc<PieceSizer>,
     file_handles_for_piece: FileHandlesForPiece,
     piece_hashes: Arc<PieceHashes>,
+    already_hashed_to: u64,
+    hash_good: bool,
 ) -> Result<()> {
+    if hash_good {
+        return Ok(());
+    }
+
     let piece_idx = write_piece_block_request.piece_idx;
+
+    // let incomplete_piece = &mut piece_completion_status
+    //     .lock()
+    //     .expect("another user panicked while holding the lock")[piece_idx]
+    //     .incomplete_piece;
+    // let read_from = if let Some(i) = incomplete_piece {
+    //     if i.already_hashed_to >= piece_sizer.piece_length(piece_idx) {
+    //         let piece_sha: [u8; 20] = i.incremental_hash.clone().finalize().into();
+    //         if piece_sha != piece_hashes[piece_idx] {
+    //             log::warn!("hash error!!!!");
+    //             return Err(anyhow!(ShaCorruptedError { piece_idx }));
+    //         } else {
+    //             //log::warn!("hash ok!");
+    //             return Ok(());
+    //         }
+    //     } else {
+    //         // log::warn!(
+    //         //     "only some {} {}",
+    //         //     i.already_hashed_to,
+    //         //     piece_sizer.piece_length(piece_idx)
+    //         // );
+    //         i.already_hashed_to
+    //     }
+    // } else {
+    //     log::warn!("none");
+    //     0
+    // };
+
+    let read_from = already_hashed_to;
 
     if let Err(error) = read_piece_block_pre_checks(
         piece_completion_status.clone(),
         &piece_sizer,
         piece_idx,
-        0,
-        piece_sizer.piece_length(piece_idx),
+        read_from as u64,
+        piece_sizer.piece_length(piece_idx) - read_from,
         false,
     ) {
         return Err(anyhow!(ShaCheckReadError { piece_idx, error }));
