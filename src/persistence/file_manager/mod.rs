@@ -578,44 +578,24 @@ fn do_write_piece_block(
     file_handles_for_piece: FileHandlesForPiece,
 ) {
     let data_len = write_request.data.len() as u64;
-    let mut data_cursor: u64 = 0;
-    let mut data_still_to_be_written = data_len;
-    let mut piece_cursor_to_begin = 0;
-    for (file, file_start, file_end) in file_handles_for_piece.iter() {
-        if data_still_to_be_written == 0 {
-            break;
+    if let Err(e) = disk_write_piece_block(
+        &write_request.data,
+        write_request.block_begin,
+        &file_handles_for_piece,
+    ) {
+        // remove uncommitted piece block that failed to be written
+        if let Some(incomplete_piece) = &mut piece_completion_status
+            .lock()
+            .expect("another user panicked while holding the lock")[write_request.piece_idx]
+            .incomplete_piece
+        {
+            incomplete_piece.claimed_piece.remove_fragment(
+                write_request.block_begin,
+                write_request.block_begin + data_len - 1,
+            );
         }
-        let mut file_start = *file_start;
-        let file_end = *file_end;
-        if write_request.block_begin - piece_cursor_to_begin < file_end - file_start {
-            file_start += write_request.block_begin - piece_cursor_to_begin;
-            piece_cursor_to_begin = write_request.block_begin;
-        } else {
-            piece_cursor_to_begin += file_end - file_start;
-            continue;
-        }
-        let data_to_write = cmp::min(file_end - file_start, data_still_to_be_written);
-        if let Err(e) = write_at(
-            &file,
-            &write_request.data[data_cursor as usize..(data_cursor + data_to_write) as usize],
-            file_start,
-        ) {
-            // remove uncommitted piece block that failed to be written
-            if let Some(incomplete_piece) = &mut piece_completion_status
-                .lock()
-                .expect("another user panicked while holding the lock")[write_request.piece_idx]
-                .incomplete_piece
-            {
-                incomplete_piece.claimed_piece.remove_fragment(
-                    write_request.block_begin,
-                    write_request.block_begin + data_len - 1,
-                );
-            }
-            send_write_piece_block_reply(&write_responses_tx, &write_request, Err(e.into()));
-            return;
-        }
-        data_cursor += data_to_write;
-        data_still_to_be_written -= data_to_write;
+        send_write_piece_block_reply(&write_responses_tx, &write_request, Err(e.into()));
+        return;
     }
 
     let piece_is_complete = {
@@ -748,6 +728,40 @@ fn verify_completed_piece(
     let piece_sha: [u8; 20] = Sha1::digest(read_piece_data).into();
     if piece_sha != piece_hashes[piece_idx] {
         return Err(anyhow!(ShaCorruptedError { piece_idx }));
+    }
+
+    Ok(())
+}
+
+fn disk_write_piece_block(
+    data: &Vec<u8>,
+    block_begin: u64,
+    file_handles_for_piece: &FileHandlesForPiece,
+) -> io::Result<()> {
+    let mut data_cursor: u64 = 0;
+    let mut data_still_to_be_written = data.len() as u64;
+    let mut piece_cursor_to_begin = 0;
+    for (file, file_start, file_end) in file_handles_for_piece.iter() {
+        if data_still_to_be_written == 0 {
+            break;
+        }
+        let mut file_start = *file_start;
+        let file_end = *file_end;
+        if block_begin - piece_cursor_to_begin < file_end - file_start {
+            file_start += block_begin - piece_cursor_to_begin;
+            piece_cursor_to_begin = block_begin;
+        } else {
+            piece_cursor_to_begin += file_end - file_start;
+            continue;
+        }
+        let data_to_write = cmp::min(file_end - file_start, data_still_to_be_written);
+        write_at(
+            &file,
+            &data[data_cursor as usize..(data_cursor + data_to_write) as usize],
+            file_start,
+        )?;
+        data_cursor += data_to_write;
+        data_still_to_be_written -= data_to_write;
     }
 
     Ok(())
