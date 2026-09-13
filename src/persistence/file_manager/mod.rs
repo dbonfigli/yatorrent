@@ -4,6 +4,7 @@ use size::Size;
 use std::fs::File;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{cmp, fs};
 use thiserror::Error;
@@ -82,7 +83,7 @@ impl IncompletePiece {
     }
 }
 
-type PieceCompletionStatus = Vec<bool>; // piece identified by position in array -> completed / not completed
+type PieceCompletionStatus = Vec<AtomicBool>; // piece identified by position in array -> completed / not completed
 type PieceHashes = Vec<[u8; 20]>; // piece identified by position in array -> hash
 
 pub struct WritePieceBlockRequest {
@@ -239,7 +240,12 @@ pub fn start_file_manager(
         &piece_completion_status,
     );
 
-    let shared_piece_completion_status = Arc::new(Mutex::new(piece_completion_status.clone()));
+    let shared_piece_completion_status: Arc<PieceCompletionStatus> = Arc::new(
+        piece_completion_status
+            .iter()
+            .map(|completed| AtomicBool::new(*completed))
+            .collect(),
+    );
     let last_piece_length = piece_sizer.last_piece_length;
 
     // read request loop
@@ -348,7 +354,7 @@ async fn handle_read_piece_block(
     fs_reads_semaphore: Arc<Semaphore>,
     read_responses_tx: &UnboundedSender<ReadPieceBlockResponse>,
 
-    piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
+    piece_completion_status: Arc<PieceCompletionStatus>,
     piece_sizer: &PieceSizer,
     file_handles: &mut ReadFileHandles,
 ) {
@@ -398,7 +404,7 @@ async fn handle_read_piece_block(
 }
 
 fn read_piece_block_pre_checks(
-    piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
+    piece_completion_status: Arc<PieceCompletionStatus>,
     piece_sizer: &PieceSizer,
 
     piece_idx: usize,
@@ -419,10 +425,7 @@ fn read_piece_block_pre_checks(
         );
     }
     if check_if_have_piece {
-        if !piece_completion_status
-            .lock()
-            .expect("another user panicked while holding the lock")[piece_idx]
-        {
+        if !piece_completion_status[piece_idx].load(Ordering::Acquire) {
             bail!("requested to read piece idx {piece_idx} that we don't have");
         }
     }
@@ -434,7 +437,7 @@ async fn handle_write_piece_block(
     fs_writes_semaphore: Arc<Semaphore>,
     write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
 
-    piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
+    piece_completion_status: Arc<PieceCompletionStatus>,
     incomplete_pieces: Arc<Mutex<Vec<Option<IncompletePiece>>>>,
     piece_sizer: Arc<PieceSizer>,
     file_handles: &mut WriteFileHandles,
@@ -480,24 +483,22 @@ async fn handle_write_piece_block(
             return;
         }
     };
-
     {
         // here we want to avoid proceeding with the writing if the piece is complete or the piece block is already claimed.
-        // The read path only use piece_completion_status, but the write path mush lock both piece_completion_status and incomplete_pieces
-        // operations must be atomic because we don't want to add back a block to incomplete_pieces if in the meantime another thread completed
-        // the piece and set incomplete_pieces to None.
-        // The rule we choose to avoid deadlock is: ALWAYS lock incomplete_pieces FIRST, then lock piece_completion_status.
+        // Otherwise, we risk corrupting the piece that has been verified.
 
+        // the invariant is: incomplete_pieces is held when completed is being set to true.
+        // This avoid having someone setting back incomplete_pieces to None while we check for completeness
+        //
+        // without this, it can happen that we pass the completed check (completed is false),
+        // then completed becomes true and incomplete_piece is set to None by another thread,
+        // so the overlap check is passed, and we then potentially corrupt the already verified piece
         let mut incomplete_pieces_mg = incomplete_pieces
             .lock()
             .expect("another user panicked while holding the lock");
-
-        let completed = piece_completion_status
-            .lock()
-            .expect("another user panicked while holding the lock")[write_request.piece_idx];
-        // piece_completion_status lock is not held anymore here
-
         // avoid useless writes if we already have the piece
+
+        let completed = piece_completion_status[write_request.piece_idx].load(Ordering::Acquire);
         if completed {
             log::trace!(
                 "we already have the piece {}, will avoid to writing it again",
@@ -568,7 +569,7 @@ fn do_write_piece_block(
     write_request: WritePieceBlockRequest,
     write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
     piece_hashes: Arc<PieceHashes>,
-    piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
+    piece_completion_status: Arc<PieceCompletionStatus>,
     incomplete_pieces: Arc<Mutex<Vec<Option<IncompletePiece>>>>,
     piece_sizer: Arc<PieceSizer>,
     file_handles_for_piece: FileHandlesForPiece,
@@ -639,17 +640,12 @@ fn do_write_piece_block(
         ) {
             Ok(()) => {
                 {
-                    // follow the rule to avoid deadlock: lock incomplete_pieces first, then piece_completion_status
                     let mut incomplete_pieces_mg = incomplete_pieces
                         .lock()
                         .expect("another user panicked while holding the lock");
 
-                    let mut piece_completion_status_mg = piece_completion_status
-                        .lock()
-                        .expect("another user panicked while holding the lock");
-
                     // mark this piece as completed
-                    piece_completion_status_mg[write_request.piece_idx] = true;
+                    piece_completion_status[write_request.piece_idx].store(true, Ordering::Release);
                     // set this to None to save a bit of space since we don't need it anymore
                     incomplete_pieces_mg[write_request.piece_idx] = None;
                 }
@@ -694,7 +690,7 @@ fn send_write_piece_block_reply(
 
 fn verify_completed_piece(
     write_piece_block_request: &WritePieceBlockRequest,
-    piece_completion_status: Arc<Mutex<PieceCompletionStatus>>,
+    piece_completion_status: Arc<PieceCompletionStatus>,
     piece_sizer: Arc<PieceSizer>,
     file_handles_for_piece: FileHandlesForPiece,
     piece_hashes: Arc<PieceHashes>,
@@ -771,7 +767,7 @@ fn refresh_completed_pieces(
     piece_hashes: &PieceHashes,
     piece_sizer: &PieceSizer,
     file_handles: &mut ReadFileHandles,
-) -> PieceCompletionStatus {
+) -> Vec<bool> {
     log::info!("checking pieces already downloaded...");
 
     let mut piece_completion_status = vec![false; piece_hashes.len()];
@@ -820,7 +816,7 @@ fn get_file_list_with_completion_status(
     base_path: &Path,
     file_list: &Vec<FileEntry>,
     pieces_to_file_paths_mapper: Arc<PiecesToFilePathsMapper>,
-    piece_completion_status: &PieceCompletionStatus,
+    piece_completion_status: &Vec<bool>,
 ) -> Vec<(PathBuf, u64, bool)> {
     let mut file_list_with_completion_status: Vec<(PathBuf, u64, bool)> = file_list
         .iter()
@@ -851,7 +847,7 @@ fn log_file_completion_stats(
     base_path: &Path,
     file_list: &Vec<FileEntry>,
     pieces_to_file_paths_mapper: Arc<PiecesToFilePathsMapper>,
-    piece_completion_status: &PieceCompletionStatus,
+    piece_completion_status: &Vec<bool>,
 ) {
     let file_list_with_completion_status = get_file_list_with_completion_status(
         base_path,
