@@ -1,6 +1,7 @@
 use anyhow::{Error, Result, anyhow, bail};
 use sha1::{Digest, Sha1};
 use size::Size;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -275,8 +276,7 @@ pub fn start_file_manager(
         let fs_writes_semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_WRITE_OPS));
         let mut file_handles = WriteFileHandles::new(pieces_to_file_paths_mapper);
         let piece_hashes = Arc::new(piece_hashes);
-        let incomplete_pieces =
-            Arc::new(Mutex::new((0..piece_hashes.len()).map(|_| None).collect()));
+        let incomplete_pieces = Arc::new(Mutex::new(HashMap::new()));
         loop {
             tokio::select! {
                 Some(write_piece_block_request) = write_requests_rx.recv() => {
@@ -438,7 +438,7 @@ async fn handle_write_piece_block(
     write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
 
     piece_completion_status: Arc<PieceCompletionStatus>,
-    incomplete_pieces: Arc<Mutex<Vec<Option<IncompletePiece>>>>,
+    incomplete_pieces: Arc<Mutex<HashMap<usize, IncompletePiece>>>,
     piece_sizer: Arc<PieceSizer>,
     file_handles: &mut WriteFileHandles,
     piece_hashes: Arc<PieceHashes>,
@@ -488,10 +488,10 @@ async fn handle_write_piece_block(
         // Otherwise, we risk corrupting the piece that has been verified.
 
         // the invariant is: incomplete_pieces is held when completed is being set to true.
-        // This avoid having someone setting back incomplete_pieces to None while we check for completeness
+        // This avoid having someone removing the incomplete_pieces entry while we check for completeness
         //
         // without this, it can happen that we pass the completed check (completed is false),
-        // then completed becomes true and incomplete_piece is set to None by another thread,
+        // then completed becomes true and incomplete_piece is removed by another thread,
         // so the overlap check is passed, and we then potentially corrupt the already verified piece
         let mut incomplete_pieces_mg = incomplete_pieces
             .lock()
@@ -500,6 +500,7 @@ async fn handle_write_piece_block(
 
         let completed = piece_completion_status[write_request.piece_idx].load(Ordering::Acquire);
         if completed {
+            drop(incomplete_pieces_mg);
             log::trace!(
                 "we already have the piece {}, will avoid to writing it again",
                 write_request.piece_idx
@@ -516,12 +517,14 @@ async fn handle_write_piece_block(
         }
 
         // avoid concurrent writes on the same block
-        let incomplete_piece = incomplete_pieces_mg[write_request.piece_idx]
-            .get_or_insert_with(|| IncompletePiece::new(piece_len));
+        let incomplete_piece = incomplete_pieces_mg
+            .entry(write_request.piece_idx)
+            .or_insert(IncompletePiece::new(piece_len));
         if incomplete_piece.claimed_piece.overlaps(
             write_request.block_begin,
             write_request.block_begin + data_len - 1,
         ) {
+            drop(incomplete_pieces_mg);
             log::trace!(
                 "some or all of the data in this block (begin: {} length: {}) for piece {} is already written or writes are already inflight, will avoid writing it again so to not corrupt possible pieces already confirmed",
                 write_request.block_begin,
@@ -570,7 +573,7 @@ fn do_write_piece_block(
     write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
     piece_hashes: Arc<PieceHashes>,
     piece_completion_status: Arc<PieceCompletionStatus>,
-    incomplete_pieces: Arc<Mutex<Vec<Option<IncompletePiece>>>>,
+    incomplete_pieces: Arc<Mutex<HashMap<usize, IncompletePiece>>>,
     piece_sizer: Arc<PieceSizer>,
     file_handles_for_piece: FileHandlesForPiece,
 ) {
@@ -581,9 +584,10 @@ fn do_write_piece_block(
         &file_handles_for_piece,
     ) {
         // remove uncommitted piece block that failed to be written
-        if let Some(incomplete_piece) = &mut incomplete_pieces
+        if let Some(incomplete_piece) = incomplete_pieces
             .lock()
-            .expect("another user panicked while holding the lock")[write_request.piece_idx]
+            .expect("another user panicked while holding the lock")
+            .get_mut(&write_request.piece_idx)
         {
             incomplete_piece.claimed_piece.remove_fragment(
                 write_request.block_begin,
@@ -597,7 +601,8 @@ fn do_write_piece_block(
     let piece_is_complete = {
         match &mut incomplete_pieces
             .lock()
-            .expect("another user panicked while holding the lock")[write_request.piece_idx]
+            .expect("another user panicked while holding the lock")
+            .get_mut(&write_request.piece_idx)
         {
             Some(incomplete_piece) => {
                 incomplete_piece.committed_piece.add_fragment(
@@ -647,7 +652,7 @@ fn do_write_piece_block(
                     // mark this piece as completed
                     piece_completion_status[write_request.piece_idx].store(true, Ordering::Release);
                     // set this to None to save a bit of space since we don't need it anymore
-                    incomplete_pieces_mg[write_request.piece_idx] = None;
+                    incomplete_pieces_mg.remove(&write_request.piece_idx);
                 }
 
                 send_write_piece_block_reply(
@@ -660,12 +665,11 @@ fn do_write_piece_block(
                 );
             }
             Err(e) => {
-                {
-                    incomplete_pieces
-                        .lock()
-                        .expect("another user panicked while holding the lock")
-                        [write_request.piece_idx] = None; // clear incomplete piece data to start over the download of the whole piece
-                }
+                // clear incomplete piece data to start over the download of the whole piece
+                incomplete_pieces
+                    .lock()
+                    .expect("another user panicked while holding the lock")
+                    .remove(&write_request.piece_idx);
                 send_write_piece_block_reply(&write_responses_tx, &write_request, Err(e.into()));
             }
         }
@@ -758,6 +762,10 @@ fn disk_write_piece_block(
         )?;
         data_cursor += data_to_write;
         data_still_to_be_written -= data_to_write;
+    }
+
+    if data_still_to_be_written > 0 {
+        log::warn!("not all data was written for a block request");
     }
 
     Ok(())
