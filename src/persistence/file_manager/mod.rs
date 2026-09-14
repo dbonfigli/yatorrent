@@ -5,13 +5,14 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{cmp, fs};
 use thiserror::Error;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc::{Receiver, UnboundedSender};
 
+use crate::manager::BLOCK_SIZE_B;
 use crate::persistence::file_manager::file_handles::{
     FileHandlesForPiece, ReadFileHandles, WriteFileHandles,
 };
@@ -26,6 +27,10 @@ mod pieces_to_file_paths_mapper;
 // todo: make this dynamic depending on the read and write speed (spinning disk should have concurrent read/write ops set 1)
 const MAX_CONCURRENT_READ_OPS: usize = 10;
 const MAX_CONCURRENT_WRITE_OPS: usize = 5;
+
+//max memory used to hold unordered data so to allow incremental hashing and avoid the final readback from disk for piece verification
+const MAX_UNHASHED_DATA_SIZE: usize = 1024 * 16 * 100; // i.e. 100 standard blocks, 1.6MB
+
 #[derive(Error, Debug)]
 #[error(
     "the sha of the data we just wrote for piece {piece_idx} do not match the sha we expect, marking this piece as missing"
@@ -73,6 +78,10 @@ impl PieceSizer {
 struct IncompletePiece {
     committed_piece: Piece, // piece with info about data really written
     claimed_piece: Piece, // piece with info about data that we declared we are writing, i.e. writes are in flight and we do not know they completed. committed_piece holds always a subset of claimed_piece.
+
+    incremental_hash: Sha1, // hash already calculated with the sequential data already arrived
+    already_hashed_to: u64, // until which byte we have already hashed in incremental_hash (not inclusive)
+    piece_data: HashMap<u64, Vec<u8>>, // we divide the data in blocks of 16KB (BLOCK_SIZE_B, a standard block), the index is the block of data we have that has not been used yet for hashing
 }
 
 impl IncompletePiece {
@@ -80,7 +89,39 @@ impl IncompletePiece {
         IncompletePiece {
             committed_piece: Piece::new(piece_len),
             claimed_piece: Piece::new(piece_len),
+            incremental_hash: Sha1::new(),
+            already_hashed_to: 0,
+            piece_data: HashMap::new(),
         }
+    }
+}
+
+struct UnhashedDataSize {
+    current: AtomicUsize,
+}
+
+impl UnhashedDataSize {
+    fn new() -> Self {
+        UnhashedDataSize {
+            current: AtomicUsize::new(0),
+        }
+    }
+
+    fn decrease(&self, size: usize) {
+        // relaxed here and below is ok since threshold check is approximate by nature
+        self.current
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(size))
+            })
+            .expect("etch_update closure always returns Some");
+    }
+
+    fn increase(&self, size: usize) {
+        self.current.fetch_add(size, Ordering::Relaxed);
+    }
+
+    fn is_over_threshold(&self) -> bool {
+        self.current.load(Ordering::Relaxed) > MAX_UNHASHED_DATA_SIZE
     }
 }
 
@@ -277,6 +318,7 @@ pub fn start_file_manager(
         let mut file_handles = WriteFileHandles::new(pieces_to_file_paths_mapper);
         let piece_hashes = Arc::new(piece_hashes);
         let incomplete_pieces = Arc::new(Mutex::new(HashMap::new()));
+        let unhashed_data_size = Arc::new(UnhashedDataSize::new());
         loop {
             tokio::select! {
                 Some(write_piece_block_request) = write_requests_rx.recv() => {
@@ -289,6 +331,7 @@ pub fn start_file_manager(
                     Arc::new(piece_sizer.clone()),
                     &mut file_handles,
                     piece_hashes.clone(),
+                    unhashed_data_size.clone(),
                     ).await;
                 }
                 else => break,
@@ -442,6 +485,7 @@ async fn handle_write_piece_block(
     piece_sizer: Arc<PieceSizer>,
     file_handles: &mut WriteFileHandles,
     piece_hashes: Arc<PieceHashes>,
+    unhashed_data_size: Arc<UnhashedDataSize>,
 ) {
     if write_request.piece_idx >= piece_sizer.total_pieces() {
         send_write_piece_block_reply(
@@ -563,6 +607,7 @@ async fn handle_write_piece_block(
             incomplete_pieces,
             piece_sizer,
             file_handles_for_piece,
+            unhashed_data_size,
         );
         drop(permit);
     });
@@ -576,6 +621,7 @@ fn do_write_piece_block(
     incomplete_pieces: Arc<Mutex<HashMap<usize, IncompletePiece>>>,
     piece_sizer: Arc<PieceSizer>,
     file_handles_for_piece: FileHandlesForPiece,
+    unhashed_data_size: Arc<UnhashedDataSize>,
 ) {
     let data_len = write_request.data.len() as u64;
     if let Err(e) = disk_write_piece_block(
@@ -598,8 +644,8 @@ fn do_write_piece_block(
         return;
     }
 
-    let piece_is_complete = {
-        match &mut incomplete_pieces
+    let (piece_is_complete, already_hashed_to, incremental_hash) = {
+        match incomplete_pieces
             .lock()
             .expect("another user panicked while holding the lock")
             .get_mut(&write_request.piece_idx)
@@ -609,7 +655,13 @@ fn do_write_piece_block(
                     write_request.block_begin,
                     write_request.block_begin + data_len - 1,
                 );
-                incomplete_piece.committed_piece.complete()
+                stash_and_hash(incomplete_piece, &write_request, unhashed_data_size.clone());
+                let completed = incomplete_piece.committed_piece.complete();
+                (
+                    completed,
+                    incomplete_piece.already_hashed_to,
+                    incomplete_piece.incremental_hash.clone(),
+                )
             }
             None => {
                 send_write_piece_block_reply(
@@ -642,6 +694,8 @@ fn do_write_piece_block(
             piece_sizer,
             file_handles_for_piece,
             piece_hashes,
+            already_hashed_to,
+            incremental_hash,
         ) {
             Ok(()) => {
                 {
@@ -652,7 +706,10 @@ fn do_write_piece_block(
                     // mark this piece as completed
                     piece_completion_status[write_request.piece_idx].store(true, Ordering::Release);
                     // set this to None to save a bit of space since we don't need it anymore
-                    incomplete_pieces_mg.remove(&write_request.piece_idx);
+                    let removed = incomplete_pieces_mg.remove(&write_request.piece_idx);
+                    if let Some(r) = removed {
+                        unhashed_data_size.decrease(r.piece_data.values().map(Vec::len).sum());
+                    }
                 }
 
                 send_write_piece_block_reply(
@@ -666,13 +723,70 @@ fn do_write_piece_block(
             }
             Err(e) => {
                 // clear incomplete piece data to start over the download of the whole piece
-                incomplete_pieces
+                let removed = incomplete_pieces
                     .lock()
                     .expect("another user panicked while holding the lock")
                     .remove(&write_request.piece_idx);
+                if let Some(r) = removed {
+                    unhashed_data_size.decrease(r.piece_data.values().map(Vec::len).sum());
+                }
                 send_write_piece_block_reply(&write_responses_tx, &write_request, Err(e.into()));
             }
         }
+    }
+}
+
+fn stash_and_hash(
+    incomplete_piece: &mut IncompletePiece,
+    write_request: &WritePieceBlockRequest,
+    unhashed_data_size: Arc<UnhashedDataSize>,
+) {
+    if !write_request.block_begin.is_multiple_of(BLOCK_SIZE_B) {
+        log::debug!(
+            "the begin of the block we are writing ({}) is not divisible by the block size ({}), this should never happen, we cannot store it for incremental hashing",
+            write_request.block_begin,
+            BLOCK_SIZE_B
+        );
+        return;
+    }
+
+    let block_index = write_request.block_begin / BLOCK_SIZE_B;
+
+    if incomplete_piece.already_hashed_to as u64 == write_request.block_begin {
+        incomplete_piece
+            .incremental_hash
+            .update(&write_request.data);
+        incomplete_piece.already_hashed_to =
+            incomplete_piece.already_hashed_to + write_request.data.len() as u64;
+
+        let mut idx = block_index + 1;
+        while let Some(data) = incomplete_piece.piece_data.get(&idx) {
+            incomplete_piece.incremental_hash.update(data);
+            incomplete_piece.already_hashed_to =
+                incomplete_piece.already_hashed_to + data.len() as u64;
+            let removed = incomplete_piece.piece_data.remove(&idx); // we don't need this anymore, already hashed
+            if let Some(r) = removed {
+                unhashed_data_size.decrease(r.len());
+            }
+            idx += 1;
+        }
+    } else {
+        if unhashed_data_size.is_over_threshold() {
+            log::debug!("cannot cache, exeeding write cache size");
+            // since we cannot stash this block of data, there is no point keeping the data kept in memory after this block
+            incomplete_piece.piece_data.retain(|i, v| {
+                if *i > block_index {
+                    unhashed_data_size.decrease(v.len());
+                    return false;
+                }
+                return true;
+            });
+            return;
+        }
+        incomplete_piece
+            .piece_data
+            .insert(block_index, write_request.data.clone());
+        unhashed_data_size.increase(write_request.data.len());
     }
 }
 
@@ -698,34 +812,40 @@ fn verify_completed_piece(
     piece_sizer: Arc<PieceSizer>,
     file_handles_for_piece: FileHandlesForPiece,
     piece_hashes: Arc<PieceHashes>,
+    already_hashed_to: u64,
+    mut incremental_hash: Sha1,
 ) -> Result<()> {
     let piece_idx = write_piece_block_request.piece_idx;
-
-    if let Err(error) = read_piece_block_pre_checks(
-        piece_completion_status,
-        &piece_sizer,
-        piece_idx,
-        0,
-        piece_sizer.piece_length(piece_idx),
-        false,
-    ) {
-        return Err(anyhow!(ShaCheckReadError { piece_idx, error }));
-    }
-
-    let read_piece_data = match read_data(
-        file_handles_for_piece,
-        0,
-        piece_sizer.piece_length(piece_idx),
-    ) {
-        Ok(data) => data,
-        Err(error) => {
+    let piece_size = piece_sizer.piece_length(piece_idx);
+    if already_hashed_to < piece_size {
+        if let Err(error) = read_piece_block_pre_checks(
+            piece_completion_status,
+            &piece_sizer,
+            piece_idx,
+            already_hashed_to,
+            piece_size - already_hashed_to,
+            false,
+        ) {
             return Err(anyhow!(ShaCheckReadError { piece_idx, error }));
         }
-    };
+
+        let read_piece_data = match read_data(
+            file_handles_for_piece,
+            already_hashed_to,
+            piece_size - already_hashed_to,
+        ) {
+            Ok(data) => data,
+            Err(error) => {
+                return Err(anyhow!(ShaCheckReadError { piece_idx, error }));
+            }
+        };
+
+        incremental_hash.update(&read_piece_data);
+    }
 
     // we are in a spawn_blocking context so in theory this sha verification could starve the cpu since thread pools are not bound to CPUs available;
     // in practice, writes and then the read of the whole piece above are dominating time so we don't expect to incur in such situation
-    let piece_sha: [u8; 20] = Sha1::digest(read_piece_data).into();
+    let piece_sha: [u8; 20] = incremental_hash.finalize().into();
     if piece_sha != piece_hashes[piece_idx] {
         return Err(anyhow!(ShaCorruptedError { piece_idx }));
     }
