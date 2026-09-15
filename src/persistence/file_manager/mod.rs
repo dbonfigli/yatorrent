@@ -1,4 +1,5 @@
 use anyhow::{Error, Result, anyhow, bail};
+use dashmap::DashMap;
 use sha1::{Digest, Sha1};
 use size::Size;
 use std::collections::HashMap;
@@ -317,7 +318,8 @@ pub fn start_file_manager(
         let fs_writes_semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_WRITE_OPS));
         let mut file_handles = WriteFileHandles::new(pieces_to_file_paths_mapper);
         let piece_hashes = Arc::new(piece_hashes);
-        let incomplete_pieces = Arc::new(Mutex::new(HashMap::new()));
+        let incomplete_pieces = Arc::new(DashMap::new());
+        let piece_state_transition_lock = Arc::new(Mutex::new(()));
         let unhashed_data_size = Arc::new(UnhashedDataSize::new());
         loop {
             tokio::select! {
@@ -326,6 +328,7 @@ pub fn start_file_manager(
                     write_piece_block_request,
                     fs_writes_semaphore.clone(),
                     write_responses_tx.clone(),
+                    piece_state_transition_lock.clone(),
                     shared_piece_completion_status.clone(),
                     incomplete_pieces.clone(),
                     Arc::new(piece_sizer.clone()),
@@ -480,8 +483,9 @@ async fn handle_write_piece_block(
     fs_writes_semaphore: Arc<Semaphore>,
     write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
 
+    piece_state_transition_lock: Arc<Mutex<()>>,
     piece_completion_status: Arc<PieceCompletionStatus>,
-    incomplete_pieces: Arc<Mutex<HashMap<usize, Arc<Mutex<IncompletePiece>>>>>,
+    incomplete_pieces: Arc<DashMap<usize, Arc<Mutex<IncompletePiece>>>>,
     piece_sizer: Arc<PieceSizer>,
     file_handles: &mut WriteFileHandles,
     piece_hashes: Arc<PieceHashes>,
@@ -531,20 +535,22 @@ async fn handle_write_piece_block(
         // here we want to avoid proceeding with the writing if the piece is complete or the piece block is already claimed.
         // Otherwise, we risk corrupting the piece that has been verified.
 
-        // the invariant is: incomplete_pieces is held when completed is being set to true.
-        // This avoid having someone removing the incomplete_pieces entry while we check for completeness
+        // The two checks must be coherent, we must avoid a race condition like this:
+        // 1. we pass the completion check (completed == false)
+        // 2. another thread sets completed to true, and remove the entries in incomplete_pieces
+        // 3. we find the incomplete_pieces entry missing, we create a new one
+        // 4. no one else claimed the block, we proceed to writing it -> potential corruption
         //
-        // without this, it can happen that we pass the completed check (completed is false),
-        // then completed becomes true and incomplete_piece is removed by another thread,
-        // so the overlap check is passed, and we then potentially corrupt the already verified piece
-        let mut incomplete_pieces_mg = incomplete_pieces
+        // To avoid this, we use piece_state_transition_lock: we hold it whenever we adds/removes entries
+        // in incomplete_pieces, and at the same time reading/writing piece_completion_status.
+        let piece_state_transition_lock_mg = piece_state_transition_lock
             .lock()
             .expect("another user panicked while holding the lock");
 
         // avoid useless writes if we already have the piece
         let completed = piece_completion_status[write_request.piece_idx].load(Ordering::Acquire);
         if completed {
-            drop(incomplete_pieces_mg);
+            drop(piece_state_transition_lock_mg);
             log::trace!(
                 "we already have the piece {}, will avoid to writing it again",
                 write_request.piece_idx
@@ -561,9 +567,11 @@ async fn handle_write_piece_block(
         }
 
         // avoid concurrent writes on the same block
-        let mut incomplete_piece = incomplete_pieces_mg
+        let incomplete_piece = incomplete_pieces
             .entry(write_request.piece_idx)
-            .or_insert(Arc::new(Mutex::new(IncompletePiece::new(piece_len))))
+            .or_insert_with(|| Arc::new(Mutex::new(IncompletePiece::new(piece_len))))
+            .clone();
+        let mut incomplete_piece = incomplete_piece
             .lock()
             .expect("another user panicked while holding the lock");
 
@@ -571,6 +579,7 @@ async fn handle_write_piece_block(
             write_request.block_begin,
             write_request.block_begin + data_len - 1,
         ) {
+            drop(piece_state_transition_lock_mg);
             log::trace!(
                 "some or all of the data in this block (begin: {} length: {}) for piece {} is already written or writes are already inflight, will avoid writing it again so to not corrupt possible pieces already confirmed",
                 write_request.block_begin,
@@ -605,6 +614,7 @@ async fn handle_write_piece_block(
             write_request,
             write_responses_tx,
             piece_hashes,
+            piece_state_transition_lock,
             piece_completion_status,
             incomplete_pieces,
             piece_sizer,
@@ -619,8 +629,9 @@ fn do_write_piece_block(
     write_request: WritePieceBlockRequest,
     write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
     piece_hashes: Arc<PieceHashes>,
+    piece_state_transition_lock: Arc<Mutex<()>>,
     piece_completion_status: Arc<PieceCompletionStatus>,
-    incomplete_pieces: Arc<Mutex<HashMap<usize, Arc<Mutex<IncompletePiece>>>>>,
+    incomplete_pieces: Arc<DashMap<usize, Arc<Mutex<IncompletePiece>>>>,
     piece_sizer: Arc<PieceSizer>,
     file_handles_for_piece: FileHandlesForPiece,
     unhashed_data_size: Arc<UnhashedDataSize>,
@@ -632,11 +643,7 @@ fn do_write_piece_block(
         &file_handles_for_piece,
     ) {
         // remove uncommitted piece block that failed to be written
-        if let Some(incomplete_piece) = incomplete_pieces
-            .lock()
-            .expect("another user panicked while holding the lock")
-            .get(&write_request.piece_idx)
-        {
+        if let Some(incomplete_piece) = incomplete_pieces.get(&write_request.piece_idx) {
             incomplete_piece
                 .lock()
                 .expect("another user panicked while holding the lock")
@@ -650,11 +657,7 @@ fn do_write_piece_block(
         return;
     }
 
-    let incomplete_piece = match incomplete_pieces
-        .lock()
-        .expect("another user panicked while holding the lock")
-        .get(&write_request.piece_idx)
-    {
+    let incomplete_piece = match incomplete_pieces.get(&write_request.piece_idx) {
         Some(incomplete_piece) => incomplete_piece.clone(),
         None => {
             send_write_piece_block_reply(
@@ -711,17 +714,17 @@ fn do_write_piece_block(
             Ok(()) => {
                 {
                     let removed = {
-                        let mut incomplete_pieces_mg = incomplete_pieces
+                        let _piece_state_transition_lock_mg = piece_state_transition_lock
                             .lock()
                             .expect("another user panicked while holding the lock");
 
-                        // mark this piece as completed while holding the lock on incomplete_pieces
+                        // mark this piece as completed while holding the lock on piece_state_transition_lock
                         piece_completion_status[write_request.piece_idx]
                             .store(true, Ordering::Release);
                         // remove the incomplete piece, we don't need it anymore once the piece is completed
-                        incomplete_pieces_mg.remove(&write_request.piece_idx)
+                        incomplete_pieces.remove(&write_request.piece_idx)
                     };
-                    if let Some(r) = removed {
+                    if let Some((_, r)) = removed {
                         let r = r
                             .lock()
                             .expect("another user panicked while holding the lock");
@@ -740,11 +743,8 @@ fn do_write_piece_block(
             }
             Err(e) => {
                 // clear incomplete piece data to start over the download of the whole piece
-                let removed = incomplete_pieces
-                    .lock()
-                    .expect("another user panicked while holding the lock")
-                    .remove(&write_request.piece_idx);
-                if let Some(r) = removed {
+                let removed = incomplete_pieces.remove(&write_request.piece_idx);
+                if let Some((_, r)) = removed {
                     let r = r
                         .lock()
                         .expect("another user panicked while holding the lock");
