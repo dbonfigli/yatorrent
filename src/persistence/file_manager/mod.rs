@@ -481,7 +481,7 @@ async fn handle_write_piece_block(
     write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
 
     piece_completion_status: Arc<PieceCompletionStatus>,
-    incomplete_pieces: Arc<Mutex<HashMap<usize, IncompletePiece>>>,
+    incomplete_pieces: Arc<Mutex<HashMap<usize, Arc<Mutex<IncompletePiece>>>>>,
     piece_sizer: Arc<PieceSizer>,
     file_handles: &mut WriteFileHandles,
     piece_hashes: Arc<PieceHashes>,
@@ -540,8 +540,8 @@ async fn handle_write_piece_block(
         let mut incomplete_pieces_mg = incomplete_pieces
             .lock()
             .expect("another user panicked while holding the lock");
-        // avoid useless writes if we already have the piece
 
+        // avoid useless writes if we already have the piece
         let completed = piece_completion_status[write_request.piece_idx].load(Ordering::Acquire);
         if completed {
             drop(incomplete_pieces_mg);
@@ -561,14 +561,16 @@ async fn handle_write_piece_block(
         }
 
         // avoid concurrent writes on the same block
-        let incomplete_piece = incomplete_pieces_mg
+        let mut incomplete_piece = incomplete_pieces_mg
             .entry(write_request.piece_idx)
-            .or_insert(IncompletePiece::new(piece_len));
+            .or_insert(Arc::new(Mutex::new(IncompletePiece::new(piece_len))))
+            .lock()
+            .expect("another user panicked while holding the lock");
+
         if incomplete_piece.claimed_piece.overlaps(
             write_request.block_begin,
             write_request.block_begin + data_len - 1,
         ) {
-            drop(incomplete_pieces_mg);
             log::trace!(
                 "some or all of the data in this block (begin: {} length: {}) for piece {} is already written or writes are already inflight, will avoid writing it again so to not corrupt possible pieces already confirmed",
                 write_request.block_begin,
@@ -618,7 +620,7 @@ fn do_write_piece_block(
     write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
     piece_hashes: Arc<PieceHashes>,
     piece_completion_status: Arc<PieceCompletionStatus>,
-    incomplete_pieces: Arc<Mutex<HashMap<usize, IncompletePiece>>>,
+    incomplete_pieces: Arc<Mutex<HashMap<usize, Arc<Mutex<IncompletePiece>>>>>,
     piece_sizer: Arc<PieceSizer>,
     file_handles_for_piece: FileHandlesForPiece,
     unhashed_data_size: Arc<UnhashedDataSize>,
@@ -633,49 +635,58 @@ fn do_write_piece_block(
         if let Some(incomplete_piece) = incomplete_pieces
             .lock()
             .expect("another user panicked while holding the lock")
-            .get_mut(&write_request.piece_idx)
+            .get(&write_request.piece_idx)
         {
-            incomplete_piece.claimed_piece.remove_fragment(
-                write_request.block_begin,
-                write_request.block_begin + data_len - 1,
-            );
+            incomplete_piece
+                .lock()
+                .expect("another user panicked while holding the lock")
+                .claimed_piece
+                .remove_fragment(
+                    write_request.block_begin,
+                    write_request.block_begin + data_len - 1,
+                );
         }
         send_write_piece_block_reply(&write_responses_tx, &write_request, Err(e.into()));
         return;
     }
 
-    let (piece_is_complete, already_hashed_to, incremental_hash) = {
-        match incomplete_pieces
-            .lock()
-            .expect("another user panicked while holding the lock")
-            .get_mut(&write_request.piece_idx)
-        {
-            Some(incomplete_piece) => {
-                incomplete_piece.committed_piece.add_fragment(
-                    write_request.block_begin,
-                    write_request.block_begin + data_len - 1,
-                );
-                stash_and_hash(incomplete_piece, &write_request, unhashed_data_size.clone());
-                let completed = incomplete_piece.committed_piece.complete();
-                (
-                    completed,
-                    incomplete_piece.already_hashed_to,
-                    incomplete_piece.incremental_hash.clone(),
-                )
-            }
-            None => {
-                send_write_piece_block_reply(
-                    &write_responses_tx,
-                    &write_request,
-                    Err(anyhow!(
-                        "we could not find the incomplete piece for a write request, this should never happen"
-                    )),
-                    // because none should ever remove the incomplete piece unless the piece is complete, and write requests
-                    // are rejected if the piece is completed and or data is already scheduled to be written
-                );
-                return;
-            }
+    let incomplete_piece = match incomplete_pieces
+        .lock()
+        .expect("another user panicked while holding the lock")
+        .get(&write_request.piece_idx)
+    {
+        Some(incomplete_piece) => incomplete_piece.clone(),
+        None => {
+            send_write_piece_block_reply(
+                &write_responses_tx,
+                &write_request,
+                Err(anyhow!(
+                    "we could not find the incomplete piece for a write request, this should never happen"
+                )),
+                // because none should ever remove the incomplete piece unless the piece is complete, and write requests
+                // are rejected if the piece is completed and or data is already scheduled to be written
+            );
+            return;
         }
+    };
+    let (piece_is_complete, already_hashed_to, incremental_hash) = {
+        let mut incomplete_piece = incomplete_piece
+            .lock()
+            .expect("another user panicked while holding the lock");
+        incomplete_piece.committed_piece.add_fragment(
+            write_request.block_begin,
+            write_request.block_begin + data_len - 1,
+        );
+        stash_and_hash(
+            &mut *incomplete_piece,
+            &write_request,
+            unhashed_data_size.clone(),
+        );
+        (
+            incomplete_piece.committed_piece.complete(),
+            incomplete_piece.already_hashed_to,
+            incomplete_piece.incremental_hash.clone(),
+        )
     };
 
     if !piece_is_complete {
@@ -699,15 +710,21 @@ fn do_write_piece_block(
         ) {
             Ok(()) => {
                 {
-                    let mut incomplete_pieces_mg = incomplete_pieces
-                        .lock()
-                        .expect("another user panicked while holding the lock");
+                    let removed = {
+                        let mut incomplete_pieces_mg = incomplete_pieces
+                            .lock()
+                            .expect("another user panicked while holding the lock");
 
-                    // mark this piece as completed
-                    piece_completion_status[write_request.piece_idx].store(true, Ordering::Release);
-                    // set this to None to save a bit of space since we don't need it anymore
-                    let removed = incomplete_pieces_mg.remove(&write_request.piece_idx);
+                        // mark this piece as completed while holding the lock on incomplete_pieces
+                        piece_completion_status[write_request.piece_idx]
+                            .store(true, Ordering::Release);
+                        // remove the incomplete piece, we don't need it anymore once the piece is completed
+                        incomplete_pieces_mg.remove(&write_request.piece_idx)
+                    };
                     if let Some(r) = removed {
+                        let r = r
+                            .lock()
+                            .expect("another user panicked while holding the lock");
                         unhashed_data_size.decrease(r.piece_data.values().map(Vec::len).sum());
                     }
                 }
@@ -728,6 +745,9 @@ fn do_write_piece_block(
                     .expect("another user panicked while holding the lock")
                     .remove(&write_request.piece_idx);
                 if let Some(r) = removed {
+                    let r = r
+                        .lock()
+                        .expect("another user panicked while holding the lock");
                     unhashed_data_size.decrease(r.piece_data.values().map(Vec::len).sum());
                 }
                 send_write_piece_block_reply(&write_responses_tx, &write_request, Err(e.into()));
