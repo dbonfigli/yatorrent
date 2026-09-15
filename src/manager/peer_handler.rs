@@ -433,7 +433,7 @@ async fn handshake(
             write.send(Message::Bitfield(pcs)).await?;
             log::trace!("bitfield sent to peer {peer_addr}");
         }
-    } else {
+    } else if supports_fast_extension {
         write.send(Message::HaveNone).await?;
         log::trace!("have none sent to peer {peer_addr}");
     }
