@@ -93,7 +93,7 @@ impl AdvertisedPeers {
         peers.iter().for_each(|p: &tracker::Peer| {
             advertised_peers_mg
                 .entry(format!("{}:{}", p.ip, p.port))
-                .or_insert(AdvertisedPeer {
+                .or_insert_with(|| AdvertisedPeer {
                     peer: p.clone(),
                     last_connection_attempt: None,
                     known_since: Instant::now(),

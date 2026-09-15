@@ -101,7 +101,7 @@ impl TorrentDataStatus {
                 } else {
                     self.incomplete_pieces
                         .entry(piece_idx)
-                        .or_insert(Piece::new(piece_length))
+                        .or_insert_with(|| Piece::new(piece_length))
                         .add_fragment(
                             write_piece_block_response.request.block_begin,
                             write_piece_block_response.request.block_begin
