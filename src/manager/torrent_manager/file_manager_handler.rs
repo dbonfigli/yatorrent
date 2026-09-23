@@ -12,7 +12,7 @@ use crate::{
     },
     persistence::{
         file_manager::{
-            self, ReadPieceBlockRequest, ReadPieceBlockResponse, ShaCheckReadError,
+            self, DiskConfig, ReadPieceBlockRequest, ReadPieceBlockResponse, ShaCheckReadError,
             ShaCorruptedError, SymlinkPathError, WritePieceBlockRequest, WritePieceBlockResponse,
         },
         torrent_data_status::TorrentDataStatus,
@@ -92,6 +92,7 @@ impl FileManagerHandler {
         file_list: Vec<FileEntry>,
         piece_length: u64,
         piece_hashes: Vec<[u8; 20]>,
+        disk_config: &DiskConfig,
     ) -> Result<TorrentDataStatus> {
         let read_requests_rx = self
             .read_requests_rx
@@ -112,6 +113,7 @@ impl FileManagerHandler {
             read_responses_tx,
             write_requests_rx,
             write_responses_tx,
+            disk_config,
         )
     }
 

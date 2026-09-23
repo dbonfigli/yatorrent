@@ -72,9 +72,9 @@ Options:
   -b, --base-path <BASE_PATH>
           Base path where files are downloaded (directory will be created if it does not exist) [env: BASE_PATH=] [default: _current working dir_]
   -p, --port <PORT>
-          Listening port for Torrent protocol [env: PORT=] [default: 8000]
+          Listening port for Torrent protocol. 0 means the client will use a random port (will be logged) [env: PORT=] [default: 8000]
   -d, --dht-port <DHT_PORT>
-          Listening port for DHT protocol [env: DHT_PORT=] [default: 8001]
+          Listening port for DHT protocol. 0 means the client will use a random port (will be logged) [env: DHT_PORT=] [default: 8001]
   -l, --log-level <LOG_LEVEL>
           Log level [env: LOG_LEVEL=] [default: info] [possible values: trace, debug, info, warn, error]
   -s, --show-peers-stats
@@ -89,6 +89,14 @@ Options:
           Exit the client when the download is complete [env: EXIT_WHEN_COMPLETE=]
   -n, --no-dht
           Disable the DHT (Distributed Hash Table) to find peers without a central tracker (enabled by default) [env: NO_DHT=]
+      --max-read-cache-size <MAX_READ_CACHE_SIZE>
+          Maximum amount of memory dedicated for caching data from disk. This is rounded up to a multiple of 256 KiB [env: MAX_READ_CACHE_SIZE=] [default: 16MiB]
+      --read-cache-idle-time <READ_CACHE_IDLE_TIME>
+          Time in seconds after which a read block (256 KiB) is purged after being cached if there has not been any requests for it. 0 means no idle time expiration [env: READ_CACHE_IDLE_TIME=] [default: 300]
+      --max-concurrent-disk-reads <MAX_CONCURRENT_DISK_READS>
+          Maximum concurrent disk read operations [env: MAX_CONCURRENT_DISK_READS=] [default: 10]
+      --max-concurrent-disk-writes <MAX_CONCURRENT_DISK_WRITES>
+          Maximum concurrent disk write operations [env: MAX_CONCURRENT_DISK_WRITES=] [default: 5]
   -h, --help
           Print help
   -V, --version

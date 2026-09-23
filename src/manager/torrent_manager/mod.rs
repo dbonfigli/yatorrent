@@ -19,6 +19,7 @@ use crate::manager::torrent_manager::file_manager_handler::FileManagerHandler;
 use crate::manager::torrent_manager::metadata_handler::MetadataHandler;
 use crate::manager::torrent_manager::peer_context::PeersContext;
 use crate::manager::tracker_requestor::TrackerRequestor;
+use crate::persistence::file_manager::DiskConfig;
 use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::tracker;
 use crate::util::{FileEntry, HostAndPort};
@@ -58,6 +59,10 @@ pub struct TorrentManagerStorageOptions {
     pub base_path: String,
     pub files_data: Option<FilesData>,
     pub raw_metadata: Option<Vec<u8>>,
+    pub max_read_cache_size: usize,
+    pub read_cache_idle_time: usize,
+    pub max_concurrent_disk_reads: usize,
+    pub max_concurrent_disk_writes: usize,
 }
 
 pub struct TorrentManagerNetworkOptions {
@@ -92,6 +97,7 @@ struct TorrentManagerConfig {
     // risking to be choked by them because of this and generally being inefficient
     max_connected_peers: usize,
     exit_when_complete: bool,
+    disk_config: DiskConfig,
 }
 
 struct PeersChannels {
@@ -177,6 +183,12 @@ impl TorrentManager {
             show_peers_stats: opts.show_peers_stats,
             max_connected_peers: opts.limit_opts.max_connected_peers,
             exit_when_complete: opts.exit_when_complete,
+            disk_config: DiskConfig {
+                max_read_cache_size: opts.storage_opts.max_read_cache_size,
+                read_cache_idle_time: opts.storage_opts.read_cache_idle_time,
+                max_concurrent_disk_reads: opts.storage_opts.max_concurrent_disk_reads,
+                max_concurrent_disk_writes: opts.storage_opts.max_concurrent_disk_writes,
+            },
         };
 
         let mut file_manager_handler = FileManagerHandler::new();
@@ -187,6 +199,7 @@ impl TorrentManager {
                 files_data.file_list,
                 files_data.piece_length,
                 files_data.piece_hashes,
+                &torrent_manager_config.disk_config,
             ) {
                 Ok(torrent_data_status) => Some(torrent_data_status),
                 Err(e) => {

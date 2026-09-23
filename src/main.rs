@@ -16,6 +16,7 @@ use crate::manager::torrent_manager::{
     FilesData, TorrentManagerLimitOptions, TorrentManagerNetworkOptions, TorrentManagerOptions,
     TorrentManagerStorageOptions,
 };
+use crate::persistence::file_manager::READ_CACHE_CHUNK_SIZE;
 use crate::torrent_protocol::MAX_MESSAGE_SIZE_B;
 
 mod bencoding;
@@ -27,6 +28,10 @@ mod persistence;
 mod torrent_protocol;
 mod tracker;
 mod util;
+
+#[cfg(target_os = "linux")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 #[cfg(test)]
 #[macro_use]
@@ -51,7 +56,7 @@ struct Args {
     #[arg(short, long, env, default_value_t = 8000)]
     port: u16,
 
-    /// Listening port for DHT protocol
+    /// Listening port for DHT protocol. 0 means the client will use a random port (will be logged).
     #[arg(short, long, env, default_value_t = 8001)]
     dht_port: u16,
 
@@ -82,6 +87,22 @@ struct Args {
     /// Disable the DHT (Distributed Hash Table) to find peers without a central tracker (enabled by default)
     #[arg(short, long, env, default_value_t = false)]
     no_dht: bool,
+
+    /// Maximum amount of memory dedicated for caching data from disk. This is rounded up to a multiple of 256 KiB
+    #[arg(long, env, default_value_t = "16MiB".to_string())]
+    max_read_cache_size: String,
+
+    /// Time in seconds after which a read block (256 KiB) is purged after being cached if there has not been any requests for it. 0 means no idle time expiration
+    #[arg(long, env, default_value_t = 300)]
+    read_cache_idle_time: usize,
+
+    /// Maximum concurrent disk read operations
+    #[arg(long, env, default_value_t = 10)]
+    max_concurrent_disk_reads: usize,
+
+    /// Maximum concurrent disk write operations
+    #[arg(long, env, default_value_t = 5)]
+    max_concurrent_disk_writes: usize,
 }
 
 #[derive(clap::ValueEnum, Debug, Clone)]
@@ -141,6 +162,17 @@ async fn main() -> Result<()> {
         exit(1);
     }
 
+
+    if args.max_concurrent_disk_reads == 0 {
+        log::error!("max concurrent disk reads cannot be 0");
+        exit(1);
+    }
+
+    if args.max_concurrent_disk_writes == 0 {
+        log::error!("max concurrent disk writes cannot be 0");
+        exit(1);
+    }
+
     // read torrent file and start manager
     if let Some(torrent_file) = args.torrent_file {
         let contents = match fs::read(&torrent_file) {
@@ -190,6 +222,10 @@ async fn main() -> Result<()> {
                             piece_hashes: m.piece_hashes,
                         }),
                         raw_metadata: Some(m.raw_metadata),
+                        max_read_cache_size: get_max_read_cache_size(args.max_read_cache_size),
+                        read_cache_idle_time: args.read_cache_idle_time,
+                        max_concurrent_disk_reads: args.max_concurrent_disk_reads,
+                        max_concurrent_disk_writes: args.max_concurrent_disk_writes,
                     },
                     limit_opts: TorrentManagerLimitOptions {
                         max_connected_peers: args.max_connected_peers,
@@ -237,6 +273,10 @@ async fn main() -> Result<()> {
                         base_path: args.base_path,
                         files_data: None,
                         raw_metadata: None,
+                        max_read_cache_size: get_max_read_cache_size(args.max_read_cache_size),
+                        read_cache_idle_time: args.read_cache_idle_time,
+                        max_concurrent_disk_reads: args.max_concurrent_disk_reads,
+                        max_concurrent_disk_writes: args.max_concurrent_disk_writes,
                     },
                     limit_opts: TorrentManagerLimitOptions {
                         max_connected_peers: args.max_connected_peers,
@@ -288,4 +328,29 @@ fn get_bandwidth(bandwidth: Option<String>) -> Option<Size> {
             v
         }
     })
+}
+
+fn get_max_read_cache_size(read_cache_size_s: String) -> usize {
+    match Size::from_str(&read_cache_size_s) {
+        Err(e) => {
+            log::error!("could not parse read cache size {read_cache_size_s}: {e}");
+            exit(1)
+        }
+        Ok(v) => {
+            let read_cache_size = v.bytes();
+            if read_cache_size <= 0 {
+                log::error!("read cache size {read_cache_size} cannot be zero or a negative value");
+                exit(1);
+            }
+
+            let rounded =
+                (read_cache_size as usize).div_ceil(READ_CACHE_CHUNK_SIZE) * READ_CACHE_CHUNK_SIZE;
+            log::info!(
+                "capping read cache size to {read_cache_size_s}, rounded to {} {}KiB blocks",
+                rounded / READ_CACHE_CHUNK_SIZE,
+                READ_CACHE_CHUNK_SIZE / 1024
+            );
+            rounded
+        }
+    }
 }

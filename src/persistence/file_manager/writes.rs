@@ -15,12 +15,11 @@ use crate::manager::BLOCK_SIZE_B;
 use crate::persistence::file_manager::file_handles::{FileHandlesForPiece, WriteFileHandles};
 use crate::persistence::file_manager::pieces_to_file_paths_mapper::PiecesToFilePathsMapper;
 use crate::persistence::file_manager::reads::read_data;
-use crate::persistence::file_manager::{PieceCompletionStatus, PieceHashes, PieceSizer};
+use crate::persistence::file_manager::{
+    DiskConfig, PieceCompletionStatus, PieceHashes, PieceSizer,
+};
 use crate::persistence::piece::Piece;
 use crate::util::HostAndPort;
-
-// todo: make this dynamic depending on write speed (spinning disk should have concurrent write ops set 1)
-const MAX_CONCURRENT_WRITE_OPS: usize = 5;
 
 //max memory used to hold unordered data so to allow incremental hashing and avoid the final readback from disk for piece verification
 const MAX_UNHASHED_DATA_SIZE: usize = 1024 * 16 * 100; // i.e. 100 standard blocks, 1.6MB
@@ -116,15 +115,18 @@ impl UnhashedDataSize {
     }
 }
 
-pub async fn writes_loop(
+pub async fn run_writes_loop(
     pieces_to_file_paths_mapper: Arc<PiecesToFilePathsMapper>,
     piece_hashes: &PieceHashes,
     mut write_requests_rx: Receiver<WritePieceBlockRequest>,
     write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
     shared_piece_completion_status: Arc<PieceCompletionStatus>,
     piece_sizer: &PieceSizer,
+    disk_config: &DiskConfig,
 ) {
-    let fs_writes_semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_WRITE_OPS));
+    let fs_writes_semaphore = Arc::new(tokio::sync::Semaphore::new(
+        disk_config.max_concurrent_disk_writes, // todo: maybe make this dynamic
+    ));
     let mut file_handles = WriteFileHandles::new(pieces_to_file_paths_mapper);
     let incomplete_pieces = Arc::new(DashMap::new());
     let piece_state_transition_lock = Arc::new(Mutex::new(()));
@@ -590,6 +592,7 @@ fn disk_write_piece_block(
     }
 
     if data_still_to_be_written > 0 {
+        // this should never happen, it is a bug if it does
         log::warn!("not all data was written for a block request");
     }
 

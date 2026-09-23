@@ -30,3 +30,7 @@ thiserror = "2.0.20"
 colored = "3.1.1"
 base32 = "0.5.1"
 dashmap = "6.2.1"
+moka = { version = "0.12.16", features = ["future"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tikv-jemallocator = "0.7.0"

@@ -301,6 +301,7 @@ impl TorrentManager {
                 file_list,
                 piece_length,
                 piece_hashes,
+                &self.torrent_manager_config.disk_config,
             ) {
                 Ok(t) => {
                     if t.completed() && self.torrent_manager_config.exit_when_complete {

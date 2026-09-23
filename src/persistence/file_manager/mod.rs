@@ -11,8 +11,8 @@ use tokio::sync::mpsc::{Receiver, UnboundedSender};
 
 use crate::persistence::file_manager::file_handles::ReadFileHandles;
 use crate::persistence::file_manager::pieces_to_file_paths_mapper::PiecesToFilePathsMapper;
-use crate::persistence::file_manager::reads::{read_data, reads_loop};
-use crate::persistence::file_manager::writes::writes_loop;
+use crate::persistence::file_manager::reads::{read_data, run_reads_loop};
+use crate::persistence::file_manager::writes::run_writes_loop;
 use crate::persistence::torrent_data_status::TorrentDataStatus;
 use crate::util::FileEntry;
 
@@ -25,7 +25,15 @@ pub use writes::{
     ShaCheckReadError, ShaCorruptedError, WritePieceBlockRequest, WritePieceBlockResponse,
 };
 
-pub use reads::{ReadPieceBlockRequest, ReadPieceBlockResponse};
+pub use reads::{READ_CACHE_CHUNK_SIZE, ReadPieceBlockRequest, ReadPieceBlockResponse};
+
+#[derive(Clone)]
+pub struct DiskConfig {
+    pub max_read_cache_size: usize,
+    pub read_cache_idle_time: usize,
+    pub max_concurrent_disk_reads: usize,
+    pub max_concurrent_disk_writes: usize,
+}
 
 #[derive(Error, Debug)]
 #[error("refusing to access torrent data through symlink {path}")]
@@ -66,6 +74,7 @@ pub fn start_file_manager(
     read_responses_tx: UnboundedSender<ReadPieceBlockResponse>,
     write_requests_rx: Receiver<WritePieceBlockRequest>,
     write_responses_tx: UnboundedSender<WritePieceBlockResponse>,
+    disk_config: &DiskConfig,
 ) -> Result<TorrentDataStatus> {
     let mut total_file_size = 0u64;
     for FileEntry { size, .. } in file_list.iter() {
@@ -137,26 +146,30 @@ pub fn start_file_manager(
 
     let piece_completion_status_for_reads = shared_piece_completion_status.clone();
     let piece_sizer_for_reads = piece_sizer.clone();
+    let disk_config_for_reads = disk_config.clone();
     tokio::spawn(async move {
-        reads_loop(
+        run_reads_loop(
             read_requests_rx,
             read_responses_tx,
             piece_completion_status_for_reads,
             &piece_sizer_for_reads,
             &mut file_handles,
+            &disk_config_for_reads,
         )
         .await;
     });
 
     // write request loop
+    let disk_config_for_writes = disk_config.clone();
     tokio::spawn(async move {
-        writes_loop(
+        run_writes_loop(
             pieces_to_file_paths_mapper,
             &piece_hashes,
             write_requests_rx,
             write_responses_tx,
             shared_piece_completion_status,
             &piece_sizer,
+            &disk_config_for_writes,
         )
         .await;
     });
