@@ -29,10 +29,11 @@ type ChunkKey = (usize, usize); // (piece index, chunk index in ascending order 
 struct ChunkStore {
     // Cache is moka concurrent cache, LRU + LFU
     // the value is:
-    // * an Arc, so that we can pass it around (moka does not allow getting back references)
-    // * a OnceCell, so that the initialization is done only once and not concurrently, i.e. concurrent requests for the same chunk
-    //   are correctly handled: only the first is served via reading the disk, and the others wait
-    // * anoter Arc to the data itself, so that we can reference it and not just copy it when requets are served from the cache when we do get_chunk
+    // * an Arc, so that we can pass a reference around (moka does not allow getting back references)
+    // * a OnceCell, so that the initialization is done only once and not concurrently, i.e. concurrent requests
+    //   for the same chunk are correctly handled: only the first is served via reading the disk, and the others wait
+    // * anoter Arc to the data itself, so that we can reference it and not just copy it when requets are served
+    //   from the cache when we do get_chunk
     chunks: Cache<ChunkKey, Arc<OnceCell<Arc<Vec<u8>>>>>,
 }
 
@@ -73,13 +74,13 @@ impl ChunkStore {
         files_handles_for_piece: FileHandlesForPiece,
         piece_sizer: &PieceSizer,
     ) -> Result<Arc<Vec<u8>>> {
-        let cell = self
+        let entry = self
             .chunks
             .entry((piece_idx, chunk_idx))
             .or_insert_with(async { Arc::new(OnceCell::new()) })
             .await;
 
-        let chunk = cell
+        let chunk = entry
             .value()
             .get_or_try_init(|| async move {
                 let chunk_begin = (chunk_idx * READ_CACHE_CHUNK_SIZE) as u64;
