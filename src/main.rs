@@ -136,6 +136,11 @@ async fn main() -> Result<()> {
         d.bytes()
     });
 
+    if args.max_connected_peers == 0 {
+        log::error!("max connected peers cannot be 0");
+        exit(1);
+    }
+
     // read torrent file and start manager
     if let Some(torrent_file) = args.torrent_file {
         let contents = match fs::read(&torrent_file) {
