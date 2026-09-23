@@ -162,7 +162,6 @@ async fn main() -> Result<()> {
         exit(1);
     }
 
-
     if args.max_concurrent_disk_reads == 0 {
         log::error!("max concurrent disk reads cannot be 0");
         exit(1);

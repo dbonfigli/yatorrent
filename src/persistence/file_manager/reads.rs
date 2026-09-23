@@ -38,7 +38,9 @@ struct ChunkStore {
 
 impl ChunkStore {
     fn new(max_read_cache_size: usize, read_cache_idle_time: usize) -> Self {
-        let cache_entries = max_read_cache_size / READ_CACHE_CHUNK_SIZE;
+        // we need the cache to hold at least 2 chunks so to correctl serve a block request spanning 2 chunks
+        // a chunk is always bigger than a the maximum allowed block size anyway
+        let cache_entries = max(2, max_read_cache_size / READ_CACHE_CHUNK_SIZE);
         let mut cache_builder = Cache::builder().max_capacity(cache_entries as u64);
         if read_cache_idle_time > 0 {
             cache_builder =
