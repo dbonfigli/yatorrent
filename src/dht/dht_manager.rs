@@ -226,9 +226,21 @@ impl DhtManager {
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         // open ipv4 socket
-        let socket = UdpSocket::bind(format!("0.0.0.0:{}", self.listening_dht_port))
+        let addr = format!("0.0.0.0:{}", self.listening_dht_port);
+        log::info!("starting listening dht protocol (udp) at {addr}");
+        let socket = UdpSocket::bind(addr)
             .await
             .expect("failed binding to dht port");
+
+        if self.listening_dht_port == 0 {
+            match socket.local_addr() {
+                Ok(local_addr) => log::info!(
+                    "listening port for dht protocol (udp) is {}",
+                    local_addr.port()
+                ),
+                Err(e) => log::warn!("could not get listening port for dht protocol: {e}"),
+            }
+        }
 
         // bootstrap initial known nodes by finding nodes closest to self
         for i in 0..self.bootstrap_nodes.len() {

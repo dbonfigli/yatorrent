@@ -47,7 +47,7 @@ struct Args {
     #[arg(short, long, env, default_value_t = current_dir().expect("current directory cannot be used").to_str().expect("current path must be an utf8 string").to_string())]
     base_path: String,
 
-    /// Listening port for Torrent protocol
+    /// Listening port for Torrent protocol. 0 means the client will use a random port (will be logged).
     #[arg(short, long, env, default_value_t = 8000)]
     port: u16,
 

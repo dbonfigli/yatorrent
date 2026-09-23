@@ -236,10 +236,22 @@ pub async fn run_new_incoming_peers_handler(
         }
     });
 
-    let incoming_connection_listener =
-        TcpListener::bind(format!("0.0.0.0:{tcp_wire_protocol_listening_port}"))
-            .await
-            .expect("failed binding to torrent protocol tcp port");
+    let addr = format!("0.0.0.0:{tcp_wire_protocol_listening_port}");
+    log::info!("starting listening to torrent protocol (tcp) at: {addr}");
+    let incoming_connection_listener = TcpListener::bind(addr)
+        .await
+        .expect("failed binding to torrent protocol tcp port");
+
+    if tcp_wire_protocol_listening_port == 0 {
+        match incoming_connection_listener.local_addr() {
+            Ok(local_addr) => log::info!(
+                "listening port for torrent protocol (tcp) is {}",
+                local_addr.port()
+            ),
+            Err(e) => log::warn!("could not get listening port for torrent protocol: {e}"),
+        }
+    }
+
     let pending_handshakes = Arc::new(Semaphore::new(MAX_PENDING_INCOMING_HANDSHAKES));
 
     tokio::spawn(async move {
