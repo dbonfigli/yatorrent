@@ -303,7 +303,7 @@ impl TorrentManager {
             && e.downcast_ref::<SymlinkPathError>().is_some()
         {
             self.send_shutdown_request(ShutdownRequest::Error(UnrecoverableError::new(format!(
-                "unsafe torrent storage path detected: {e}"
+                "unsafe torrent storage path detected: {e:#}"
             ))));
             return;
         }

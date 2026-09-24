@@ -106,7 +106,18 @@ impl PieceRequestor {
     }
 
     pub fn piece_request_completed(&mut self, peer_addr: &HostAndPort, piece_idx: usize) {
-        self.outstanding_piece_assignments.remove(&piece_idx);
+        let removed_assigned_peer_addr = self.outstanding_piece_assignments.remove(&piece_idx);
+
+        if let Some(assigned_peer_addr) = removed_assigned_peer_addr
+            && let Some(reqs) = self.requested_pieces.get_mut(&assigned_peer_addr)
+        {
+            // a request could be completed by a different peer than the one we have currently assigned it to
+            // (e.g. a late request that come after we assign the piece to another peer)
+            // so, here assigned_peer_addr could be different from peer_addr
+            // let's try to remove the assigned piece also from the requested_pieces for that peer
+            reqs.remove(&piece_idx);
+        }
+
         if let Some(reqs) = self.requested_pieces.get_mut(peer_addr) {
             reqs.remove(&piece_idx);
         }
