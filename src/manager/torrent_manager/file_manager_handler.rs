@@ -183,8 +183,7 @@ impl TorrentManager {
         match write_piece_block_response.response {
             Ok(torrent_data_status_updates) => {
                 if torrent_data_status_updates.piece_is_completed {
-                    self.piece_requestor
-                        .piece_request_completed(&peer_addr, piece_idx);
+                    self.piece_requestor.piece_request_completed(piece_idx);
 
                     if !already_completed
                         && self
@@ -272,8 +271,7 @@ impl TorrentManager {
                 if sha_corrupted_error || sha_check_read_error {
                     // we could not verify the whole piece, wipe current download status
                     // also from the piece requestor so to start over
-                    self.piece_requestor
-                        .piece_request_completed(&peer_addr, piece_idx);
+                    self.piece_requestor.piece_request_completed(piece_idx);
                 }
 
                 // keep track of corruptions, remove if too many
