@@ -251,7 +251,8 @@ fn get_file_list_with_completion_status(
     for idx in 0..piece_completion_status.len() {
         let file_paths_for_piece = pieces_to_file_paths_mapper.get(idx);
         for (piece_fragment_file_path, _, _) in file_paths_for_piece.iter() {
-            if file_list_with_completion_status[cur_file_idx].0 != *piece_fragment_file_path {
+            // skip empty files since they have no pieces
+            while file_list_with_completion_status[cur_file_idx].0 != *piece_fragment_file_path {
                 cur_file_idx += 1;
             }
             file_list_with_completion_status[cur_file_idx].2 &= piece_completion_status[idx];
