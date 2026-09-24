@@ -1,7 +1,7 @@
 use anyhow::{Error, Result, anyhow};
 use dashmap::DashMap;
 use sha1::{Digest, Sha1};
-use std::cmp;
+use std::cmp::min;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;
@@ -360,6 +360,7 @@ fn do_write_piece_block(
             &mut *incomplete_piece,
             &write_request,
             unhashed_data_size.clone(),
+            &piece_sizer,
         );
         (
             incomplete_piece.committed_piece.complete(),
@@ -435,10 +436,24 @@ fn stash_and_hash(
     incomplete_piece: &mut IncompletePiece,
     write_request: &WritePieceBlockRequest,
     unhashed_data_size: Arc<UnhashedDataSize>,
+    piece_sizer: &PieceSizer,
 ) {
     if !write_request.block_begin.is_multiple_of(BLOCK_SIZE_B) {
         log::debug!(
-            "the begin of the block we are writing ({}) is not divisible by the block size ({}), this should never happen, we cannot store it for incremental hashing",
+            "the begin of the block we are writing ({}) is not divisible by the block size ({}), this should never happen (did we receive a block we did not request?), we cannot store it for incremental hashing",
+            write_request.block_begin,
+            BLOCK_SIZE_B
+        );
+        return;
+    }
+
+    let expected_block_len = min(
+        BLOCK_SIZE_B,
+        piece_sizer.piece_length(write_request.piece_idx) - write_request.block_begin,
+    );
+    if write_request.data.len() as u64 != expected_block_len {
+        log::debug!(
+            "the block request length we are writing ({}) is not one we expect ({}), this should never happen (did we receive a block we did not request?), we cannot store it for incremental hashing",
             write_request.block_begin,
             BLOCK_SIZE_B
         );
@@ -581,7 +596,7 @@ fn disk_write_piece_block(
             piece_cursor_to_begin += file_end - file_start;
             continue;
         }
-        let data_to_write = cmp::min(file_end - file_start, data_still_to_be_written);
+        let data_to_write = min(file_end - file_start, data_still_to_be_written);
         write_at(
             &file,
             &data[data_cursor as usize..(data_cursor + data_to_write) as usize],
