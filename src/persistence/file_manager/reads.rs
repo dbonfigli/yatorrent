@@ -230,7 +230,7 @@ pub async fn run_reads_loop(
                                 request: read_request,
                                 response: Err(e),
                             });
-                            return;
+                            continue;
                         }
                     };
 
