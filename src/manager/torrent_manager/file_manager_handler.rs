@@ -12,8 +12,9 @@ use crate::{
     },
     persistence::{
         file_manager::{
-            self, DiskConfig, ReadPieceBlockRequest, ReadPieceBlockResponse, ShaCheckReadError,
-            ShaCorruptedError, SymlinkPathError, WritePieceBlockRequest, WritePieceBlockResponse,
+            self, BlockWriteError, DiskConfig, ReadPieceBlockRequest, ReadPieceBlockResponse,
+            ShaCheckReadError, ShaCorruptedError, SymlinkPathError, WritePieceBlockRequest,
+            WritePieceBlockResponse,
         },
         torrent_data_status::TorrentDataStatus,
     },
@@ -246,26 +247,18 @@ impl TorrentManager {
             Err(e) => {
                 if e.downcast_ref::<SymlinkPathError>().is_some() {
                     self.send_shutdown_request(ShutdownRequest::Error(UnrecoverableError::new(
-                        format!("unsafe torrent storage path detected: {e}"),
+                        format!("unsafe torrent storage path detected: {e:#}"),
                     )));
                     return;
                 }
-                log::error!("cannot write block received from {}: {e}", peer_addr);
-
-                let peer = match self.peers_ctx.peers.get_mut(&peer_addr) {
-                    Some(peer) => peer,
-                    None => return,
-                };
+                log::error!("cannot write block received from {}: {e:#}", peer_addr);
 
                 let sha_corrupted_error = e.downcast_ref::<ShaCorruptedError>().is_some();
                 let sha_check_read_error = e.downcast_ref::<ShaCheckReadError>().is_some();
+                let block_write_error = e.downcast_ref::<BlockWriteError>().is_some();
+                // ignore other kind of errors here, they are only validation error, means the request itself was bad
 
-                if sha_corrupted_error || sha_check_read_error {
-                    // we could not verify the whole piece, wipe current download status
-                    // also from the piece requestor so to start over
-                    self.piece_requestor
-                        .piece_request_completed(&peer_addr, piece_idx);
-                } else {
+                if block_write_error {
                     // only a block write failed, tell piece requestor this so to remove
                     // it from downloading piece tracking
                     let begin = write_piece_block_response.request.block_begin;
@@ -273,11 +266,22 @@ impl TorrentManager {
                         + write_piece_block_response.request.data_len
                         - 1;
                     self.piece_requestor
-                        .block_write_failed(&peer_addr, piece_idx, begin, end);
+                        .block_write_failed(piece_idx, begin, end);
+                }
+
+                if sha_corrupted_error || sha_check_read_error {
+                    // we could not verify the whole piece, wipe current download status
+                    // also from the piece requestor so to start over
+                    self.piece_requestor
+                        .piece_request_completed(&peer_addr, piece_idx);
                 }
 
                 // keep track of corruptions, remove if too many
                 if sha_corrupted_error {
+                    let peer = match self.peers_ctx.peers.get_mut(&peer_addr) {
+                        Some(peer) => peer,
+                        None => return,
+                    };
                     peer.increase_corruption_errors();
                     if peer.get_corruption_errors() > MAX_CORRUPTION_ERRORS {
                         log::warn!(

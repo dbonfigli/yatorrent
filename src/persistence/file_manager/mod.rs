@@ -22,7 +22,8 @@ mod reads;
 mod writes;
 
 pub use writes::{
-    ShaCheckReadError, ShaCorruptedError, WritePieceBlockRequest, WritePieceBlockResponse,
+    BlockWriteError, ShaCheckReadError, ShaCorruptedError, WritePieceBlockRequest,
+    WritePieceBlockResponse,
 };
 
 pub use reads::{READ_CACHE_CHUNK_SIZE, ReadPieceBlockRequest, ReadPieceBlockResponse};

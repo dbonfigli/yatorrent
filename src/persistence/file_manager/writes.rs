@@ -41,6 +41,12 @@ pub struct ShaCheckReadError {
     error: Error,
 }
 
+#[derive(Error, Debug)]
+#[error("error on writing block for piece {piece_idx}, the block must be re-requested")]
+pub struct BlockWriteError {
+    piece_idx: usize,
+}
+
 pub struct WritePieceBlockRequest {
     pub requestor_peer_addr: HostAndPort,
     pub piece_idx: usize,
@@ -61,6 +67,11 @@ pub struct WritePieceBlockResponse {
 }
 
 pub struct TorrentDataStatusUpdates {
+    // we need really_written to prevent status updates readers to accept requests as passed,
+    // and so marking the block as owned, while they are not really, because they were rejected
+    // because for example another same block request was still in flight, and not completed yet,
+    // and could possibly fail
+    pub really_written: bool,
     pub piece_is_completed: bool,
     pub wasted_bytes: usize,
 }
@@ -203,7 +214,13 @@ async fn handle_write_piece_block(
     let file_handles_for_piece = match file_handles.get_files_for_piece(write_request.piece_idx) {
         Ok(file_handles_for_piece) => file_handles_for_piece,
         Err(e) => {
-            send_write_piece_block_reply(&write_responses_tx, &write_request, Err(e.into()));
+            send_write_piece_block_reply(
+                &write_responses_tx,
+                &write_request,
+                Err(e.context(BlockWriteError {
+                    piece_idx: write_request.piece_idx,
+                })),
+            );
             return;
         }
     };
@@ -235,6 +252,7 @@ async fn handle_write_piece_block(
                 &write_responses_tx,
                 &write_request,
                 Ok(TorrentDataStatusUpdates {
+                    really_written: false,
                     piece_is_completed: true,
                     wasted_bytes: write_request.data.len(),
                 }),
@@ -266,6 +284,7 @@ async fn handle_write_piece_block(
                 &write_responses_tx,
                 &write_request,
                 Ok(TorrentDataStatusUpdates {
+                    really_written: false,
                     piece_is_completed: false,
                     wasted_bytes: write_request.data.len(),
                 }),
@@ -329,7 +348,13 @@ fn do_write_piece_block(
                     write_request.block_begin + data_len - 1,
                 );
         }
-        send_write_piece_block_reply(&write_responses_tx, &write_request, Err(e.into()));
+        send_write_piece_block_reply(
+            &write_responses_tx,
+            &write_request,
+            Err(Error::from(e).context(BlockWriteError {
+                piece_idx: write_request.piece_idx,
+            })),
+        );
         return;
     }
 
@@ -374,6 +399,7 @@ fn do_write_piece_block(
             &write_responses_tx,
             &write_request,
             Ok(TorrentDataStatusUpdates {
+                really_written: true,
                 piece_is_completed: false,
                 wasted_bytes: 0,
             }),
@@ -412,6 +438,7 @@ fn do_write_piece_block(
                     &write_responses_tx,
                     &write_request,
                     Ok(TorrentDataStatusUpdates {
+                        really_written: true,
                         piece_is_completed: true,
                         wasted_bytes: 0,
                     }),
@@ -462,7 +489,7 @@ fn stash_and_hash(
 
     let block_index = write_request.block_begin / BLOCK_SIZE_B;
 
-    if incomplete_piece.already_hashed_to as u64 == write_request.block_begin {
+    if incomplete_piece.already_hashed_to == write_request.block_begin {
         incomplete_piece
             .incremental_hash
             .update(&write_request.data);

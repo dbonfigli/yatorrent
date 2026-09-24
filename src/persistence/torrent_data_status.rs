@@ -98,7 +98,7 @@ impl TorrentDataStatus {
                 if updates.piece_is_completed {
                     self.missing_pieces.remove(&piece_idx);
                     self.incomplete_pieces.remove(&piece_idx);
-                } else {
+                } else if updates.really_written {
                     self.incomplete_pieces
                         .entry(piece_idx)
                         .or_insert_with(|| Piece::new(piece_length))

@@ -112,18 +112,15 @@ impl PieceRequestor {
         }
     }
 
-    pub fn block_write_failed(
-        &mut self,
-        peer_addr: &HostAndPort,
-        piece_idx: usize,
-        begin: u64,
-        end: u64,
-    ) {
+    pub fn block_write_failed(&mut self, piece_idx: usize, begin: u64, end: u64) {
         // a block write failed, so we also need to remove this block from the requested piece tracking in order to re-request it
-        if let Some(requested_pieces) = self.requested_pieces.get_mut(peer_addr)
-            && let Some((piece, _)) = requested_pieces.get_mut(&piece_idx)
+        // the block write failure could be triggered by a late peer that is not the one that is currently assigned to this piece
+        if let Some(peer_addr) = self.outstanding_piece_assignments.get(&piece_idx)
+            && let Some(requested_piece) = self.requested_pieces.get_mut(peer_addr)
+            && let Some((piece, requests_completed)) = requested_piece.get_mut(&piece_idx)
         {
             piece.remove_fragment(begin, end);
+            *requests_completed = false;
         }
     }
 
