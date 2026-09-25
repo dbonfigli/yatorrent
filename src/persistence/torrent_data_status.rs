@@ -98,7 +98,11 @@ impl TorrentDataStatus {
                 if updates.piece_is_completed {
                     self.missing_pieces.remove(&piece_idx);
                     self.incomplete_pieces.remove(&piece_idx);
-                } else if updates.really_written {
+                } else if updates.really_written && self.missing_pieces.contains(&piece_idx)
+                // we need the check on missing_pieces because write piece block responses can come unordered:
+                // we have concurrent writes, a thread that did not see a complete piece could be interlieved
+                // with another with the completion
+                {
                     self.incomplete_pieces
                         .entry(piece_idx)
                         .or_insert_with(|| Piece::new(piece_length))
