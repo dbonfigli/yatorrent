@@ -10,7 +10,7 @@ use crate::{
 use rand::seq::SliceRandom;
 use std::{
     cmp::{Ordering, max, min},
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     time::{Duration, Instant},
 };
 
@@ -106,16 +106,16 @@ impl PieceRequestor {
     }
 
     pub fn piece_request_completed(&mut self, piece_idx: usize) {
-        let removed_assigned_peer_addr = self.outstanding_piece_assignments.remove(&piece_idx);
-
-        if let Some(assigned_peer_addr) = removed_assigned_peer_addr
-            && let Some(reqs) = self.requested_pieces.get_mut(&assigned_peer_addr)
-        {
-            // a request could be completed by a different peer than the one we have currently assigned it to
-            // (e.g. a late request that come after we assign the piece to another peer)
-            // so, here assigned_peer_addr could be different from peer_addr
-            // let's try to remove the assigned piece also from the requested_pieces for that peer
-            reqs.remove(&piece_idx);
+        if let Some(assigned_peer_addr) = self.outstanding_piece_assignments.remove(&piece_idx) {
+            if let Some(reqs) = self.requested_pieces.get_mut(&assigned_peer_addr) {
+                reqs.remove(&piece_idx);
+            }
+            if let Some(block_reqs) = self
+                .outstanding_piece_block_requests
+                .get_mut(&assigned_peer_addr)
+            {
+                block_reqs.retain(|b, _| b.piece_idx as usize != piece_idx);
+            }
         }
     }
 
@@ -156,29 +156,46 @@ impl PieceRequestor {
     {
         self.remove_assigments_to_choked(peers);
 
-        let mut requests_to_cancel = Vec::<(HostAndPort, BlockRequest)>::new();
         let now = Instant::now();
-        self.outstanding_piece_block_requests.iter_mut().for_each(
-            |(peer_addr, outstanding_block_requests_for_peer)| {
-                outstanding_block_requests_for_peer.retain(
-                    |block_request, req_time| {
-                        if now.duration_since(*req_time) < request_timeout {
-                            true
-                        } else {
-                            log::debug!("removed stale request to peer: {}: (piece idx: {}, block begin: {}, length: {})",
-                                *peer_addr, block_request.piece_idx, block_request.block_begin, block_request.data_len);
-                            requests_to_cancel.push((peer_addr.clone(), block_request.clone()));
-                            // if a block stalled, we remove the assigment of the piece to this peer, with all associated block requests
-                            if let Some(requested_pieces_for_peer) = self.requested_pieces.get_mut(peer_addr) {
-                                requested_pieces_for_peer.remove(&(block_request.piece_idx as usize));
-                            }
-                            self.outstanding_piece_assignments.remove(&(block_request.piece_idx as usize));
-                            false
-                        }
-                    },
-                );
-            },
-        );
+
+        // when a block stalls, we remove the assignement for the whole piece from the peer
+        // here we collect all the pieces that must be reassigned, and to which peer they were associated
+        let mut stalled_pieces = HashSet::new();
+        for (peer_addr, outstanding_block_requests_for_peer) in
+            self.outstanding_piece_block_requests.iter()
+        {
+            for (block_request, req_time) in outstanding_block_requests_for_peer.iter() {
+                if now.duration_since(*req_time) >= request_timeout {
+                    stalled_pieces.insert((peer_addr.clone(), block_request.piece_idx as usize));
+                }
+            }
+        }
+
+        let mut requests_to_cancel = Vec::<(HostAndPort, BlockRequest)>::new();
+        for (peer_addr, piece_idx) in stalled_pieces {
+            let outstanding_block_requests_for_peer = self
+                .outstanding_piece_block_requests
+                .get_mut(&peer_addr)
+                .expect("just added above");
+            outstanding_block_requests_for_peer.retain(|block_request, req_time| {
+                if block_request.piece_idx as usize != piece_idx {
+                    return true;
+                }
+                if now.duration_since(*req_time) >= request_timeout {
+                    log::debug!("removed stale request to peer: {peer_addr}: (piece idx: {}, block begin: {}, length: {})",
+                        block_request.piece_idx, block_request.block_begin, block_request.data_len);
+                } else {
+                    log::debug!("removed request to peer for a piece with a stale request: {peer_addr}: (piece idx: {}, block begin: {}, length: {})",
+                        block_request.piece_idx, block_request.block_begin, block_request.data_len);
+                }
+                requests_to_cancel.push((peer_addr.clone(), block_request.clone()));
+                false
+            });
+            if let Some(requested_pieces_for_peer) = self.requested_pieces.get_mut(&peer_addr) {
+                requested_pieces_for_peer.remove(&piece_idx);
+            }
+            self.outstanding_piece_assignments.remove(&piece_idx);
+        }
 
         requests_to_cancel
     }
