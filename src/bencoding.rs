@@ -83,11 +83,11 @@ impl Value {
         }
     }
 
-    pub fn new(source: &Vec<u8>) -> Self {
+    pub fn new(source: &[u8]) -> Self {
         from_char_vec(source, 0, MAX_RECURSION_DEPTH).0
     }
 
-    pub fn new_with_size(source: &Vec<u8>) -> (Value, usize) {
+    pub fn new_with_size(source: &[u8]) -> (Value, usize) {
         from_char_vec(source, 0, MAX_RECURSION_DEPTH)
     }
 
@@ -134,7 +134,7 @@ fn encode_str(s: &[u8]) -> Vec<u8> {
 // index is where to look from the source
 // return Value, index of next char to read
 fn from_char_vec(
-    source: &Vec<u8>,
+    source: &[u8],
     index: usize,
     remaining_recursion_depth: usize,
 ) -> (Value, usize) {
@@ -241,7 +241,7 @@ fn parse_int(source: &[u8], index: usize) -> (Value, usize) {
     }
 }
 
-fn parse_list(source: &Vec<u8>, index: usize, remaining_recursion_depth: usize) -> (Value, usize) {
+fn parse_list(source: &[u8], index: usize, remaining_recursion_depth: usize) -> (Value, usize) {
     if remaining_recursion_depth == 0 {
         return (Value::new_error(ErrorElem::List, index), index);
     }
@@ -269,7 +269,7 @@ fn parse_list(source: &Vec<u8>, index: usize, remaining_recursion_depth: usize) 
     (Value::List(l), index)
 }
 
-fn parse_dict(source: &Vec<u8>, index: usize, remaining_recursion_depth: usize) -> (Value, usize) {
+fn parse_dict(source: &[u8], index: usize, remaining_recursion_depth: usize) -> (Value, usize) {
     if remaining_recursion_depth == 0 {
         return (Value::new_error(ErrorElem::Dict, index), index);
     }

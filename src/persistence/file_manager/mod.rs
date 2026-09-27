@@ -340,7 +340,7 @@ fn reject_symlink_components(base_path: &Path, relative_path: &Path) -> Result<(
     Ok(())
 }
 
-fn create_zero_length_files(base_path: &Path, file_list: &Vec<FileEntry>) -> Result<()> {
+fn create_zero_length_files(base_path: &Path, file_list: &[FileEntry]) -> Result<()> {
     // bittorrent allow zero lenght files, we don't need to download them, we can just create them here
     for f in file_list {
         if f.size > 0 {

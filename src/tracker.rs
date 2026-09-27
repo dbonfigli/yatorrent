@@ -552,7 +552,7 @@ impl TrackerClient {
     }
 }
 
-fn get_peers_with_dict_model(peers_values: &Vec<Value>) -> Result<Vec<Peer>> {
+fn get_peers_with_dict_model(peers_values: &[Value]) -> Result<Vec<Peer>> {
     let mut peers_list: Vec<Peer> = Vec::new();
     for v in peers_values {
         match v {
