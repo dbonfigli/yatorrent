@@ -109,7 +109,7 @@ fn encode_dict(d: &HashMap<Vec<u8>, Value>) -> Vec<u8> {
     v
 }
 
-fn encode_list(l: &Vec<Value>) -> Vec<u8> {
+fn encode_list(l: &[Value]) -> Vec<u8> {
     let mut v = b"l".to_vec();
     l.iter().for_each(|val| v.append(&mut val.encode()));
     v.push(b'e');
@@ -123,10 +123,10 @@ fn encode_int(i: &i64) -> Vec<u8> {
     v
 }
 
-fn encode_str(s: &Vec<u8>) -> Vec<u8> {
+fn encode_str(s: &[u8]) -> Vec<u8> {
     let mut v = s.len().to_string().as_bytes().to_vec();
     v.push(b':');
-    v.append(&mut s.clone());
+    v.append(&mut s.to_owned());
     v
 }
 
@@ -147,7 +147,7 @@ fn from_char_vec(
     }
 }
 
-fn parse_str(source: &Vec<u8>, index: usize) -> (Value, usize) {
+fn parse_str(source: &[u8], index: usize) -> (Value, usize) {
     let mut index = index;
     let start_string_len_index = index;
     let end_string_len_index;
@@ -205,7 +205,7 @@ fn parse_str(source: &Vec<u8>, index: usize) -> (Value, usize) {
     )
 }
 
-fn parse_int(source: &Vec<u8>, index: usize) -> (Value, usize) {
+fn parse_int(source: &[u8], index: usize) -> (Value, usize) {
     let mut index = index + 1;
     let start_int_index = index;
     let end_int_index;

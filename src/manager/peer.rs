@@ -462,7 +462,7 @@ impl Peer {
     pub async fn send_pex_extension_message_for_latest_peer_events(
         &mut self,
         latest_pex_update: Instant,
-        added_dropped_peer_events: &Vec<AddedDroppedEvent>,
+        added_dropped_peer_events: &[AddedDroppedEvent],
     ) {
         if !self.support_pex_extension() {
             return;

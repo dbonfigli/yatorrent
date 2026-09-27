@@ -233,9 +233,9 @@ fn refresh_completed_pieces(
 
 fn get_file_list_with_completion_status(
     base_path: &Path,
-    file_list: &Vec<FileEntry>,
+    file_list: &[FileEntry],
     pieces_to_file_paths_mapper: Arc<PiecesToFilePathsMapper>,
-    piece_completion_status: &Vec<bool>,
+    piece_completion_status: &[bool],
 ) -> Vec<(PathBuf, u64, bool)> {
     let mut file_list_with_completion_status: Vec<(PathBuf, u64, bool)> = file_list
         .iter()
@@ -265,9 +265,9 @@ fn get_file_list_with_completion_status(
 
 fn log_file_completion_stats(
     base_path: &Path,
-    file_list: &Vec<FileEntry>,
+    file_list: &[FileEntry],
     pieces_to_file_paths_mapper: Arc<PiecesToFilePathsMapper>,
-    piece_completion_status: &Vec<bool>,
+    piece_completion_status: &[bool],
 ) {
     let file_list_with_completion_status = get_file_list_with_completion_status(
         base_path,

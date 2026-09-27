@@ -382,7 +382,7 @@ fn do_write_piece_block(
             write_request.block_begin + data_len - 1,
         );
         stash_and_hash(
-            &mut *incomplete_piece,
+            &mut incomplete_piece,
             &write_request,
             unhashed_data_size.clone(),
             &piece_sizer,
@@ -453,7 +453,7 @@ fn do_write_piece_block(
                         .expect("another user panicked while holding the lock");
                     unhashed_data_size.decrease(r.piece_data.values().map(Vec::len).sum());
                 }
-                send_write_piece_block_reply(&write_responses_tx, &write_request, Err(e.into()));
+                send_write_piece_block_reply(&write_responses_tx, &write_request, Err(e));
             }
         }
     }
@@ -493,14 +493,12 @@ fn stash_and_hash(
         incomplete_piece
             .incremental_hash
             .update(&write_request.data);
-        incomplete_piece.already_hashed_to =
-            incomplete_piece.already_hashed_to + write_request.data.len() as u64;
+        incomplete_piece.already_hashed_to += write_request.data.len() as u64;
 
         let mut idx = block_index + 1;
         while let Some(data) = incomplete_piece.piece_data.get(&idx) {
             incomplete_piece.incremental_hash.update(data);
-            incomplete_piece.already_hashed_to =
-                incomplete_piece.already_hashed_to + data.len() as u64;
+            incomplete_piece.already_hashed_to += data.len() as u64;
             let removed = incomplete_piece.piece_data.remove(&idx); // we don't need this anymore, already hashed
             if let Some(r) = removed {
                 unhashed_data_size.decrease(r.len());
@@ -603,7 +601,7 @@ fn write_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
 }
 
 fn disk_write_piece_block(
-    data: &Vec<u8>,
+    data: &[u8],
     block_begin: u64,
     file_handles_for_piece: &FileHandlesForPiece,
 ) -> io::Result<()> {
@@ -625,7 +623,7 @@ fn disk_write_piece_block(
         }
         let data_to_write = min(file_end - file_start, data_still_to_be_written);
         write_at(
-            &file,
+            file,
             &data[data_cursor as usize..(data_cursor + data_to_write) as usize],
             file_start,
         )?;

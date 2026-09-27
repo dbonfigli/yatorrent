@@ -22,7 +22,7 @@ impl PiecesToFilePathsMapper {
         base_path: &Path,
         total_pieces: usize,
         piece_length: u64,
-        file_list: &Vec<FileEntry>,
+        file_list: &[FileEntry],
     ) -> Result<Self> {
         let mut pieces_to_file_paths_mapper = PiecesToFilePathsMapper {
             piece_id_to_file_info: Vec::with_capacity(total_pieces),

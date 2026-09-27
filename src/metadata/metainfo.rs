@@ -47,7 +47,7 @@ impl fmt::Display for Metainfo {
 }
 
 impl Metainfo {
-    pub fn new(v: &Value, source: &Vec<u8>) -> Result<Self> {
+    pub fn new(v: &Value, source: &[u8]) -> Result<Self> {
         let torrent_map = match v {
             Value::Dict { dict: m, .. } => m,
             _ => bail!("The .torrent file is invalid: it does not contain a dict"),

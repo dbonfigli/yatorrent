@@ -60,12 +60,8 @@ impl TorrentManager {
             .values()
             .filter_map(|p| p.get_peer_addr_and_listening_torrent_protocol_port())
             .collect();
-        let connected_peers_by_peer_id: HashSet<[u8; 20]> = self
-            .peers_ctx
-            .peers
-            .iter()
-            .map(|(_, p)| p.peer_id())
-            .collect();
+        let connected_peers_by_peer_id: HashSet<[u8; 20]> =
+            self.peers_ctx.peers.values().map(|p| p.peer_id()).collect();
         let now = Instant::now();
         let possible_peers: Vec<(String, AdvertisedPeer)> = self
             .peers_ctx
@@ -232,7 +228,7 @@ impl TorrentManager {
     async fn send_status_to_tracker(&mut self) {
         self.tracker_requestor
             .async_update_to_tracker(
-                &mut self.peers_ctx.advertised_peers,
+                &self.peers_ctx.advertised_peers,
                 self.torrent_data_status.as_ref().map(|f| f.bytes_left()),
                 (
                     self.bandwidth_tracker.uploaded_bytes(),

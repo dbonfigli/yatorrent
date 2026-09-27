@@ -42,7 +42,7 @@ pub(super) fn should_choke(
         return true;
     }
 
-    return false;
+    false
 }
 
 impl TorrentManager {

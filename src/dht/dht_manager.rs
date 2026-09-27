@@ -147,7 +147,7 @@ impl MessageSender {
         log::trace!(
             "perform req to {}, depth: {call_depth}, tid: {}, msg: {msg:?}",
             dest.clone(),
-            force_string(&tid.to_vec()),
+            force_string(tid.as_ref()),
         );
         let buf = encode_krpc_message(tid.to_vec(), msg.clone());
         self.inflight_requests.insert(
@@ -176,7 +176,7 @@ impl MessageSender {
         log::trace!(
             "perform resp to {}, tid: {}, msg: {msg:?}",
             dest.clone(),
-            force_string(&tid.to_vec()),
+            force_string(tid.as_ref()),
         );
         let buf = encode_krpc_message(tid.to_vec(), msg.clone());
         if let Err(e) = socket.send_to(&buf, dest.clone()).await {
@@ -418,7 +418,7 @@ impl DhtManager {
         if self.inflight_get_peers_requests.contains_key(&info_hash) {
             log::debug!(
                 "ignoring get_peers request for info hash {} since another one is still in flight",
-                force_string(&info_hash.to_vec())
+                force_string(info_hash.as_ref())
             );
             return;
         }
@@ -530,7 +530,7 @@ impl DhtManager {
                     _ => {
                         log::trace!(
                             "got a get_peers or find_node resp from {remote_addr} for an expired or unknown transaction id ({}) we didn't perform, ignoring it",
-                            force_string(&transaction_id.to_vec())
+                            force_string(transaction_id.as_ref())
                         );
                         return;
                     }
@@ -585,7 +585,7 @@ impl DhtManager {
                 }
                 log::trace!(
                     "got a get_peers or find_node resp from {remote_addr} for a request ({}) we do not have track of, maybe it expired, ignoring it",
-                    force_string(&original_request_id.to_vec())
+                    force_string(original_request_id.as_ref())
                 );
             }
 
@@ -621,7 +621,7 @@ impl DhtManager {
                 } else {
                     log::trace!(
                         "got a error resp from {remote_addr} for an unknown or expired transaction id ({}) we didn't perform, ignoring it",
-                        force_string(&transaction_id.to_vec())
+                        force_string(transaction_id.as_ref())
                     );
                 }
             }
@@ -670,7 +670,7 @@ impl DhtManager {
     fn end_find_node_search(&mut self, req: &FindNodeRequest) {
         log::debug!(
             "find_node request for {} terminated: total sent requests: {} not replied: {}, discovered nodes: {}, probed nodes for routing table addition: {}",
-            force_string(&req.node_id_to_find.to_vec()),
+            force_string(req.node_id_to_find.as_ref()),
             req.total_requests,
             req.inflight_requests,
             req.total_discovered_nodes,
@@ -892,8 +892,8 @@ impl DhtManager {
         if expected_token != token_u8_20 {
             log::trace!(
                 "got an announce_peer from {source_req_addr_port} with a token ({}) that is not what we expected ({}), refusing it",
-                force_string(&token_u8_20.to_vec()),
-                force_string(&expected_token.to_vec())
+                force_string(token_u8_20.as_ref()),
+                force_string(expected_token.as_ref())
             );
             self.msg_sender
                 .do_resp(
@@ -937,7 +937,7 @@ impl DhtManager {
         {
             log::trace!(
                 "got a ping or announce_peer resp from {remote_ipv4addr}:{remote_port} for an expired or unknown transaction id ({}) we didn't perform, ignoring it",
-                force_string(&transaction_id.to_vec())
+                force_string(transaction_id.as_ref())
             );
             return;
         }

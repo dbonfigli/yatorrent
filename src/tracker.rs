@@ -597,7 +597,7 @@ fn get_peers_with_dict_model(peers_values: &Vec<Value>) -> Result<Vec<Peer>> {
     Ok(peers_list)
 }
 
-fn get_peers_with_binary_model(peers_bytes: &Vec<u8>) -> Result<Vec<Peer>> {
+fn get_peers_with_binary_model(peers_bytes: &[u8]) -> Result<Vec<Peer>> {
     if !peers_bytes.len().is_multiple_of(6) {
         bail!("Peers list is provided in binary model but it is not aligned to 6 bytes");
     }

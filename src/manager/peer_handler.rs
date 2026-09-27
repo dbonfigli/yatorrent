@@ -417,7 +417,7 @@ async fn handshake(
         "received handshake info from {}: peer protocol: {peer_protocol}, info_hash: {}, peer_id: {}, reserved: {reserved:?}",
         addr_or_unknown(&stream),
         pretty_info_hash(peer_info_hash),
-        force_string(&peer_id.to_vec()),
+        force_string(peer_id.as_ref()),
     );
     if peer_info_hash != info_hash {
         log::debug!(
