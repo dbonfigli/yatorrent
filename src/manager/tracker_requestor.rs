@@ -152,8 +152,12 @@ async fn request_to_tracker(
             }
             log::info!(
                 "tracker request succeeded: seeders: {}; leechers: {}; peers provided: {}",
-                ok_response.complete,
-                ok_response.incomplete,
+                ok_response
+                    .complete
+                    .map_or("unknown".to_string(), |c| c.to_string()),
+                ok_response
+                    .incomplete
+                    .map_or("unknown".to_string(), |i| i.to_string()),
                 ok_response.peers.len()
             );
             log::trace!("full tracker response:\n{ok_response:?}");

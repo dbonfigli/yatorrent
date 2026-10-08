@@ -35,8 +35,8 @@ pub struct OkResponse {
     pub interval: i64, // Interval in seconds that the client should wait between sending regular requests to the tracker
     pub min_interval: Option<i64>, // (optional) Minimum announce interval. If present clients must not re-announce more frequently than this.
     pub tracker_id: Option<String>, // A string that the client should send back on its next announcements. If absent and a previous announce sent a tracker id, do not discard the old value; keep using it.
-    pub complete: i64,              // number of peers with the entire file, i.e. seeders (integer)
-    pub incomplete: i64,            // number of non-seeder peers, aka "leechers" (integer)
+    pub complete: Option<i64>,      // number of peers with the entire file, i.e. seeders (integer)
+    pub incomplete: Option<i64>,    // number of non-seeder peers, aka "leechers" (integer)
     pub peers: Vec<Peer>,           // dictionary or model for peers
 }
 
@@ -61,7 +61,7 @@ impl Display for Response {
                     .join("\n");
                 write!(
                     f,
-                    "interval: {}\nmin_interval: {:#?}\ntracker_id: {:#?}\nn. peers completed: {}\nn. peers incomplete: {}\npeers:\n{peers}",
+                    "interval: {}\nmin_interval: {:#?}\ntracker_id: {:#?}\nn. peers completed: {:#?}\nn. peers incomplete: {:#?}\npeers:\n{peers}",
                     ok_response.interval,
                     ok_response.min_interval,
                     ok_response.tracker_id,
@@ -344,18 +344,14 @@ impl TrackerClient {
 
         // complete
         let complete = match response_map.get(b"complete".as_slice()) {
-            Some(Value::Int(i)) => *i,
-            _ => bail!(
-                "Complete key not provided in bencoded dict response or provided but it is not a number"
-            ),
+            Some(Value::Int(i)) => Some(*i),
+            _ => None,
         };
 
         // incomplete
         let incomplete = match response_map.get(b"incomplete".as_slice()) {
-            Some(Value::Int(i)) => *i,
-            _ => bail!(
-                "Incomplete key not provided in bencoded dict response or provided but it is not a number"
-            ),
+            Some(Value::Int(i)) => Some(*i),
+            _ => None,
         };
 
         // peers
@@ -543,8 +539,8 @@ impl TrackerClient {
                     interval: interval as i64,
                     min_interval: None,
                     tracker_id: None,
-                    complete: seeders as i64,
-                    incomplete: leechers as i64,
+                    complete: Some(seeders as i64),
+                    incomplete: Some(leechers as i64),
                     peers,
                 }))
             }
