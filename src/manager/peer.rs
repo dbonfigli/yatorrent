@@ -46,8 +46,8 @@ pub enum MetadataMessage {
 
 pub struct Peer {
     // peer_addr is ip:port of the remote peer we are connected to.
-    // Note that the port could NOT be one the peer is listening too for the torrent protocol,
-    // if the connection was initiate by the peer
+    // Note that the ip and port could NOT be one the peer is listening too for the torrent protocol,
+    // if the connection was initiated by the peer
     peer_addr: HostAndPort,
     peer_id: [u8; 20],
     am_choking_since: Option<Instant>,
@@ -116,10 +116,6 @@ impl Peer {
 
     pub fn peer_id(&self) -> [u8; 20] {
         self.peer_id
-    }
-
-    pub fn set_listening_torrent_protocol_port(&mut self, port: u16) {
-        self.listening_torrent_protocol_port = Some(port);
     }
 
     pub fn get_peer_addr_and_listening_torrent_protocol_port(&self) -> Option<HostAndPort> {

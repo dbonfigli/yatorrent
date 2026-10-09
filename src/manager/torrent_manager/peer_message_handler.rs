@@ -68,18 +68,12 @@ impl TorrentManager {
             Message::Port(port) => {
                 match peer_addr.parse::<SocketAddr>() {
                     Ok(SocketAddr::V4(socket_addr)) => {
-                        if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
-                            peer.set_listening_torrent_protocol_port(port);
-                        }
                         let peer_ip_addr = *socket_addr.ip();
                         // we know the peer supports DHT, send this to dht as new node
                         self.dht_handler.new_node_discovered(peer_ip_addr, port);
-                        // also update pex events
-                        self.pex_handler
-                            .new_pex_event(format!("{peer_ip_addr}:{port}"), PexEvent::Added);
                     }
                     _ => log::trace!(
-                        "ignoring \"port\" message from {peer_addr}: it is not an ipv4 peer and our pex / dht implementation is ipv4 only"
+                        "ignoring \"port\" message from {peer_addr}: it is not an ipv4 peer and our dht implementation is ipv4 only"
                     ),
                 }
             }

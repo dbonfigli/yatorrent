@@ -173,6 +173,8 @@ impl TorrentManager {
 
         let peer_addr = match tcp_stream.peer_addr() {
             Ok(s) => {
+                // peer_listening_torrent_protocol_port is Some only if we initiated
+                // the connection so we know the remote peer addr is one reachable from the internet
                 if let Some(peer_torrent_port) = peer_listening_torrent_protocol_port
                     && let IpAddr::V4(peer_addr) = s.ip()
                 {
