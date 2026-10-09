@@ -4,13 +4,14 @@ use tokio::{
     time::{sleep, timeout},
 };
 
-use crate::bencoding::Value;
+use crate::{bencoding::Value, util::ipv4_compact_to_string};
 use anyhow::{Result, bail};
 use rand::seq::IndexedRandom;
 use std::fmt::Display;
 use std::{fmt, io::Read, str, time::Duration};
 use thiserror::Error;
 
+const UDP_TRACKER_MAGIC_CONSTANT: [u8; 8] = 0x41727101980u64.to_be_bytes();
 const DEFAULT_TRACKER_REQUEST_INTERVAL: Duration = Duration::from_secs(600); // high interval by default to avoid bombarding tracker before we get the proper interval from it
 const TRACKER_REQUEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const TRACKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -402,7 +403,7 @@ impl TrackerClient {
         // send connect
         let transaction_id: u32 = rand::random::<u32>();
         let mut send_connect_buf = [0u8; 16];
-        send_connect_buf[0..8].copy_from_slice(&(0x41727101980u64.to_be_bytes()));
+        send_connect_buf[0..8].copy_from_slice(&UDP_TRACKER_MAGIC_CONSTANT);
         send_connect_buf[8..12].copy_from_slice(&(0u32.to_be_bytes()));
         send_connect_buf[12..16].copy_from_slice(&(transaction_id.to_be_bytes()));
         if let Err(e) = socket.send(&send_connect_buf).await {
@@ -516,15 +517,11 @@ impl TrackerClient {
                     );
                 }
                 for i in (20..bytes_recv).step_by(address_len + 2) {
-                    let mut address_buf = [0u8; 4];
-                    address_buf.copy_from_slice(&recv_announce_buf[i..i + 4]);
-                    let ip = [
-                        address_buf[0].to_string(),
-                        address_buf[1].to_string(),
-                        address_buf[2].to_string(),
-                        address_buf[3].to_string(),
-                    ]
-                    .join(".");
+                    let ip = ipv4_compact_to_string(
+                        recv_announce_buf[i..i + 4]
+                            .try_into()
+                            .expect("we already checked that the vec is 6 bytes"),
+                    );
                     let peer_port_bytes = &recv_announce_buf[i + 4..i + 6];
                     let port = peer_port_bytes[0] as u16 * 256 + peer_port_bytes[1] as u16;
                     peers.push(Peer {

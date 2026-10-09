@@ -7,7 +7,7 @@ use crate::{
     bencoding::Value::{self, Dict, Str},
     manager::peer::Peer,
     tracker,
-    util::HostAndPort,
+    util::{HostAndPort, ipv4_compact_to_string},
 };
 
 const ADDED_DROPPED_PEER_EVENTS_RETENTION: Duration = Duration::from_secs(90); // should be bigger than PEX_MESSAGE_COOL_OFF_PERIOD
@@ -91,15 +91,11 @@ pub fn parse_extended_message_ut_pex(
             return peers;
         }
         for i in (0..compact_contacts_info.len()).step_by(6) {
-            let mut peer_ip_buf: [u8; 4] = [0; 4];
-            peer_ip_buf.copy_from_slice(&compact_contacts_info[i..i + 4]);
-            let ip = [
-                peer_ip_buf[0].to_string(),
-                peer_ip_buf[1].to_string(),
-                peer_ip_buf[2].to_string(),
-                peer_ip_buf[3].to_string(),
-            ]
-            .join(".");
+            let ip = ipv4_compact_to_string(
+                compact_contacts_info[i..i + 4]
+                    .try_into()
+                    .expect("we already checked that the vec is 6 bytes"),
+            );
             let mut peer_port_buf: [u8; 2] = [0; 2];
             peer_port_buf.copy_from_slice(&compact_contacts_info[i + 4..i + 6]);
             let port = u16::from_be_bytes(peer_port_buf);
