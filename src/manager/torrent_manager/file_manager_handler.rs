@@ -18,7 +18,7 @@ use crate::{
         },
         torrent_data_status::TorrentDataStatus,
     },
-    torrent_protocol::wire_protocol::Message,
+    torrent_protocol::wire_protocol::{BlockRequest, Message},
     tracker::Event,
     util::FileEntry,
 };
@@ -318,6 +318,14 @@ impl TorrentManager {
             Err(e) => {
                 log::error!("error reading block: {e}");
                 peer.decrease_outstanding_incoming_piece_block_requests();
+                if peer.supports_fast_extension() {
+                    peer.send(ToPeerMsg::Send(Message::Reject(BlockRequest {
+                        piece_idx: read_piece_block_response.request.piece_idx as u32,
+                        block_begin: read_piece_block_response.request.block_begin as u32,
+                        data_len: read_piece_block_response.request.block_length as u32,
+                    })))
+                    .await;
+                }
             }
 
             Ok(data) => {

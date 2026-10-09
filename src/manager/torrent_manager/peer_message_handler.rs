@@ -5,7 +5,7 @@ use crate::{
     manager::{
         BLOCK_SIZE_B,
         peer_handler::ToPeerMsg,
-        pex_handler::{self, PexEvent},
+        pex_handler,
         torrent_manager::{TorrentManager, util},
     },
     persistence::file_manager::{ReadPieceBlockRequest, WritePieceBlockRequest},
@@ -345,7 +345,7 @@ impl TorrentManager {
             peer.send(ToPeerMsg::Disconnect()).await;
             self.remove_peer(peer_addr);
         }
-        // for the moment we will ignore this and let the normal fast expiration work after choke
+        // todo: for the moment we will ignore this and let the normal fast expiration work after choke
     }
 
     async fn handle_allow_fast_message(&mut self, peer_addr: HostAndPort, _piece_idx: usize) {

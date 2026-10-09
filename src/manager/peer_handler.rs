@@ -357,6 +357,7 @@ pub fn start_peer_msg_handlers(
     incoming_peer_messages_tx: Sender<PeerMessage>,
     to_peer_rx: Receiver<ToPeerMsg>,
     to_peer_cancel_rx: Receiver<ToPeerCancelMsg>,
+    supports_fast_extension: FastExtensionSupport,
     download_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
     upload_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
 ) {
@@ -376,6 +377,7 @@ pub fn start_peer_msg_handlers(
         peer_handler_to_torrent_manager_tx_for_snd_message_handler,
         write,
         to_peer_cancel_rx,
+        supports_fast_extension,
         upload_rate_limiter,
     ));
     tokio::spawn(async move {
@@ -587,12 +589,13 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
     peer_handler_to_torrent_manager_tx: UnboundedSender<PeerHandlerToManagerMsg>,
     mut wire_proto: T,
     mut to_peer_cancel_rx: Receiver<ToPeerCancelMsg>,
+    supports_fast_extension: FastExtensionSupport,
     upload_rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
 ) {
     let mut cancellations = HashMap::<BlockRequest, Instant>::new();
     while let Some(manager_msg) = to_peer_rx.recv().await {
         match manager_msg {
-            ToPeerMsg::Send(proto_msg) => {
+            ToPeerMsg::Send(mut proto_msg) => {
                 // here, if we are waiting due to the rate limit, then _all_ message types (also non-piece messages)
                 // for the same peer are affected and needs to wait for the limit to pass.
                 // In theory we can decide to apply the limit only on sending piece messages and, even if we are
@@ -603,8 +606,6 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                 // queues in the future so that non-piece messages are not blocked
                 rate_limit(&proto_msg, &upload_rate_limiter).await;
 
-                let mut is_sending_piece = false;
-
                 // avoid sending data if the request has already been canceled by the peer
                 if let Message::Piece {
                     piece_idx,
@@ -612,8 +613,6 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                     data,
                 } = &proto_msg
                 {
-                    is_sending_piece = true;
-
                     // receive pending cancellations
                     while let Ok((block_request, cancel_time)) = to_peer_cancel_rx.try_recv() {
                         cancellations.insert(block_request, cancel_time);
@@ -639,11 +638,17 @@ async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
                             PeerHandlerToManagerMsg::PieceBlockRequestFulfilled(peer_addr.clone()),
                         );
 
-                        continue;
+                        if supports_fast_extension {
+                            // even if the message was canceled by the peer, we still need to send the reject to comply with the fast extension spec
+                            proto_msg = Message::Reject(block_request);
+                        } else {
+                            continue;
+                        }
                     }
                 }
 
                 log::trace!("sending message {proto_msg} to peer {peer_addr}");
+                let is_sending_piece = matches!(proto_msg, Message::Piece { .. });
                 match timeout(DEFAULT_TIMEOUT, wire_proto.send(proto_msg)).await {
                     Err(_elapsed) => {
                         log::trace!("timeout sending message to peer {peer_addr}");

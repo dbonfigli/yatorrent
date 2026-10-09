@@ -205,6 +205,7 @@ impl TorrentManager {
             self.peers_channels.incoming_peer_messages_tx.clone(),
             to_peer_rx,
             to_peer_cancel_rx,
+            supports_fast_extension,
             self.global_rate_limiter
                 .download_rate_limiter
                 .as_ref()
