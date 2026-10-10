@@ -1,6 +1,7 @@
 use std::{
     cmp::min,
     collections::HashMap,
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     time::{Duration, Instant},
 };
 
@@ -8,7 +9,7 @@ use anyhow::{Result, bail};
 use rand::seq::SliceRandom;
 use size::{Size, Style};
 
-use crate::{manager::peer::Peer, util::HostAndPort};
+use crate::manager::peer::Peer;
 
 const METADATA_PIECE_SIZE_B: usize = 16384;
 const PEER_METADATA_REQUEST_REJECTION_COOL_OFF_PERIOD: Duration = Duration::from_secs(30);
@@ -20,12 +21,12 @@ const METADATA_BIG_REJECT_THRESHOLD: i64 = 50 * 1024 * 1024;
 #[derive(Clone)]
 struct MetadataPieceDownloadStatus {
     downloaded: bool,
-    request_destination_peer: HostAndPort,
+    request_destination_peer: SocketAddr,
     request_time: Option<Instant>,
 }
 
 pub struct MetadataPieceRequest {
-    pub destination_peer: HostAndPort,
+    pub destination_peer: SocketAddr,
     pub piece_index: usize,
 }
 
@@ -44,7 +45,10 @@ fn metadata_pieces_from_size(size: i64, default_value: bool) -> Vec<MetadataPiec
     vec![
         MetadataPieceDownloadStatus {
             downloaded: default_value,
-            request_destination_peer: "0.0.0.0:0".to_string(),
+            request_destination_peer: SocketAddr::V4(SocketAddrV4::new(
+                Ipv4Addr::new(0, 0, 0, 0),
+                0
+            )),
             request_time: None
         };
         (size as f64 / METADATA_PIECE_SIZE_B as f64).ceil() as usize
@@ -63,7 +67,10 @@ impl MetadataStore {
             None => vec![
                 MetadataPieceDownloadStatus {
                     downloaded: false,
-                    request_destination_peer: "0.0.0.0:0".to_string(),
+                    request_destination_peer: SocketAddr::V4(SocketAddrV4::new(
+                        Ipv4Addr::new(0, 0, 0, 0),
+                        0
+                    )),
                     request_time: None,
                 };
                 1
@@ -199,10 +206,10 @@ impl MetadataStore {
 
     pub fn generate_metadata_piece_reqs(
         &mut self,
-        peers: &HashMap<HostAndPort, Peer>,
+        peers: &HashMap<SocketAddr, Peer>,
     ) -> Vec<MetadataPieceRequest> {
         // get inflight requests
-        let mut inflight_metadata_piece_requests_per_peer: HashMap<HostAndPort, i64> =
+        let mut inflight_metadata_piece_requests_per_peer: HashMap<SocketAddr, i64> =
             HashMap::new();
         let now = Instant::now();
         for MetadataPieceDownloadStatus {
@@ -244,7 +251,7 @@ impl MetadataStore {
                     .unwrap_or_default();
                 (outstanding_req, peer_addr.clone())
             })
-            .collect::<Vec<(i64, HostAndPort)>>();
+            .collect::<Vec<(i64, SocketAddr)>>();
         possible_peers.shuffle(&mut rand::rng());
         possible_peers.sort_by_key(|k| k.0);
 

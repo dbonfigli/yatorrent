@@ -234,6 +234,13 @@ impl Bucket {
             }
         }
     }
+
+    pub fn len(&self) -> usize {
+        match &self.content {
+            BucketContent::Nodes(nodes) => nodes.len(),
+            BucketContent::Buckets(lb, rb) => lb.len() + rb.len(),
+        }
+    }
 }
 
 fn split(i: &BigUint, j: &BigUint) -> ((BigUint, BigUint), (BigUint, BigUint)) {

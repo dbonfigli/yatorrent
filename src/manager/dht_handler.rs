@@ -1,5 +1,5 @@
 use std::{
-    net::Ipv4Addr,
+    net::SocketAddr,
     time::{Duration, Instant},
 };
 
@@ -87,26 +87,46 @@ impl DhtHandler {
         }
     }
 
-    pub fn new_node_discovered(&mut self, peer_ip_addr: Ipv4Addr, peer_port: u16) {
+    pub fn new_node_discovered(&mut self, node_addr: SocketAddr) {
         if !self.dht_enabled {
             return;
         }
 
-        _ = self
-            .to_dht_manager_tx
-            .send(ToDhtManagerMsg::NewNode(format!(
-                "{peer_ip_addr}:{peer_port}"
-            )));
+        match node_addr {
+            SocketAddr::V4(socket_addr_v4) => {
+                _ = self
+                    .to_dht_manager_tx
+                    .send(ToDhtManagerMsg::NewNode(socket_addr_v4))
+            }
+            SocketAddr::V6(_) => {
+                log::trace!(
+                    "ignoring new node discovered {node_addr}: it is not an ipv4 peer and our dht implementation is ipv4 only"
+                );
+            }
+        }
     }
 
-    pub fn new_peer_connected(&mut self, peer_ip_addr: Ipv4Addr, peer_port: u16) {
-        _ = self
-            .to_dht_manager_tx
-            .send(ToDhtManagerMsg::ConnectedToNewPeer(
-                self.torrent_info_hash,
-                peer_ip_addr,
-                peer_port,
-            ));
+    pub fn new_peer_connected(&mut self, peer_addr: SocketAddr) {
+        if !self.dht_enabled {
+            return;
+        }
+
+        match peer_addr {
+            SocketAddr::V4(socket_addr_v4) => {
+                _ = self
+                    .to_dht_manager_tx
+                    .send(ToDhtManagerMsg::ConnectedToNewPeer(
+                        self.torrent_info_hash,
+                        socket_addr_v4,
+                    ));
+            }
+            SocketAddr::V6(_) => {
+                log::trace!(
+                    "ignoring new node discovered {peer_addr}: it is not an ipv4 peer and our dht implementation is ipv4 only"
+                );
+                return;
+            }
+        }
     }
 
     pub async fn recv_new_peer(&mut self) -> Option<DhtToTorrentManagerMsg> {

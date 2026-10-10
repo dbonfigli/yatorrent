@@ -5,12 +5,12 @@ use crate::{
         torrent_data_status::TorrentDataStatus,
     },
     torrent_protocol::wire_protocol::BlockRequest,
-    util::HostAndPort,
 };
 use rand::seq::SliceRandom;
 use std::{
     cmp::{Ordering, max, min},
     collections::{HashMap, HashSet},
+    net::SocketAddr,
     time::{Duration, Instant},
 };
 
@@ -34,9 +34,9 @@ const BLOCK_DELAYED_ARRIVAL_LOG_THRESHOLD: Duration = Duration::from_secs(60);
 const CHOKED_PEER_ASSIGMENTS_GRACE_PERIOD: Duration = Duration::from_secs(15);
 
 pub struct PieceRequestor {
-    outstanding_piece_assignments: HashMap<usize, HostAndPort>, // piece idx -> peer_addr
-    outstanding_piece_block_requests: HashMap<HostAndPort, HashMap<BlockRequest, Instant>>, // peer_addr -> BlockRequest -> request time
-    requested_pieces: HashMap<HostAndPort, HashMap<usize, (Piece, bool)>>, // peer_addr -> piece idx -> (piece status with all the requested fragments, all possible block requests already perfomed)
+    outstanding_piece_assignments: HashMap<usize, SocketAddr>, // piece idx -> peer_addr
+    outstanding_piece_block_requests: HashMap<SocketAddr, HashMap<BlockRequest, Instant>>, // peer_addr -> BlockRequest -> request time
+    requested_pieces: HashMap<SocketAddr, HashMap<usize, (Piece, bool)>>, // peer_addr -> piece idx -> (piece status with all the requested fragments, all possible block requests already perfomed)
 }
 
 impl PieceRequestor {
@@ -48,13 +48,13 @@ impl PieceRequestor {
         }
     }
 
-    pub fn outstanding_piece_block_request_count_for_peer(&self, peer_addr: &HostAndPort) -> usize {
+    pub fn outstanding_piece_block_request_count_for_peer(&self, peer_addr: &SocketAddr) -> usize {
         self.outstanding_piece_block_requests
             .get(peer_addr)
             .map_or(0, |reqs| reqs.len())
     }
 
-    pub fn remove_assigments_to_peer(&mut self, peer_addr: &HostAndPort) {
+    pub fn remove_assigments_to_peer(&mut self, peer_addr: &SocketAddr) {
         self.outstanding_piece_block_requests.remove(peer_addr);
         if let Some(requests) = self.requested_pieces.remove(peer_addr) {
             for (piece_idx, _) in requests {
@@ -63,19 +63,19 @@ impl PieceRequestor {
         }
     }
 
-    pub fn get_pending_block_requests_for_peer(&self, peer_addr: &HostAndPort) -> usize {
+    pub fn get_pending_block_requests_for_peer(&self, peer_addr: &SocketAddr) -> usize {
         self.outstanding_piece_block_requests
             .get(peer_addr)
             .map_or(0, |o| o.len())
     }
 
-    pub fn get_assigned_pieces_for_peer(&self, peer_addr: &HostAndPort) -> usize {
+    pub fn get_assigned_pieces_for_peer(&self, peer_addr: &SocketAddr) -> usize {
         self.requested_pieces.get(peer_addr).map_or(0, |r| r.len())
     }
 
     pub fn block_request_completed(
         &mut self,
-        peer_addr: &HostAndPort,
+        peer_addr: &SocketAddr,
         block_request: &BlockRequest,
     ) -> Option<Duration> // the rtt of the request
     {
@@ -131,7 +131,7 @@ impl PieceRequestor {
         }
     }
 
-    fn remove_assigments_to_choked(&mut self, peers: &HashMap<HostAndPort, Peer>) {
+    fn remove_assigments_to_choked(&mut self, peers: &HashMap<SocketAddr, Peer>) {
         let mut peers_to_remove = Vec::new();
         for peer_addr in self.requested_pieces.keys() {
             if let Some(peer) = peers.get(peer_addr)
@@ -151,8 +151,8 @@ impl PieceRequestor {
     pub fn remove_stale_requests(
         &mut self,
         request_timeout: Duration,
-        peers: &HashMap<HostAndPort, Peer>,
-    ) -> Vec<(HostAndPort, BlockRequest)> // expired block requests that should be canceled
+        peers: &HashMap<SocketAddr, Peer>,
+    ) -> Vec<(SocketAddr, BlockRequest)> // expired block requests that should be canceled
     {
         self.remove_assigments_to_choked(peers);
 
@@ -171,7 +171,7 @@ impl PieceRequestor {
             }
         }
 
-        let mut requests_to_cancel = Vec::<(HostAndPort, BlockRequest)>::new();
+        let mut requests_to_cancel = Vec::<(SocketAddr, BlockRequest)>::new();
         for (peer_addr, piece_idx) in stalled_pieces {
             let outstanding_block_requests_for_peer = self
                 .outstanding_piece_block_requests
@@ -202,10 +202,10 @@ impl PieceRequestor {
 
     pub fn generate_requests_to_send(
         &mut self,
-        peers: &HashMap<HostAndPort, Peer>,
+        peers: &HashMap<SocketAddr, Peer>,
         torrent_data_status: &TorrentDataStatus,
-    ) -> Vec<(HostAndPort, Vec<BlockRequest>)> {
-        let mut requests_to_send: Vec<(HostAndPort, Vec<BlockRequest>)> = Vec::new();
+    ) -> Vec<(SocketAddr, Vec<BlockRequest>)> {
+        let mut requests_to_send: Vec<(SocketAddr, Vec<BlockRequest>)> = Vec::new();
 
         // 1. send requests for new blocks for pieces currently downloading
         let mut piece_idx_to_remove = Vec::new();
@@ -213,7 +213,7 @@ impl PieceRequestor {
             .outstanding_piece_assignments
             .iter()
             .map(|(i, p)| (*i, p.clone()))
-            .collect::<Vec<(usize, HostAndPort)>>()
+            .collect::<Vec<(usize, SocketAddr)>>()
         {
             if let Some((incomplete_piece, requests_completed)) = self
                 .requested_pieces
@@ -285,7 +285,7 @@ impl PieceRequestor {
         requests_to_send
     }
 
-    fn any_peer_can_allocate_requests(&self, peers: &HashMap<HostAndPort, Peer>) -> bool {
+    fn any_peer_can_allocate_requests(&self, peers: &HashMap<SocketAddr, Peer>) -> bool {
         peers.iter().any(|(peer_addr, peer)| {
             peer.peer_choking_since().is_none()
                 && self.peer_can_allocate_requests(peer_addr, max_outstanding_reqs(peer))
@@ -295,9 +295,9 @@ impl PieceRequestor {
     fn assign_piece_reqs(
         &mut self,
         piece_idx: usize,
-        peers: &HashMap<HostAndPort, Peer>,
+        peers: &HashMap<SocketAddr, Peer>,
         incomplete_piece: &Piece,
-    ) -> Option<(HostAndPort, Vec<BlockRequest>)> {
+    ) -> Option<(SocketAddr, Vec<BlockRequest>)> {
         let mut peers_ready_for_new_requests = peers
             .iter()
             .filter(|(peer_addr, peer)| {
@@ -328,7 +328,7 @@ impl PieceRequestor {
                     outstanding_piece_block_requests_count,
                 )
             })
-            .collect::<Vec<(&HostAndPort, &Peer, usize, usize)>>();
+            .collect::<Vec<(&SocketAddr, &Peer, usize, usize)>>();
 
         peers_ready_for_new_requests.shuffle(&mut rand::rng());
 
@@ -368,7 +368,7 @@ impl PieceRequestor {
 
     fn peer_can_allocate_requests(
         &self,
-        peer_addr: &HostAndPort,
+        peer_addr: &SocketAddr,
         max_request_count_for_peer: usize,
     ) -> bool {
         self.outstanding_piece_block_requests
@@ -380,7 +380,7 @@ impl PieceRequestor {
 
     fn generate_requests_to_send_for_piece(
         &mut self,
-        peer_addr: &HostAndPort,
+        peer_addr: &SocketAddr,
         piece_idx: usize,
         mut incomplete_piece: Piece,
         max_request_count_for_peer: usize,
@@ -423,7 +423,7 @@ impl PieceRequestor {
 
     pub fn generate_requests_to_send_for_peer(
         &mut self,
-        peer_addr: &HostAndPort,
+        peer_addr: &SocketAddr,
         peer: &Peer,
         torrent_data_status: &TorrentDataStatus,
     ) -> Vec<BlockRequest> {

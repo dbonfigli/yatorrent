@@ -1,14 +1,13 @@
-use crate::{
-    manager::{
-        peer_handler::{
-            MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER, ToNewIncomingPeersHandlerMsg,
-        },
-        pex_handler::PexEvent,
-        torrent_manager::{
-            FileManagerHandler, INCOMING_PEER_MESSAGES_CHANNEL_CAPACITY, TorrentManager,
-        },
+use std::net::SocketAddr;
+
+use crate::manager::{
+    peer_handler::{
+        MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER, ToNewIncomingPeersHandlerMsg,
     },
-    util::HostAndPort,
+    pex_handler::PexEvent,
+    torrent_manager::{
+        FileManagerHandler, INCOMING_PEER_MESSAGES_CHANNEL_CAPACITY, TorrentManager,
+    },
 };
 
 pub(super) fn should_choke(
@@ -46,7 +45,7 @@ pub(super) fn should_choke(
 }
 
 impl TorrentManager {
-    pub(super) fn remove_peer(&mut self, peer_addr: HostAndPort) {
+    pub(super) fn remove_peer(&mut self, peer_addr: SocketAddr) {
         if let Some(peer) = self.peers_ctx.peers.remove(&peer_addr) {
             self.piece_requestor.remove_assigments_to_peer(&peer_addr);
             if let Some(addr) = peer.get_peer_addr_and_listening_torrent_protocol_port() {

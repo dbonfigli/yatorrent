@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,11 +18,10 @@ use crate::manager::piece_requestor::PieceRequestor;
 use crate::manager::rate_limiter::RateLimiter;
 use crate::manager::torrent_manager::file_manager_handler::FileManagerHandler;
 use crate::manager::torrent_manager::metadata_handler::MetadataHandler;
-use crate::manager::torrent_manager::peer_context::PeersContext;
+use crate::manager::torrent_manager::peer_context::{PeerAddrAndId, PeersContext};
 use crate::manager::tracker_requestor::TrackerRequestor;
 use crate::persistence::file_manager::DiskConfig;
 use crate::persistence::torrent_data_status::TorrentDataStatus;
-use crate::tracker;
 use crate::util::{FileEntry, HostAndPort};
 
 mod control_loop;
@@ -69,7 +69,7 @@ pub struct TorrentManagerNetworkOptions {
     pub listening_torrent_wire_protocol_port: u16,
     pub listening_dht_port: u16,
     pub dht_nodes: Vec<HostAndPort>,
-    pub initial_peers: Vec<HostAndPort>,
+    pub initial_peers: Vec<SocketAddr>,
 }
 
 pub struct TorrentManagerOptions {
@@ -154,24 +154,6 @@ impl TorrentManager {
     pub fn new(opts: TorrentManagerOptions) -> Result<Self, UnrecoverableError> {
         let own_peer_id = generate_peer_id();
         let base_path = Path::new(&opts.storage_opts.base_path);
-
-        let mut initial_advertised_peers = Vec::new();
-        for peer_addr in opts.network_opts.initial_peers {
-            let ip_and_port = peer_addr
-                .rsplit_once(':')
-                .expect("all initial peers should be of the host:port format");
-            let p = tracker::Peer {
-                peer_id: None,
-                ip: ip_and_port.0.to_string(),
-                port: ip_and_port
-                    .1
-                    .to_string()
-                    .parse::<u16>()
-                    .expect("all initial peers should be of the host:port format"),
-            };
-            initial_advertised_peers.push(p);
-        }
-
         let torrent_manager_config = TorrentManagerConfig {
             base_path: PathBuf::from(base_path),
             info_hash: opts.info_hash,
@@ -268,7 +250,13 @@ impl TorrentManager {
             torrent_manager_config,
             file_manager_handler,
             torrent_data_status,
-            peers_ctx: PeersContext::new(initial_advertised_peers),
+            peers_ctx: PeersContext::new(
+                opts.network_opts
+                    .initial_peers
+                    .into_iter()
+                    .map(|p| PeerAddrAndId::new(p, None))
+                    .collect(),
+            ),
             peers_channels,
             dht_handler: DhtHandler::new(
                 opts.dht_enabled,

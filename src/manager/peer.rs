@@ -12,7 +12,6 @@ use crate::{
         pex_handler::{AddedDroppedEvent, PexEvent},
     },
     torrent_protocol::wire_protocol::{BlockRequest, Message},
-    util::HostAndPort,
 };
 use tokio::sync::mpsc::{
     Sender,
@@ -48,7 +47,7 @@ pub struct Peer {
     // peer_addr is ip:port of the remote peer we are connected to.
     // Note that the ip and port could NOT be one the peer is listening too for the torrent protocol,
     // if the connection was initiated by the peer
-    peer_addr: HostAndPort,
+    peer_addr: SocketAddr,
     peer_id: [u8; 20],
     am_choking_since: Option<Instant>,
     am_interested: bool,
@@ -75,7 +74,7 @@ pub struct Peer {
 
 impl Peer {
     pub fn new(
-        peer_addr: HostAndPort,
+        peer_addr: SocketAddr,
         peer_id: [u8; 20],
         num_pieces: Option<usize>,
         to_peer_tx: Sender<ToPeerMsg>,
@@ -118,16 +117,16 @@ impl Peer {
         self.peer_id
     }
 
-    pub fn get_peer_addr_and_listening_torrent_protocol_port(&self) -> Option<HostAndPort> {
-        if let Some(port) = self.listening_torrent_protocol_port
-            && let Ok(addr) = self.peer_addr.parse::<SocketAddr>()
-        {
-            return Some(format!("{}:{}", addr.ip(), port));
+    pub fn get_peer_addr_and_listening_torrent_protocol_port(&self) -> Option<SocketAddr> {
+        if let Some(port) = self.listening_torrent_protocol_port {
+            let mut peer_addr = self.peer_addr.clone();
+            peer_addr.set_port(port);
+            return Some(peer_addr);
         }
         None
     }
 
-    pub fn get_peer_addr(&self) -> HostAndPort {
+    pub fn get_peer_addr(&self) -> SocketAddr {
         self.peer_addr.clone()
     }
 
@@ -276,18 +275,27 @@ impl Peer {
 
     pub async fn send_pex_extension_message(
         &mut self,
-        added: Vec<HostAndPort>,
-        dropped: Vec<HostAndPort>,
+        added: Vec<SocketAddr>,
+        dropped: Vec<SocketAddr>,
     ) {
         let mut h = HashMap::new();
-        let added = ip_port_list_to_compact_format(added);
-        if !added.is_empty() {
-            h.insert(b"added".to_vec(), Str(added));
+
+        let (added_v4, added_v6) = peer_list_to_pex_compact_format(&added);
+        if !added_v4.is_empty() {
+            h.insert(b"added".to_vec(), Str(added_v4));
         }
-        let dropped = ip_port_list_to_compact_format(dropped);
-        if !dropped.is_empty() {
-            h.insert(b"dropped".to_vec(), Str(dropped));
+        if !added_v6.is_empty() {
+            h.insert(b"added6".to_vec(), Str(added_v6));
         }
+
+        let (dropped_v4, dropped_v6) = peer_list_to_pex_compact_format(&dropped);
+        if !dropped_v4.is_empty() {
+            h.insert(b"dropped".to_vec(), Str(dropped_v4));
+        }
+        if !dropped_v6.is_empty() {
+            h.insert(b"dropped6".to_vec(), Str(dropped_v6));
+        }
+
         self.last_pex_message_sent = Some(Instant::now());
         if !h.is_empty() {
             let pex_msg = Message::Extended {
@@ -491,13 +499,13 @@ impl Peer {
                     map
                 },
             );
-        let mut added: Vec<String> = elided_events
+        let mut added: Vec<SocketAddr> = elided_events
             .iter()
             .filter(|(_, event_type)| **event_type == PexEvent::Added)
             .map(|(p, _)| (*p).clone())
             .collect();
         added.truncate(MAX_PEX_PEER_LIST_SIZE_FOR_PERIODIC_MESSAGES);
-        let mut dropped: Vec<String> = elided_events
+        let mut dropped: Vec<SocketAddr> = elided_events
             .iter()
             .filter(|(_, event_type)| **event_type == PexEvent::Dropped)
             .map(|(p, _)| (*p).clone())
@@ -507,18 +515,21 @@ impl Peer {
     }
 }
 
-fn ip_port_list_to_compact_format(addrs: Vec<HostAndPort>) -> Vec<u8> {
-    let mut compact_format: Vec<u8> = Vec::new();
+fn peer_list_to_pex_compact_format(addrs: &[SocketAddr]) -> (Vec<u8> /* v4 */, Vec<u8> /* v6 */) {
+    let mut compact_format_v4: Vec<u8> = Vec::new();
+    let mut compact_format_v6: Vec<u8> = Vec::new();
+
     for addr in addrs {
-        match addr.parse::<SocketAddr>() {
-            Ok(SocketAddr::V4(socket_addr)) => {
-                compact_format.append(&mut socket_addr.ip().octets().to_vec());
-                compact_format.append(&mut socket_addr.port().to_be_bytes().to_vec());
+        match addr {
+            SocketAddr::V4(socket_addr_v4) => {
+                compact_format_v4.append(&mut socket_addr_v4.ip().octets().to_vec());
+                compact_format_v4.append(&mut socket_addr_v4.port().to_be_bytes().to_vec());
             }
-            _ => {
-                log::debug!("{addr} is not an ipv4 address");
+            SocketAddr::V6(socket_addr_v6) => {
+                compact_format_v6.append(&mut socket_addr_v6.ip().octets().to_vec());
+                compact_format_v6.append(&mut socket_addr_v6.port().to_be_bytes().to_vec());
             }
         }
     }
-    compact_format
+    (compact_format_v4, compact_format_v6)
 }

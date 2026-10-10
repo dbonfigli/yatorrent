@@ -1,23 +1,35 @@
 use std::{
     collections::HashMap,
+    net::SocketAddr,
     sync::{Arc, Mutex},
     time::Instant,
 };
 
-use crate::{manager::peer::Peer, tracker, util::HostAndPort};
+use crate::manager::peer::Peer;
 
 const HIGH_NUMBER_OF_BAD_PEERS: usize = 10000;
 const HIGH_NUMBER_OF_ADVERTISED_PEERS: usize = 10000;
 
 pub struct PeersContext {
     // todo: encapsulate this better
-    pub peers: HashMap<HostAndPort, Peer>,
+    pub peers: HashMap<SocketAddr, Peer>,
     pub advertised_peers: AdvertisedPeers,
     bad_peers: BadPeers,
 }
 
+pub struct PeerAddrAndId {
+    peer_addr: SocketAddr,
+    peer_id: Option<String>,
+}
+
+impl PeerAddrAndId {
+    pub fn new(peer_addr: SocketAddr, peer_id: Option<String>) -> Self {
+        PeerAddrAndId { peer_addr, peer_id }
+    }
+}
+
 impl PeersContext {
-    pub fn new(initial_advertised_peers: Vec<tracker::Peer>) -> Self {
+    pub fn new(initial_advertised_peers: Vec<PeerAddrAndId>) -> Self {
         PeersContext {
             peers: HashMap::new(),
             advertised_peers: AdvertisedPeers::new(initial_advertised_peers),
@@ -25,11 +37,11 @@ impl PeersContext {
         }
     }
 
-    pub fn insert_bad_peer(&mut self, bad_peer: HostAndPort) {
+    pub fn insert_bad_peer(&mut self, bad_peer: SocketAddr) {
         self.bad_peers.insert_bad_peer(bad_peer);
     }
 
-    pub fn is_bad_peer(&self, peer: &HostAndPort) -> bool {
+    pub fn is_bad_peer(&self, peer: &SocketAddr) -> bool {
         self.bad_peers.is_bad_peer(peer)
     }
 
@@ -40,18 +52,18 @@ impl PeersContext {
 
 #[derive(Clone)]
 pub struct AdvertisedPeer {
-    pub peer: tracker::Peer,
+    pub peer_id: Option<String>,
     pub last_connection_attempt: Option<Instant>,
     known_since: Instant,
 }
 
 #[derive(Clone)]
 pub struct AdvertisedPeers {
-    advertised_peers: Arc<Mutex<HashMap<HostAndPort, AdvertisedPeer>>>,
+    advertised_peers: Arc<Mutex<HashMap<SocketAddr, AdvertisedPeer>>>,
 }
 
 impl AdvertisedPeers {
-    fn new(initial_advertised_peers: Vec<tracker::Peer>) -> Self {
+    fn new(initial_advertised_peers: Vec<PeerAddrAndId>) -> Self {
         let mut s = AdvertisedPeers {
             advertised_peers: Arc::new(Mutex::new(HashMap::new())),
         };
@@ -59,7 +71,7 @@ impl AdvertisedPeers {
         s
     }
 
-    pub fn update_last_connection_attempt(&mut self, peers: Vec<HostAndPort>) {
+    pub fn update_last_connection_attempt(&mut self, peers: Vec<SocketAddr>) {
         let mut possible_peers_mg = self
             .advertised_peers
             .lock()
@@ -73,7 +85,7 @@ impl AdvertisedPeers {
         }
     }
 
-    pub fn wipe_last_connection_attempt(&mut self, peers: Vec<HostAndPort>) {
+    pub fn wipe_last_connection_attempt(&mut self, peers: Vec<SocketAddr>) {
         let mut advertised_peers_mg = self
             .advertised_peers
             .lock()
@@ -85,20 +97,20 @@ impl AdvertisedPeers {
         }
     }
 
-    pub fn insert(&mut self, peers: Vec<tracker::Peer>) {
+    pub fn insert(&mut self, peers: Vec<PeerAddrAndId>) {
         let mut advertised_peers_mg = self
             .advertised_peers
             .lock()
             .expect("another user panicked while holding the lock");
-        peers.iter().for_each(|p: &tracker::Peer| {
+        for p in peers {
             advertised_peers_mg
-                .entry(format!("{}:{}", p.ip, p.port))
+                .entry(p.peer_addr)
                 .or_insert_with(|| AdvertisedPeer {
-                    peer: p.clone(),
+                    peer_id: p.peer_id,
                     last_connection_attempt: None,
                     known_since: Instant::now(),
                 });
-        });
+        }
 
         if advertised_peers_mg.len() > HIGH_NUMBER_OF_ADVERTISED_PEERS * 2 {
             let to_remove = advertised_peers_mg.len() / 2;
@@ -122,7 +134,7 @@ impl AdvertisedPeers {
             .len()
     }
 
-    pub fn get_snapshot(&self) -> HashMap<HostAndPort, AdvertisedPeer> {
+    pub fn get_snapshot(&self) -> HashMap<SocketAddr, AdvertisedPeer> {
         self.advertised_peers
             .lock()
             .expect("another user panicked while holding the lock")
@@ -131,7 +143,7 @@ impl AdvertisedPeers {
 }
 
 struct BadPeers {
-    bad_peers: HashMap<HostAndPort, Instant>, // peer -> insertion time as bad peer
+    bad_peers: HashMap<SocketAddr, Instant>, // peer -> insertion time as bad peer
 }
 
 impl BadPeers {
@@ -141,7 +153,7 @@ impl BadPeers {
         }
     }
 
-    fn insert_bad_peer(&mut self, bad_peer: HostAndPort) {
+    fn insert_bad_peer(&mut self, bad_peer: SocketAddr) {
         self.bad_peers.insert(bad_peer, Instant::now());
 
         if self.bad_peers.len() > HIGH_NUMBER_OF_BAD_PEERS * 2 {
@@ -160,7 +172,7 @@ impl BadPeers {
         }
     }
 
-    fn is_bad_peer(&self, bad_peer: &HostAndPort) -> bool {
+    fn is_bad_peer(&self, bad_peer: &SocketAddr) -> bool {
         self.bad_peers.contains_key(bad_peer)
     }
 

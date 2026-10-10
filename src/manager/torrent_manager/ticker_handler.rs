@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    net::SocketAddr,
     time::{Duration, Instant},
 };
 
@@ -9,8 +10,6 @@ use crate::{
         torrent_manager::{TorrentManager, peer_context::AdvertisedPeer, util::should_choke},
     },
     torrent_protocol::wire_protocol::Message,
-    tracker,
-    util::HostAndPort,
 };
 use rand::seq::IndexedRandom;
 
@@ -54,7 +53,7 @@ impl TorrentManager {
             return;
         }
 
-        let connected_peers_by_addr: HashSet<HostAndPort> = self
+        let connected_peers_by_addr: HashSet<SocketAddr> = self
             .peers_ctx
             .peers
             .values()
@@ -63,7 +62,7 @@ impl TorrentManager {
         let connected_peers_by_peer_id: HashSet<[u8; 20]> =
             self.peers_ctx.peers.values().map(|p| p.peer_id()).collect();
         let now = Instant::now();
-        let possible_peers: Vec<(String, AdvertisedPeer)> = self
+        let possible_peers: Vec<(SocketAddr, AdvertisedPeer)> = self
             .peers_ctx
             .advertised_peers
             .get_snapshot()
@@ -72,9 +71,9 @@ impl TorrentManager {
                 // avoid selecting peers we are already connected to
                 !connected_peers_by_addr.contains(*k)
                     // do not connect to someone we are already connected to
-                    // (it can happen that the connection is remote initiated and did not send port, we can recognize them by the peer id)
+                    // (it can happen that the connection is remote initiated, we can recognize them by the peer id)
                     && !is_already_connected_with_same_peer_id(
-                        &advertised_peer.peer,
+                        &advertised_peer,
                         &connected_peers_by_peer_id,
                     )
                     // avoid selecting peers we know are bad
@@ -106,12 +105,11 @@ impl TorrentManager {
             .as_ref()
             .map(|f| f.current_piece_completion_status());
         // todo: better algorithm to select new peers
-        for (_, advertised_peer) in candidates_for_new_connections.iter() {
+        for (peer_addr, advertised_peer) in candidates_for_new_connections.iter() {
             let piece_completion_status = piece_completion_status.clone();
             tokio::spawn(peer_handler::connect_to_new_peer(
-                advertised_peer.peer.ip.clone(),
-                advertised_peer.peer.port,
-                advertised_peer.peer.peer_id.clone(),
+                *peer_addr,
+                advertised_peer.peer_id.clone(),
                 self.torrent_manager_config.info_hash,
                 self.torrent_manager_config.own_peer_id.clone(),
                 self.torrent_manager_config.listening_dht_port,
@@ -240,7 +238,7 @@ impl TorrentManager {
 }
 
 fn is_already_connected_with_same_peer_id(
-    peer: &tracker::Peer,
+    peer: &AdvertisedPeer,
     connected_peers_by_peer_id: &HashSet<[u8; 20]>,
 ) -> bool {
     let peer_id: Option<[u8; 20]> = peer

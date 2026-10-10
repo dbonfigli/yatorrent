@@ -3,6 +3,7 @@ use moka::future::Cache;
 use std::cmp::{max, min};
 use std::fs::File;
 use std::io;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -11,7 +12,6 @@ use tokio::sync::{OnceCell, Semaphore};
 
 use crate::persistence::file_manager::file_handles::{FileHandlesForPiece, ReadFileHandles};
 use crate::persistence::file_manager::{DiskConfig, PieceCompletionStatus, PieceSizer};
-use crate::util::HostAndPort;
 
 // the chunk size is not just 16 KB because this size has also the double duty of read ahead cache:
 // we read also data follwing the requested block from clients (usually 16 KB), since most probably future requests
@@ -110,7 +110,7 @@ impl ChunkStore {
 }
 
 pub struct ReadPieceBlockRequest {
-    pub requestor_peer_addr: HostAndPort,
+    pub requestor_peer_addr: SocketAddr,
     pub piece_idx: usize,
     pub block_begin: u64,
     pub block_length: u64,

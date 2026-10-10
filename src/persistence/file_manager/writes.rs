@@ -5,6 +5,7 @@ use std::cmp::min;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -19,7 +20,6 @@ use crate::persistence::file_manager::{
     DiskConfig, PieceCompletionStatus, PieceHashes, PieceSizer,
 };
 use crate::persistence::piece::Piece;
-use crate::util::HostAndPort;
 
 //max memory used to hold unordered data so to allow incremental hashing and avoid the final readback from disk for piece verification
 const MAX_UNHASHED_DATA_SIZE: usize = 1024 * 16 * 100; // i.e. 100 standard blocks, 1.6MB
@@ -48,14 +48,14 @@ pub struct BlockWriteError {
 }
 
 pub struct WritePieceBlockRequest {
-    pub requestor_peer_addr: HostAndPort,
+    pub requestor_peer_addr: SocketAddr,
     pub piece_idx: usize,
     pub data: Vec<u8>,
     pub block_begin: u64,
 }
 
 pub struct WritePieceBlockRequestReference {
-    pub requestor_peer_addr: HostAndPort,
+    pub requestor_peer_addr: SocketAddr,
     pub piece_idx: usize,
     pub block_begin: u64,
     pub data_len: u64,

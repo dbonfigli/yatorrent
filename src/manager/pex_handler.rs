@@ -1,13 +1,12 @@
 use std::{
     collections::HashMap,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     time::{Duration, Instant},
 };
 
 use crate::{
     bencoding::Value::{self, Dict, Str},
     manager::peer::Peer,
-    tracker,
-    util::{HostAndPort, ipv4_compact_to_string},
 };
 
 const ADDED_DROPPED_PEER_EVENTS_RETENTION: Duration = Duration::from_secs(90); // should be bigger than PEX_MESSAGE_COOL_OFF_PERIOD
@@ -20,7 +19,7 @@ pub enum PexEvent {
 
 pub struct AddedDroppedEvent {
     pub event_timestamp: Instant,
-    pub peer: HostAndPort,
+    pub peer: SocketAddr,
     pub event_type: PexEvent,
 }
 
@@ -35,7 +34,7 @@ impl PexHandler {
         }
     }
 
-    pub async fn send_pex_messages(&mut self, peers: &mut HashMap<HostAndPort, Peer>) {
+    pub async fn send_pex_messages(&mut self, peers: &mut HashMap<SocketAddr, Peer>) {
         // remove old added / dropped events
         let now = Instant::now();
         self.added_dropped_peer_events.retain(
@@ -55,7 +54,7 @@ impl PexHandler {
         }
     }
 
-    pub fn new_pex_event(&mut self, peer_addr: HostAndPort, pex_event: PexEvent) {
+    pub fn new_pex_event(&mut self, peer_addr: SocketAddr, pex_event: PexEvent) {
         self.added_dropped_peer_events
             .retain(|e| e.peer != peer_addr);
         self.added_dropped_peer_events.push(AddedDroppedEvent {
@@ -68,8 +67,8 @@ impl PexHandler {
 
 pub fn parse_extended_message_ut_pex(
     extended_message: Value,
-    peer_addr: HostAndPort,
-) -> Vec<tracker::Peer> {
+    peer_addr: SocketAddr,
+) -> Vec<SocketAddr> {
     let mut peers = Vec::new();
 
     let d = match extended_message {
@@ -91,20 +90,16 @@ pub fn parse_extended_message_ut_pex(
             return peers;
         }
         for i in (0..compact_contacts_info.len()).step_by(6) {
-            let ip = ipv4_compact_to_string(
-                compact_contacts_info[i..i + 4]
-                    .try_into()
-                    .expect("we already checked that the vec is 6 bytes"),
+            let ip = Ipv4Addr::new(
+                compact_contacts_info[i],
+                compact_contacts_info[i + 1],
+                compact_contacts_info[i + 2],
+                compact_contacts_info[i + 3],
             );
             let mut peer_port_buf: [u8; 2] = [0; 2];
             peer_port_buf.copy_from_slice(&compact_contacts_info[i + 4..i + 6]);
             let port = u16::from_be_bytes(peer_port_buf);
-            let p = tracker::Peer {
-                peer_id: None,
-                ip: ip.clone(),
-                port,
-            };
-            peers.push(p);
+            peers.push(SocketAddr::new(IpAddr::V4(ip), port));
         }
     }
 

@@ -133,11 +133,7 @@ fn encode_str(s: &[u8]) -> Vec<u8> {
 // source is the source data
 // index is where to look from the source
 // return Value, index of next char to read
-fn from_char_vec(
-    source: &[u8],
-    index: usize,
-    remaining_recursion_depth: usize,
-) -> (Value, usize) {
+fn from_char_vec(source: &[u8], index: usize, remaining_recursion_depth: usize) -> (Value, usize) {
     match source.get(index) {
         Some(b'0'..=b'9') => parse_str(source, index),
         Some(b'i') => parse_int(source, index),

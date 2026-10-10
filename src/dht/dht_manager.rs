@@ -1,19 +1,20 @@
 use std::{
     cmp,
     collections::{HashMap, HashSet},
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     time::{Duration, Instant},
 };
 
 use num_bigint::BigUint;
 use sha1::{Digest, Sha1};
 use tokio::{
-    net::UdpSocket,
+    net::{UdpSocket, lookup_host},
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
     time::MissedTickBehavior,
 };
 
 use rand::RngExt;
+use rand::prelude::IndexedRandom;
 
 use crate::{
     dht::{
@@ -33,6 +34,7 @@ const INFLIGHT_FIND_NODE_TIMEOUT: Duration = Duration::from_secs(12);
 const INFLIGHT_GET_PEERS_TIMEOUT: Duration = Duration::from_secs(12);
 const INFLIGHT_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 const ROUTING_TABLE_REFRESH_TIME: Duration = Duration::from_secs(60);
+const ROUTING_TABLE_BOOTSTRAP_COOL_OFF: Duration = Duration::from_secs(60);
 const TICK_INTERVAL: Duration = Duration::from_secs(1);
 const NODE_NO_INBOUND_TRAFFIC_FAILURE_TIMEOUT: Duration = Duration::from_secs(900);
 const PING_INTERVAL: Duration = Duration::from_secs(60);
@@ -65,8 +67,8 @@ fn generate_transaction_id() -> [u8; 10] {
 
 pub enum ToDhtManagerMsg {
     GetNewPeers([u8; 20]), // info hash
-    NewNode(HostAndPort),  // host:port of new node
-    ConnectedToNewPeer([u8; 20], Ipv4Addr, u16),
+    NewNode(SocketAddrV4),
+    ConnectedToNewPeer([u8; 20], SocketAddrV4),
 }
 
 pub enum DhtToTorrentManagerMsg {
@@ -81,10 +83,11 @@ pub struct DhtManager {
     msg_sender: MessageSender,
     routing_table: Bucket,
     token_signing_secret: [u8; 10], // todo: we must rotate this once in a while
-    known_peers: HashMap<[u8; 20], HashMap<(Ipv4Addr, u16), Instant>>, // info hash -> hashmap of (ip/port of peers that have it -> last announced)
+    known_peers: HashMap<[u8; 20], HashMap<SocketAddrV4, Instant>>, // info hash -> hashmap of (ip/port of peers that have it -> last announced)
     inflight_get_peers_requests: HashMap<[u8; 20], GetPeersRequest>, // info hash -> GetPeersRequest
     inflight_find_node_requests: HashMap<[u8; 20], FindNodeRequest>, // random id -> FindNodeRequest
     last_routing_table_refresh: Instant,
+    last_routing_table_bootstrap: Instant,
 }
 
 struct GetPeersRequest {
@@ -113,7 +116,7 @@ struct MessageSender {
     inflight_requests: HashMap<
         Vec<u8>,
         (
-            HostAndPort,      // dest addr
+            SocketAddrV4,     // dest addr
             Instant,          // req time
             KRPCMessage,      // message
             Option<[u8; 20]>, // optional request id (info hash or random id the request related to) in case it was a get_peers or find_node request
@@ -138,7 +141,7 @@ impl MessageSender {
     pub async fn do_req(
         &mut self,
         socket: &UdpSocket,
-        dest: HostAndPort,
+        dest: SocketAddrV4,
         msg: KRPCMessage,
         request_id: Option<[u8; 20]>,
         call_depth: usize,
@@ -146,7 +149,7 @@ impl MessageSender {
         let tid = generate_transaction_id();
         log::trace!(
             "perform req to {}, depth: {call_depth}, tid: {}, msg: {msg:?}",
-            dest.clone(),
+            dest,
             force_string(tid.as_ref()),
         );
         let buf = encode_krpc_message(tid.to_vec(), msg.clone());
@@ -169,13 +172,13 @@ impl MessageSender {
     pub async fn do_resp(
         &mut self,
         socket: &UdpSocket,
-        dest: HostAndPort,
+        dest: SocketAddrV4,
         tid: Vec<u8>,
         msg: KRPCMessage,
     ) {
         log::trace!(
             "perform resp to {}, tid: {}, msg: {msg:?}",
-            dest.clone(),
+            dest,
             force_string(tid.as_ref()),
         );
         let buf = encode_krpc_message(tid.to_vec(), msg.clone());
@@ -214,6 +217,7 @@ impl DhtManager {
             inflight_get_peers_requests: HashMap::new(),
             inflight_find_node_requests: HashMap::new(),
             last_routing_table_refresh: Instant::now(),
+            last_routing_table_bootstrap: Instant::now(),
         }
     }
 
@@ -242,16 +246,18 @@ impl DhtManager {
             }
         }
 
-        // bootstrap initial known nodes by finding nodes closest to self
-        for i in 0..self.bootstrap_nodes.len() {
-            self.find_node(self.bootstrap_nodes[i].clone(), &socket, self.own_node_id)
-                .await;
-        }
+        self.bootstrap_dht(&socket).await;
 
         let mut msg_buf: [u8; 65535] = [0u8; 65535]; // max udp datagram size
         loop {
             tokio::select! {
                 Ok((msg_size, remote_addr)) = socket.recv_from(&mut msg_buf) => {
+                    let remote_addr = match remote_addr {
+                        SocketAddr::V4(v4_remote_addr) => v4_remote_addr,
+                        SocketAddr::V6(_) => {
+                            continue; // should never be possible anyway
+                        }
+                    };
                     match decode_krpc_message(msg_buf[0..msg_size].to_vec()) {
                         Err(e) => {
                             log::trace!("error decoding incoming dht message from {remote_addr}: {e}, udp message was: {msg_buf:?}");
@@ -284,10 +290,35 @@ impl DhtManager {
                                 0
                             ).await;
                         }
-                        ToDhtManagerMsg::ConnectedToNewPeer(info_hash, new_peer_addr, new_peer_port) => {
+                        ToDhtManagerMsg::ConnectedToNewPeer(info_hash, new_peer_addr) => {
                             log::trace!("got ConnectedToNewPeer msg from torrent manager: {new_peer_addr}");
-                            self.insert_new_peer(new_peer_addr, new_peer_port, info_hash);
+                            self.insert_new_peer(new_peer_addr, info_hash);
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // bootstrap initial known nodes by finding nodes closest to self
+    async fn bootstrap_dht(&mut self, socket: &UdpSocket) {
+        for bootstrap_node in self.bootstrap_nodes.clone() {
+            match lookup_host(&bootstrap_node).await {
+                Err(e) => {
+                    log::debug!("failed to resolve bootstrap node {bootstrap_node}: {e}");
+                }
+                Ok(addrs) => {
+                    let ipv4_addrs: Vec<_> = addrs
+                        .filter_map(|addr| match addr {
+                            SocketAddr::V4(addr) => Some(addr),
+                            SocketAddr::V6(_) => None,
+                        })
+                        .collect();
+                    let selected_addr = ipv4_addrs.choose(&mut rand::rng()).copied();
+                    if let Some(addr) = selected_addr {
+                        self.find_node(addr, socket, self.own_node_id).await;
+                    } else {
+                        log::debug!("no IPv4 address found for bootstrap node {bootstrap_node}");
                     }
                 }
             }
@@ -341,7 +372,7 @@ impl DhtManager {
                 self.msg_sender
                     .do_req(
                         socket,
-                        to_addr_string(&n.addr, n.port),
+                        SocketAddrV4::new(n.addr, n.port),
                         KRPCMessage::PingReq(self.own_node_id),
                         None,
                         0,
@@ -364,7 +395,7 @@ impl DhtManager {
             let n_id = biguint_to_u8_20(&n.id);
             let closest = self.routing_table.closest_nodes(&n_id);
             for c in closest {
-                self.find_node(to_addr_string(&c.addr, c.port), socket, n_id)
+                self.find_node(SocketAddrV4::new(c.addr, c.port), socket, n_id)
                     .await;
             }
         }
@@ -378,13 +409,21 @@ impl DhtManager {
             }
             let closest = self.routing_table.closest_nodes(&random_id);
             for c in closest {
-                self.find_node(to_addr_string(&c.addr, c.port), socket, random_id)
+                self.find_node(SocketAddrV4::new(c.addr, c.port), socket, random_id)
                     .await;
             }
         }
+
+        // bootstrap again if no nodes are present in the routing table
+        if self.routing_table.len() == 0
+            && now.duration_since(self.last_routing_table_bootstrap)
+                > ROUTING_TABLE_BOOTSTRAP_COOL_OFF
+        {
+            self.bootstrap_dht(socket).await;
+        }
     }
 
-    async fn find_node(&mut self, to_addr: HostAndPort, socket: &UdpSocket, node_id: [u8; 20]) {
+    async fn find_node(&mut self, to_addr: SocketAddrV4, socket: &UdpSocket, node_id: [u8; 20]) {
         let mut random_id: [u8; 20] = [0u8; 20];
         for i in 0..20 {
             random_id[i] = rand::random();
@@ -445,7 +484,7 @@ impl DhtManager {
             self.msg_sender
                 .do_req(
                     socket,
-                    to_addr_string(&n.addr, n.port),
+                    SocketAddrV4::new(n.addr, n.port),
                     KRPCMessage::GetPeersReq(self.own_node_id, info_hash),
                     Some(info_hash),
                     0,
@@ -456,7 +495,7 @@ impl DhtManager {
 
     async fn handle_incoming_message(
         &mut self,
-        remote_addr: SocketAddr,
+        remote_addr: SocketAddrV4,
         socket: &UdpSocket,
         transaction_id: Vec<u8>,
         msg: KRPCMessage,
@@ -467,20 +506,14 @@ impl DhtManager {
             force_string(&transaction_id),
         );
         let remote_port = remote_addr.port();
-        let remote_ipv4addr = match remote_addr.ip() {
-            IpAddr::V4(ipv4addr) => ipv4addr,
-            IpAddr::V6(_) => {
-                log::warn!("got ipv6 response from dht message, this should not be possible");
-                return;
-            }
-        };
+        let remote_ip = remote_addr.ip().clone();
 
         match msg {
             KRPCMessage::PingReq(_querying_node_id) => {
                 self.msg_sender
                     .do_resp(
                         socket,
-                        remote_addr.to_string(),
+                        remote_addr,
                         transaction_id,
                         KRPCMessage::PingOrAnnouncePeerResp(self.own_node_id),
                     )
@@ -489,7 +522,7 @@ impl DhtManager {
 
             KRPCMessage::PingOrAnnouncePeerResp(queried_node_id) => {
                 self.handle_ping_or_announce_peer_resp(
-                    remote_ipv4addr,
+                    remote_ip,
                     remote_port,
                     socket,
                     transaction_id,
@@ -510,14 +543,8 @@ impl DhtManager {
             }
 
             KRPCMessage::GetPeersReq(_querying_node_id, info_hash) => {
-                self.handle_get_peers_req(
-                    remote_ipv4addr,
-                    remote_port,
-                    socket,
-                    transaction_id,
-                    info_hash,
-                )
-                .await
+                self.handle_get_peers_req(remote_ip, remote_port, socket, transaction_id, info_hash)
+                    .await
             }
 
             KRPCMessage::GetPeersOrFindNodeResp(resp_data) => {
@@ -541,7 +568,7 @@ impl DhtManager {
                     .remove(&original_request_id)
                 {
                     self.handle_get_peers_resp(
-                        remote_ipv4addr,
+                        remote_ip,
                         remote_port,
                         socket,
                         original_request_id,
@@ -566,7 +593,7 @@ impl DhtManager {
                     .remove(&original_request_id)
                 {
                     self.handle_find_node_resp(
-                        remote_ipv4addr,
+                        remote_ip,
                         remote_port,
                         socket,
                         original_request_id,
@@ -597,7 +624,7 @@ impl DhtManager {
                 imply_port,
             ) => {
                 self.handle_announce_peer_req(
-                    remote_ipv4addr,
+                    remote_ip,
                     remote_port,
                     socket,
                     transaction_id,
@@ -641,7 +668,7 @@ impl DhtManager {
                 self.msg_sender
                     .do_req(
                         socket,
-                        to_addr_string(ip, *port),
+                        SocketAddrV4::new(*ip, *port),
                         KRPCMessage::AnnouncePeerReq(
                             self.own_node_id,
                             *info_hash,
@@ -680,7 +707,7 @@ impl DhtManager {
 
     async fn handle_get_peers_resp(
         &mut self,
-        remote_ipv4addr: Ipv4Addr,
+        remote_ip: Ipv4Addr,
         remote_port: u16,
         socket: &UdpSocket,
         original_request_id: [u8; 20],
@@ -702,7 +729,7 @@ impl DhtManager {
         // update replying nodes and sort by distance to target
         original_request.replying_nodes.push((
             resp_data.target_id,
-            remote_ipv4addr,
+            remote_ip,
             remote_port,
             resp_data.token,
         ));
@@ -731,7 +758,7 @@ impl DhtManager {
                     self.msg_sender
                         .do_req(
                             socket,
-                            to_addr_string(&ip, port),
+                            SocketAddrV4::new(ip, port),
                             KRPCMessage::GetPeersReq(self.own_node_id, info_hash),
                             Some(info_hash),
                             call_depth + 1,
@@ -763,7 +790,7 @@ impl DhtManager {
 
     async fn handle_find_node_resp(
         &mut self,
-        remote_ipv4addr: Ipv4Addr,
+        remote_ip: Ipv4Addr,
         remote_port: u16,
         socket: &UdpSocket,
         original_request_id: [u8; 20],
@@ -787,7 +814,7 @@ impl DhtManager {
 
         // add or refresh this replying node to the routing table
         self.routing_table
-            .add(Node::new(resp_data.target_id, remote_ipv4addr, remote_port));
+            .add(Node::new(resp_data.target_id, remote_ip, remote_port));
 
         for (node_id, addr, port) in nodes {
             if addr == Ipv4Addr::new(0, 0, 0, 0) || port == 0 {
@@ -804,7 +831,7 @@ impl DhtManager {
                 self.msg_sender
                     .do_req(
                         socket,
-                        to_addr_string(&addr, port),
+                        SocketAddrV4::new(addr, port),
                         KRPCMessage::PingReq(self.own_node_id),
                         None,
                         0,
@@ -837,7 +864,7 @@ impl DhtManager {
                 self.msg_sender
                     .do_req(
                         socket,
-                        to_addr_string(&addr, port),
+                        SocketAddrV4::new(addr, port),
                         KRPCMessage::FindNodeReq(
                             self.own_node_id,
                             original_request.node_id_to_find,
@@ -855,7 +882,7 @@ impl DhtManager {
 
     async fn handle_announce_peer_req(
         &mut self,
-        remote_ipv4addr: Ipv4Addr,
+        remote_ip: Ipv4Addr,
         remote_port: u16,
         socket: &UdpSocket,
         transaction_id: Vec<u8>,
@@ -864,7 +891,7 @@ impl DhtManager {
         announce_peer_port: u16,
         imply_port: bool,
     ) {
-        let source_req_addr_port = to_addr_string(&remote_ipv4addr, remote_port);
+        let source_req_addr_port = SocketAddrV4::new(remote_ip, remote_port);
         // verify token
         let token_u8_20: [u8; 20] = match token.try_into() {
             Ok(t) => t,
@@ -887,7 +914,7 @@ impl DhtManager {
             }
         };
         let mut expected_token_plain = self.token_signing_secret.to_vec();
-        expected_token_plain.append(&mut remote_ipv4addr.octets().to_vec());
+        expected_token_plain.append(&mut remote_ip.octets().to_vec());
         let expected_token: [u8; 20] = Sha1::digest(expected_token_plain).into();
         if expected_token != token_u8_20 {
             log::trace!(
@@ -910,7 +937,7 @@ impl DhtManager {
         if imply_port {
             peer_port = remote_port;
         }
-        self.insert_new_peer(remote_ipv4addr, peer_port, info_hash);
+        self.insert_new_peer(SocketAddrV4::new(remote_ip, peer_port), info_hash);
         // send ok
         self.msg_sender
             .do_resp(
@@ -924,7 +951,7 @@ impl DhtManager {
 
     async fn handle_ping_or_announce_peer_resp(
         &mut self,
-        remote_ipv4addr: Ipv4Addr,
+        remote_ip: Ipv4Addr,
         remote_port: u16,
         socket: &UdpSocket,
         transaction_id: Vec<u8>,
@@ -936,23 +963,23 @@ impl DhtManager {
             .contains_key(&transaction_id)
         {
             log::trace!(
-                "got a ping or announce_peer resp from {remote_ipv4addr}:{remote_port} for an expired or unknown transaction id ({}) we didn't perform, ignoring it",
+                "got a ping or announce_peer resp from {remote_ip}:{remote_port} for an expired or unknown transaction id ({}) we didn't perform, ignoring it",
                 force_string(transaction_id.as_ref())
             );
             return;
         }
         self.msg_sender.inflight_requests.remove(&transaction_id);
         // the node is valid, refresh last replied / add node to the routing table
-        let added =
-            self.routing_table
-                .add(Node::new(queried_node_id, remote_ipv4addr, remote_port));
+        let added = self
+            .routing_table
+            .add(Node::new(queried_node_id, remote_ip, remote_port));
         // this is out of official spec of bep05 but we do this to accumulate more nodes in the routing table, todo maybe remove this
         if added {
             // find_node for a random node near the new one
             let mut random_close_node_id = queried_node_id;
             random_close_node_id[19] ^= rand::random::<u8>();
             self.find_node(
-                to_addr_string(&remote_ipv4addr, remote_port),
+                SocketAddrV4::new(remote_ip, remote_port),
                 socket,
                 random_close_node_id,
             )
@@ -962,25 +989,26 @@ impl DhtManager {
 
     async fn handle_get_peers_req(
         &mut self,
-        remote_ipv4addr: Ipv4Addr,
+        remote_ip: Ipv4Addr,
         remote_port: u16,
         socket: &UdpSocket,
         transaction_id: Vec<u8>,
         info_hash: [u8; 20],
     ) {
-        let source_req_addr_port = to_addr_string(&remote_ipv4addr, remote_port);
+        let source_req_addr_port = SocketAddrV4::new(remote_ip, remote_port);
         // generate token
         let mut token_plain = self.token_signing_secret.to_vec();
-        token_plain.append(&mut remote_ipv4addr.octets().to_vec());
+        token_plain.append(&mut remote_ip.octets().to_vec());
         let token: [u8; 20] = Sha1::digest(token_plain).into();
         // response
         match self.known_peers.get(&info_hash) {
             Some(peers) => {
-                let resp_peers_info: Vec<(Ipv4Addr, u16)> = peers.keys().copied().collect();
+                let resp_peers_info: Vec<(Ipv4Addr, u16)> =
+                    peers.keys().map(|k| (k.ip().clone(), k.port())).collect();
                 self.msg_sender
                     .do_resp(
                         socket,
-                        source_req_addr_port.to_string(),
+                        source_req_addr_port,
                         transaction_id,
                         KRPCMessage::GetPeersOrFindNodeResp(GetPeersOrFindNodeRespData {
                             target_id: self.own_node_id,
@@ -1001,7 +1029,7 @@ impl DhtManager {
                 self.msg_sender
                     .do_resp(
                         socket,
-                        source_req_addr_port.to_string(),
+                        source_req_addr_port,
                         transaction_id,
                         KRPCMessage::GetPeersOrFindNodeResp(GetPeersOrFindNodeRespData {
                             target_id: self.own_node_id,
@@ -1017,7 +1045,7 @@ impl DhtManager {
 
     async fn handle_find_node_req(
         &mut self,
-        remote_addr: SocketAddr,
+        remote_addr: SocketAddrV4,
         socket: &UdpSocket,
         transaction_id: Vec<u8>,
         querying_node_id: [u8; 20],
@@ -1027,7 +1055,7 @@ impl DhtManager {
         self.msg_sender
             .do_resp(
                 socket,
-                remote_addr.to_string(),
+                remote_addr,
                 transaction_id,
                 KRPCMessage::GetPeersOrFindNodeResp(GetPeersOrFindNodeRespData {
                     target_id: self.own_node_id,
@@ -1049,7 +1077,7 @@ impl DhtManager {
             self.msg_sender
                 .do_req(
                     socket,
-                    remote_addr.to_string(),
+                    remote_addr,
                     KRPCMessage::PingReq(self.own_node_id),
                     None,
                     0,
@@ -1058,12 +1086,7 @@ impl DhtManager {
         }
     }
 
-    fn insert_new_peer(
-        &mut self,
-        new_peer_addr: Ipv4Addr,
-        new_peer_port: u16,
-        info_hash: [u8; 20],
-    ) {
+    fn insert_new_peer(&mut self, new_peer_addr: SocketAddrV4, info_hash: [u8; 20]) {
         match self.known_peers.get_mut(&info_hash) {
             Some(s) => {
                 if s.len() > MAX_RESP_GET_PEERS_SIZE {
@@ -1074,17 +1097,13 @@ impl DhtManager {
                         .0);
                     s.remove(&oldest);
                 }
-                s.insert((new_peer_addr, new_peer_port), Instant::now());
+                s.insert(new_peer_addr, Instant::now());
             }
             None => {
                 let mut s = HashMap::new();
-                s.insert((new_peer_addr, new_peer_port), Instant::now());
+                s.insert(new_peer_addr, Instant::now());
                 self.known_peers.insert(info_hash, s);
             }
         }
     }
-}
-
-fn to_addr_string(addr: &Ipv4Addr, port: u16) -> HostAndPort {
-    format!("{}:{port}", addr)
 }

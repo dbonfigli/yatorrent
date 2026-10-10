@@ -1,7 +1,7 @@
 use core::str;
 use std::ascii;
 
-pub type HostAndPort = String; // string of format host:port
+pub type HostAndPort = String; // string of format host:port, used in place of SockAddr when host can be a dns name
 
 pub fn force_string(v: &[u8]) -> String {
     str::from_utf8(v)

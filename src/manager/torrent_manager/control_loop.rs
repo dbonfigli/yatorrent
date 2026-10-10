@@ -1,5 +1,5 @@
 use std::{
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     time::Duration,
 };
 
@@ -17,11 +17,11 @@ use crate::{
         piece_requestor::MAX_OUTSTANDING_PIECE_BLOCK_REQUESTS_PER_PEER_HARD_LIMIT,
         torrent_manager::{
             ShutdownRequest, TorrentManager, UnrecoverableError,
-            file_manager_handler::FileManagerResponse,
+            file_manager_handler::FileManagerResponse, peer_context::PeerAddrAndId,
         },
     },
     tracker,
-    util::{HostAndPort, pretty_info_hash},
+    util::pretty_info_hash,
 };
 
 const TICK_INTERVAL: Duration = Duration::from_secs(1);
@@ -127,14 +127,15 @@ impl TorrentManager {
     }
 
     fn handle_new_peer_from_dht(&mut self, ip: Ipv4Addr, port: u16) {
-        self.peers_ctx.advertised_peers.insert(vec![tracker::Peer {
-            peer_id: None,
-            ip: ip.to_string(),
-            port,
-        }]);
+        self.peers_ctx
+            .advertised_peers
+            .insert(vec![PeerAddrAndId::new(
+                SocketAddr::new(IpAddr::V4(ip), port),
+                None,
+            )]);
     }
 
-    fn handle_peer_error(&mut self, peer_addr: HostAndPort, error_type: PeerError) {
+    fn handle_peer_error(&mut self, peer_addr: SocketAddr, error_type: PeerError) {
         log::debug!("removing errored peer {peer_addr}");
         if error_type == PeerError::SelfInitiatedHandshakeError {
             // todo: understand other error cases that are not recoverable and should stop trying again on this peer
@@ -143,7 +144,7 @@ impl TorrentManager {
         self.remove_peer(peer_addr);
     }
 
-    fn handle_piece_block_request_fulfilled(&mut self, peer_addr: HostAndPort) {
+    fn handle_piece_block_request_fulfilled(&mut self, peer_addr: SocketAddr) {
         if let Some(peer) = self.peers_ctx.peers.get_mut(&peer_addr) {
             peer.decrease_outstanding_incoming_piece_block_requests();
         }
@@ -172,20 +173,20 @@ impl TorrentManager {
         }
 
         let peer_addr = match tcp_stream.peer_addr() {
-            Ok(s) => {
+            Ok(addr) => {
                 // peer_listening_torrent_protocol_port is Some only if we initiated
                 // the connection so we know the remote peer addr is one reachable from the internet
-                if let Some(peer_torrent_port) = peer_listening_torrent_protocol_port
-                    && let IpAddr::V4(peer_addr) = s.ip()
-                {
+                if let Some(peer_torrent_port) = peer_listening_torrent_protocol_port {
+                    // we could just use peer_addr here, since we know we initiated the connection,
+                    // let's use peer_listening_torrent_protocol_port anyway just for safety on weird nat setups
+                    let mut addr = addr.clone();
+                    addr.set_port(peer_torrent_port);
                     // send to dht manager the fact that we know a new good peer
-                    self.dht_handler
-                        .new_peer_connected(peer_addr, peer_torrent_port);
+                    self.dht_handler.new_peer_connected(addr);
                     // same for pex
-                    self.pex_handler
-                        .new_pex_event(format!("{peer_addr}:{peer_torrent_port}"), PexEvent::Added);
+                    self.pex_handler.new_pex_event(addr, PexEvent::Added);
                 }
-                s.to_string()
+                addr
             }
             Err(e) => {
                 log::trace!(

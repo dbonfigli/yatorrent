@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::time::Instant;
 
 use anyhow::Error;
@@ -14,7 +15,7 @@ use crate::manager::peer::{
 use crate::manager::peer_handler::ToNewIncomingPeersHandlerMsg;
 use crate::manager::torrent_manager::{ShutdownRequest, TorrentManager, UnrecoverableError};
 use crate::metadata::infodict::{self, ParsedInfodict};
-use crate::util::{FileEntry, HostAndPort};
+use crate::util::FileEntry;
 use anyhow::Result;
 
 enum MetadataMessageHandlingOutcome {
@@ -64,7 +65,7 @@ impl MetadataHandler {
         self.metadata_store.total_metadata_pieces_downloaded()
     }
 
-    pub(super) async fn send_metadata_reqs(&mut self, peers: &mut HashMap<HostAndPort, Peer>) {
+    pub(super) async fn send_metadata_reqs(&mut self, peers: &mut HashMap<SocketAddr, Peer>) {
         if self.metadata_store.full_metadata_known() {
             return;
         }
@@ -86,9 +87,9 @@ impl MetadataHandler {
     async fn handle_receive_extended_message_ut_metadata(
         &mut self,
         value: Value,
-        peer_addr: HostAndPort,
+        peer_addr: SocketAddr,
         additional_data: Vec<u8>,
-        peers: &mut HashMap<HostAndPort, Peer>,
+        peers: &mut HashMap<SocketAddr, Peer>,
     ) -> MetadataMessageHandlingOutcome {
         let d = match value {
             Dict { dict: d, .. } => d,
@@ -272,7 +273,7 @@ impl TorrentManager {
     pub(super) async fn handle_receive_extended_message_ut_metadata(
         &mut self,
         value: Value,
-        peer_addr: HostAndPort,
+        peer_addr: SocketAddr,
         additional_data: Vec<u8>,
     ) {
         let outcome = self

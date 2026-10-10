@@ -1,11 +1,10 @@
 use anyhow::{Result, bail};
-
-use crate::util::HostAndPort;
+use std::net::{SocketAddr, ToSocketAddrs};
 
 pub struct Magnet {
     pub info_hash: [u8; 20],
     pub tracker_urls: Vec<String>,
-    pub peer_addresses: Vec<HostAndPort>,
+    pub peer_addresses: Vec<SocketAddr>,
 }
 
 impl Magnet {
@@ -76,24 +75,19 @@ impl Magnet {
             }
         }
 
-        let peer_addresses: Vec<HostAndPort> = magnet_url
-            .query_pairs()
-            .filter(|(key, _)| key == "x.pe")
-            .map(|(_, value)| {
-                percent_encoding::percent_decode_str(&value)
-                    .decode_utf8_lossy()
-                    .into_owned()
-            })
-            .collect();
+        let mut peer_addresses = Vec::new();
+        for (_, xpe_entry) in magnet_url.query_pairs().filter(|(key, _)| key == "x.pe") {
+            let peer_addr = percent_encoding::percent_decode_str(&xpe_entry).decode_utf8_lossy();
 
-        // Validate peer addresses format (host:port)
-        for addr in &peer_addresses {
-            match addr.rsplit_once(':') {
-                None => bail!("Invalid peer address format (missing port): {}", addr),
-                Some((_, port_str)) => {
-                    // Validate that port is a valid u16
-                    if port_str.parse::<u16>().is_err() {
-                        bail!("Invalid port number in peer address: {}", addr);
+            // this is blocking but that is fine at startup, let's avoid making this async only for this dns resolution
+            match peer_addr.to_socket_addrs() {
+                Err(e) => {
+                    log::warn!("cannot resolve x.pe entry {peer_addr}, ignoring it: {e}")
+                }
+                Ok(socket_addr_iter) => {
+                    for p in socket_addr_iter {
+                        log::debug!("x.pe entry {peer_addr} resolved to {p}");
+                        peer_addresses.push(p);
                     }
                 }
             }
@@ -109,11 +103,13 @@ impl Magnet {
 
 #[cfg(test)]
 mod tests {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
     use super::*;
 
     #[test]
     fn test_valid_magnet_uri() {
-        let uri = "magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&tr=http%3A%2F%2Ftracker.example.com%3A6969%2Fannounce&x.pe=example.com:6881&x.pe=192.168.1.1:6882&x.pe=[2001:db8::1]:6883";
+        let uri = "magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&tr=http%3A%2F%2Ftracker.example.com%3A6969%2Fannounce&x.pe=192.168.1.1:6882&x.pe=[2001:db8::1]:6883";
 
         let magnet = Magnet::new(uri.to_string()).expect("should be a valid magnet");
 
@@ -132,7 +128,13 @@ mod tests {
         // Check peer addresses
         assert_eq!(
             magnet.peer_addresses,
-            vec!["example.com:6881", "192.168.1.1:6882", "[2001:db8::1]:6883"]
+            vec![
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 6882),
+                SocketAddr::new(
+                    IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
+                    6883
+                ),
+            ]
         );
     }
 
@@ -181,28 +183,5 @@ mod tests {
             )
             .is_err()
         );
-
-        // Invalid peer address (no port)
-        assert!(
-            Magnet::new(
-                "magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&x.pe=example.com"
-                    .to_string()
-            )
-            .is_err()
-        );
-
-        // Invalid peer address (invalid port)
-        assert!(Magnet::new(
-            "magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&x.pe=example.com:invalid"
-                .to_string()
-        )
-        .is_err());
-
-        // Invalid peer address (port out of range)
-        assert!(Magnet::new(
-            "magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&x.pe=example.com:65536"
-                .to_string()
-        )
-        .is_err());
     }
 }

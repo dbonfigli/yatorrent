@@ -1,10 +1,10 @@
 use anyhow::{Result, bail};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tokio::net::lookup_host;
 use tokio::task::JoinHandle;
 
-use crate::manager::torrent_manager::peer_context::AdvertisedPeers;
-use crate::tracker;
+use crate::manager::torrent_manager::peer_context::{AdvertisedPeers, PeerAddrAndId};
 use crate::tracker::{Event, NoTrackerError, Response, TrackerClient};
 
 pub struct TrackerRequestor {
@@ -124,7 +124,7 @@ async fn request_to_tracker(
     info_hash: [u8; 20],
     uploaded_bytes: u64,
     downloaded_bytes: u64,
-) -> Result<(TrackerClient, Vec<tracker::Peer>)> {
+) -> Result<(TrackerClient, Vec<PeerAddrAndId>)> {
     match tracker_client
         .request(
             info_hash,
@@ -162,7 +162,29 @@ async fn request_to_tracker(
             );
             log::trace!("full tracker response:\n{ok_response:?}");
 
-            Ok((tracker_client, ok_response.peers))
+            // an http tracker could reply with a hostname, on this case, we immediatelly resolve the dns name
+            // and we put as peers all the IPs resolved: when selecting the peers to connect, we will avoid
+            // duplicates by matching the peer id
+            let mut peers = Vec::new();
+            for advertised_peer in ok_response.peers {
+                match lookup_host((advertised_peer.ip.clone(), advertised_peer.port)).await {
+                    Err(e) => {
+                        log::debug!(
+                            "failed to resolve address {}:{}, ignoring this host sent from tracker: {e}",
+                            advertised_peer.ip,
+                            advertised_peer.port
+                        );
+                    }
+                    Ok(socket_addr_iter) => {
+                        for p in socket_addr_iter {
+                            log::trace!("adding address {p} as advertised peer");
+                            peers.push(PeerAddrAndId::new(p, None));
+                        }
+                    }
+                }
+            }
+
+            Ok((tracker_client, peers))
         }
     }
 }

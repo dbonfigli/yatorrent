@@ -1,5 +1,6 @@
 use core::fmt;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -16,7 +17,7 @@ use crate::manager::rate_limiter::RateLimiter;
 use crate::torrent_protocol::wire_protocol::{
     BlockRequest, Handshake, Message, Protocol, ProtocolReadHalf, ProtocolWriteHalf,
 };
-use crate::util::{HostAndPort, force_string, pretty_info_hash, version_string};
+use crate::util::{force_string, pretty_info_hash, version_string};
 
 pub const MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER: i64 = 500;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -45,18 +46,18 @@ impl fmt::Display for ToPeerMsg {
 pub type FastExtensionSupport = bool;
 
 pub enum PeerHandlerToManagerMsg {
-    Error(HostAndPort, PeerError),
+    Error(SocketAddr, PeerError),
     NewPeer {
         tcp_stream: TcpStream,
         peer_id: [u8; 20],
         supports_fast_extension: FastExtensionSupport,
         listening_torrent_protocol_port: Option<u16>,
     },
-    PieceBlockRequestFulfilled(HostAndPort),
+    PieceBlockRequestFulfilled(SocketAddr),
 }
 
 pub struct PeerMessage {
-    pub peer_addr: HostAndPort,
+    pub peer_addr: SocketAddr,
     pub message: Message,
 }
 
@@ -70,8 +71,7 @@ pub enum PeerError {
 pub type ToPeerCancelMsg = (BlockRequest, Instant); // block request, cancel time
 
 pub async fn connect_to_new_peer(
-    host: String,
-    port: u16,
+    dest: SocketAddr,
     advertised_peer_id: Option<String>,
     info_hash: [u8; 20],
     own_peer_id: String,
@@ -80,7 +80,6 @@ pub async fn connect_to_new_peer(
     metadata_size: Option<i64>,
     peer_handler_to_torrent_manager_tx: UnboundedSender<PeerHandlerToManagerMsg>,
 ) {
-    let dest: String = format!("{host}:{port}");
     log::trace!(
         "initiating connection to peer: {dest}, (id: {})",
         advertised_peer_id.unwrap_or("unknown".to_string()),
@@ -102,7 +101,7 @@ pub async fn connect_to_new_peer(
         }
         Ok(Ok(tcp_stream)) => {
             let peer_addr = match tcp_stream.peer_addr() {
-                Ok(s) => s.to_string(),
+                Ok(s) => s,
                 Err(e) => {
                     log::trace!(
                         "connecting to new peer failed because we could not get peer addr: {e}"
@@ -161,7 +160,7 @@ pub async fn connect_to_new_peer(
                             tcp_stream,
                             peer_id,
                             supports_fast_extension,
-                            listening_torrent_protocol_port: Some(port),
+                            listening_torrent_protocol_port: Some(dest.port()),
                         },
                     );
                 }
@@ -351,7 +350,7 @@ fn addr_or_unknown(stream: &TcpStream) -> String {
 }
 
 pub fn start_peer_msg_handlers(
-    peer_addr: HostAndPort,
+    peer_addr: SocketAddr,
     tcp_stream: TcpStream,
     peer_handler_to_torrent_manager_tx: UnboundedSender<PeerHandlerToManagerMsg>,
     incoming_peer_messages_tx: Sender<PeerMessage>,
@@ -510,7 +509,7 @@ async fn handshake(
 }
 
 async fn rcv_message_handler<T: ProtocolReadHalf + 'static>(
-    peer_addr: HostAndPort,
+    peer_addr: SocketAddr,
     incoming_peer_messages_tx: Sender<PeerMessage>,
     peer_handler_to_torrent_manager_tx: UnboundedSender<PeerHandlerToManagerMsg>,
     mut wire_proto: T,
@@ -584,7 +583,7 @@ async fn rate_limit(proto_msg: &Message, rate_limiter: &Option<Arc<Mutex<RateLim
 }
 
 async fn snd_message_handler<T: ProtocolWriteHalf + 'static>(
-    peer_addr: HostAndPort,
+    peer_addr: SocketAddr,
     mut to_peer_rx: Receiver<ToPeerMsg>,
     peer_handler_to_torrent_manager_tx: UnboundedSender<PeerHandlerToManagerMsg>,
     mut wire_proto: T,
