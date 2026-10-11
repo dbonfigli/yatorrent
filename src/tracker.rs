@@ -213,33 +213,57 @@ impl TrackerClient {
             self.request_to_http_tracker(url, info_hash, uploaded, downloaded, left, event)
                 .await
         } else if url.starts_with("udp") {
+            log::debug!("trying reaching udp tracker {url}...");
+            let parsed = reqwest::Url::parse(&url)?;
+            let host = parsed
+                .host_str()
+                .ok_or_else(|| anyhow::anyhow!("tracker URL {url} has no host"))?;
+            let port = parsed
+                .port()
+                .ok_or_else(|| anyhow::anyhow!("tracker URL {url} has no port"))?;
+            let addresses: Vec<SocketAddr> = lookup_host((host, port))
+                .await?
+                .filter(SocketAddr::is_ipv4)
+                .collect();
+            if addresses.is_empty() {
+                bail!("No IPv4 address found for {url}");
+            }
             let mut attempts = 0;
+            let mut errors = Vec::new();
             loop {
-                log::debug!("trying reaching udp tracker {url}...");
-                match self
-                    .request_to_udp_tracker(
-                        url.clone(),
-                        info_hash,
-                        uploaded,
-                        downloaded,
-                        left,
-                        event.clone(),
-                    )
-                    .await
-                {
-                    Ok(r) => return Ok(r),
-                    Err(e) => {
-                        if attempts >= UDP_MAX_RETRIES - 1 {
-                            return Err(e);
-                        } else {
-                            sleep(Duration::from_secs(
-                                UDP_RETRY_COOL_OFF_SEC * 2u64.pow(attempts),
-                            ))
-                            .await;
-                            attempts += 1;
+                for dest_addr in addresses.iter() {
+                    log::debug!("trying reaching udp tracker {url} with address {dest_addr}...");
+                    match self
+                        .request_to_udp_tracker(
+                            *dest_addr,
+                            info_hash,
+                            uploaded,
+                            downloaded,
+                            left,
+                            event.clone(),
+                        )
+                        .await
+                    {
+                        Ok(r) => return Ok(r),
+                        Err(e) => {
+                            errors.push(e);
                         }
                     }
                 }
+                if attempts >= UDP_MAX_RETRIES - 1 {
+                    let errors = errors
+                        .iter()
+                        .map(|e| format!("{e:#}"))
+                        .collect::<Vec<_>>()
+                        .join("; ");
+
+                    bail!("all UDP tracker attempts failed for {url}: {errors}");
+                }
+                sleep(Duration::from_secs(
+                    UDP_RETRY_COOL_OFF_SEC * 2u64.pow(attempts),
+                ))
+                .await;
+                attempts += 1;
             }
         } else {
             // some torrents are announcing webtorrent websockets with scheme wss://
@@ -397,28 +421,20 @@ impl TrackerClient {
 
     async fn request_to_udp_tracker(
         &self,
-        url: String,
+        dest_addr: SocketAddr,
         info_hash: [u8; 20],
         uploaded: u64,
         downloaded: u64,
         left: Option<u64>,
         event: Event,
     ) -> Result<Response> {
-        let parsed = reqwest::Url::parse(&url)?;
-        let host = parsed
-            .host_str()
-            .ok_or_else(|| anyhow::anyhow!("tracker URL has no host"))?;
-        let port = parsed
-            .port()
-            .ok_or_else(|| anyhow::anyhow!("tracker URL has no port"))?;
+        let bind_addr = if dest_addr.is_ipv6() {
+            "[::]:0"
+        } else {
+            "0.0.0.0:0"
+        };
 
-        let addresses: Vec<SocketAddr> = lookup_host((host, port)).await?.collect();
-        let dest_addr = addresses
-            .iter()
-            .copied()
-            .find(SocketAddr::is_ipv4)
-            .ok_or_else(|| anyhow::anyhow!("No IPv4 address found"))?;
-        let socket = UdpSocket::bind("0.0.0.0:0").await?;
+        let socket = UdpSocket::bind(bind_addr).await?;
         if let Err(e) = socket.connect(dest_addr).await {
             bail!(e);
         }
