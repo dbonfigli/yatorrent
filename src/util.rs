@@ -50,13 +50,3 @@ impl FileEntry {
         FileEntry { path, size }
     }
 }
-
-pub fn ipv4_compact_to_string(compact_representation: [u8; 4]) -> String {
-    [
-        compact_representation[0].to_string(),
-        compact_representation[1].to_string(),
-        compact_representation[2].to_string(),
-        compact_representation[3].to_string(),
-    ]
-    .join(".")
-}

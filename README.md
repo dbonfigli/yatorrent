@@ -48,13 +48,17 @@ $ ./target/release/yatorrent -m "magnet:?xt=urn:btih:dafc8c076ca2f3ed376eeae7c76
 ### Local Test
 
 To test it both as a seeder and as a leecher locally, fully download the torrent, then block internet access, then on one shell:
+
 ```
 $ ./target/release/yatorrent  -t ~/Downloads/ubuntu-26.04-desktop-amd64.iso.torrent -b ~/Downloads/ubuntu -s
 ```
+
 and in another, the magnet link to also specify `x.pe` to directly know the other client:
+
 ```
 $ ./target/release/yatorrent -m "magnet:?xt=urn:btih:dafc8c076ca2f3ed376eeae7c76a0d6be2415c45&x.pe=127.0.0.1:8000" -b ~/Downloads/ubuntu2 -s -p 8102 -d 8101
 ```
+
 You can run as many clients as you want to test multiple local clients, as log as you select different ports with `-p` and `-d`, they will be able to know each other also via PEX.
 
 ### Usage
@@ -72,7 +76,7 @@ Options:
   -b, --base-path <BASE_PATH>
           Base path where files are downloaded (directory will be created if it does not exist) [env: BASE_PATH=] [default: _current working dir_]
   -p, --port <PORT>
-          Listening port for Torrent protocol. 0 means the client will use a random port (will be logged) [env: PORT=] [default: 8000]
+          Listening port for Torrent protocol [env: PORT=] [default: 8000]
   -d, --dht-port <DHT_PORT>
           Listening port for DHT protocol. 0 means the client will use a random port (will be logged) [env: DHT_PORT=] [default: 8001]
   -l, --log-level <LOG_LEVEL>
@@ -106,9 +110,9 @@ Options:
 ## TODOs
 
 - check for stalled downloads / try new peers if no current one has a piece we want
-- better algorithm to exclude bad peers for new connections
 - remove not interested peers if we are also not interested if connection count is high
-- text-based UI / ncourses
+- text-based UI
+- [BEP 7 - IPv6 Tracker Extension](https://www.bittorrent.org/beps/bep_0007.html);
 - [BEP 29 - uTorrent transport protocol](https://www.bittorrent.org/beps/bep_0029.html)
 - [BEP 55 - Holepunch extension](https://www.bittorrent.org/beps/bep_0055.html)
 

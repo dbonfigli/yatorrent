@@ -52,11 +52,11 @@ struct Args {
     #[arg(short, long, env, default_value_t = current_dir().expect("current directory cannot be used").to_str().expect("current path must be an utf8 string").to_string())]
     base_path: String,
 
-    /// Listening port for Torrent protocol. 0 means the client will use a random port (will be logged).
+    /// Listening port for Torrent protocol
     #[arg(short, long, env, default_value_t = 8000)]
     port: u16,
 
-    /// Listening port for DHT protocol. 0 means the client will use a random port (will be logged).
+    /// Listening port for DHT protocol. 0 means the client will use a random port (will be logged)
     #[arg(short, long, env, default_value_t = 8001)]
     dht_port: u16,
 
@@ -169,6 +169,10 @@ async fn main() -> Result<()> {
 
     if args.max_concurrent_disk_writes == 0 {
         log::error!("max concurrent disk writes cannot be 0");
+        exit(1);
+    }
+    if args.port == 0 {
+        log::error!("listening port for Torrent protocol cannot be 0");
         exit(1);
     }
 

@@ -1,14 +1,20 @@
 use reqwest::ClientBuilder;
 use tokio::{
-    net::UdpSocket,
+    net::{UdpSocket, lookup_host},
     time::{sleep, timeout},
 };
 
-use crate::{bencoding::Value, util::ipv4_compact_to_string};
+use crate::bencoding::Value;
 use anyhow::{Result, bail};
-use rand::seq::IndexedRandom;
-use std::fmt::Display;
-use std::{fmt, io::Read, str, time::Duration};
+use rand::{RngExt, seq::IndexedRandom};
+use std::{
+    fmt,
+    io::Read,
+    net::{Ipv4Addr, SocketAddr},
+    str,
+    time::Duration,
+};
+use std::{fmt::Display, net::Ipv6Addr};
 use thiserror::Error;
 
 const UDP_TRACKER_MAGIC_CONSTANT: [u8; 8] = 0x41727101980u64.to_be_bytes();
@@ -103,6 +109,7 @@ const COMPACT: i32 = 1;
 #[derive(Clone)]
 pub struct TrackerClient {
     peer_id: String,
+    announce_key: u32,
     tracker_id: Option<String>,
     listening_port: u16,
     trackers_url: Vec<Vec<String>>,
@@ -116,8 +123,10 @@ impl TrackerClient {
             let randomized_tier = tier.sample(&mut rand::rng(), tier.len()).cloned().collect();
             randomized_tiers.push(randomized_tier);
         }
+        let announce_key: u32 = rand::rng().random();
         TrackerClient {
             peer_id,
+            announce_key,
             tracker_id: None,
             listening_port,
             trackers_url: randomized_tiers,
@@ -250,7 +259,7 @@ impl TrackerClient {
         let mut url = reqwest::Url::parse_with_params(
             url.as_str(),
             &[
-                ("key", self.peer_id.clone()), // some trackers want this otherwise they will reply "This tracker requires support for the "key" announce parameter. Please update or change your client.". todo: still i could not find the related BEP
+                ("key", self.announce_key.to_string()), // This is mentioned in BEP 7. Some trackers want this otherwise they will reply "This tracker requires support for the "key" announce parameter. Please update or change your client."
                 ("peer_id", self.peer_id.clone()),
                 ("port", self.listening_port.to_string()),
                 ("uploaded", uploaded.to_string()),
@@ -356,13 +365,24 @@ impl TrackerClient {
         };
 
         // peers
-        let peers = match response_map.get(b"peers".as_slice()) {
+        let mut peers = match response_map.get(b"peers".as_slice()) {
             Some(Value::List(peers_list)) => get_peers_with_dict_model(peers_list)?,
             Some(Value::Str(peers_bytes)) => get_peers_with_binary_model(peers_bytes)?,
-            _ => bail!(
-                "Peers key not provided in bencoded dict or provided but it was not a list or string"
-            ),
+            _ => {
+                // from BEP 3, "peers" field is always required, even if peers6 is provided and the tracker has no ipv4 peers (should send peers="")
+                bail!(
+                    "Peers key not provided in bencoded dict or provided but it was not a list or string"
+                )
+            }
         };
+        if let Some(value) = response_map.get(b"peers6".as_slice()) {
+            match value {
+                Value::Str(peers6_bytes) => {
+                    peers.extend(get_peers_with_binary_model_ipv6(peers6_bytes)?);
+                }
+                _ => bail!("peers6 key was provided but its value was not a string"),
+            }
+        }
 
         Ok(Response::Ok(OkResponse {
             warning_message,
@@ -384,17 +404,20 @@ impl TrackerClient {
         left: Option<u64>,
         event: Event,
     ) -> Result<Response> {
-        let url = reqwest::Url::parse(&url)?;
-        let host = match url.host() {
-            Some(h) => h,
-            None => bail!("udp tracker url did not contain host: {url}"),
-        };
-        let port = match url.port() {
-            Some(p) => p,
-            None => bail!("udp tracker url did not contain port: {url}"),
-        };
+        let parsed = reqwest::Url::parse(&url)?;
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("tracker URL has no host"))?;
+        let port = parsed
+            .port()
+            .ok_or_else(|| anyhow::anyhow!("tracker URL has no port"))?;
 
-        let dest_addr = format!("{host}:{port}");
+        let addresses: Vec<SocketAddr> = lookup_host((host, port)).await?.collect();
+        let dest_addr = addresses
+            .iter()
+            .copied()
+            .find(SocketAddr::is_ipv4)
+            .ok_or_else(|| anyhow::anyhow!("No IPv4 address found"))?;
         let socket = UdpSocket::bind("0.0.0.0:0").await?;
         if let Err(e) = socket.connect(dest_addr).await {
             bail!(e);
@@ -453,7 +476,7 @@ impl TrackerClient {
         announce_buf[16..36].copy_from_slice(&info_hash);
         announce_buf[36..56].copy_from_slice(self.peer_id.as_bytes());
         announce_buf[56..64].copy_from_slice(&downloaded.to_be_bytes());
-        announce_buf[64..72].copy_from_slice(&left.unwrap_or(0xFFFFFFFF).to_be_bytes()); // BEP 0015 does not specify what to do if left is not provided, so we use 0xFFFFFFFF like other clients do
+        announce_buf[64..72].copy_from_slice(&left.unwrap_or(u64::MAX).to_be_bytes()); // BEP 0015 does not specify what to do if left is not provided, so we use max u64 like other clients do
         announce_buf[72..80].copy_from_slice(&uploaded.to_be_bytes());
         let event_id: u32 = match event {
             Event::None => 0,
@@ -462,6 +485,8 @@ impl TrackerClient {
             Event::Stopped => 3,
         };
         announce_buf[80..84].copy_from_slice(&event_id.to_be_bytes());
+        // announce_buf[84..88] is the our own IP address, leaving it to 0 is ok, it is an optional field
+        announce_buf[88..92].copy_from_slice(&self.announce_key.to_be_bytes());
         announce_buf[92..96].copy_from_slice(&(-1i32).to_be_bytes());
         announce_buf[96..98].copy_from_slice(&self.listening_port.to_be_bytes());
         if let Err(e) = socket.send(&announce_buf).await {
@@ -509,20 +534,27 @@ impl TrackerClient {
                 let seeders = u32::from_be_bytes(seeders_buf);
 
                 let mut peers = Vec::new();
-                let address_len = 4; // todo check if we are using ipv6
-                if (bytes_recv - 20) % 6 != 0 {
+                let address_len = if dest_addr.is_ipv6() { 16 } else { 4 };
+                let peer_size = address_len + 2;
+                if (bytes_recv - 20) % peer_size != 0 {
                     bail!(
-                        "got announce response but size is not valid: addresses field is not divisible by 6: {}",
+                        "got announce response but size is not valid: addresses field is not divisible by {peer_size}: {}",
                         bytes_recv - 20
                     );
                 }
                 for i in (20..bytes_recv).step_by(address_len + 2) {
-                    let ip = ipv4_compact_to_string(
-                        recv_announce_buf[i..i + 4]
+                    let ip = if dest_addr.is_ipv6() {
+                        let ip_bytes: [u8; 16] = recv_announce_buf[i..i + 16]
                             .try_into()
-                            .expect("we already checked that the vec is 6 bytes"),
-                    );
-                    let peer_port_bytes = &recv_announce_buf[i + 4..i + 6];
+                            .expect("we already checked the vec len");
+                        Ipv6Addr::from(ip_bytes).to_string()
+                    } else {
+                        let ip_bytes: [u8; 4] = recv_announce_buf[i..i + 4]
+                            .try_into()
+                            .expect("we already checked the vec len");
+                        Ipv4Addr::from(ip_bytes).to_string()
+                    };
+                    let peer_port_bytes = &recv_announce_buf[i + address_len..i + peer_size];
                     let port = peer_port_bytes[0] as u16 * 256 + peer_port_bytes[1] as u16;
                     peers.push(Peer {
                         peer_id: None,
@@ -595,17 +627,13 @@ fn get_peers_with_binary_model(peers_bytes: &[u8]) -> Result<Vec<Peer>> {
         bail!("Peers list is provided in binary model but it is not aligned to 6 bytes");
     }
     let mut peers_list: Vec<Peer> = Vec::new();
-    for i in (0..peers_bytes.len()).step_by(6) {
-        let peer_ip_bytes = &peers_bytes[i..i + 4];
-        let ip = [
-            peer_ip_bytes[0].to_string(),
-            peer_ip_bytes[1].to_string(),
-            peer_ip_bytes[2].to_string(),
-            peer_ip_bytes[3].to_string(),
-        ]
-        .join(".");
-        let peer_port_bytes = &peers_bytes[i + 4..i + 6];
-        let port = peer_port_bytes[0] as u16 * 256 + peer_port_bytes[1] as u16;
+    for chunk in peers_bytes.chunks_exact(6) {
+        let ip_bytes: [u8; 4] = chunk[..4]
+            .try_into()
+            .expect("chunks_exact returns exact elems");
+
+        let ip = Ipv4Addr::from(ip_bytes).to_string();
+        let port = u16::from_be_bytes([chunk[4], chunk[5]]);
 
         peers_list.push(Peer {
             peer_id: None,
@@ -613,6 +641,30 @@ fn get_peers_with_binary_model(peers_bytes: &[u8]) -> Result<Vec<Peer>> {
             port,
         });
     }
+
+    Ok(peers_list)
+}
+
+fn get_peers_with_binary_model_ipv6(peers_bytes: &[u8]) -> Result<Vec<Peer>> {
+    if !peers_bytes.len().is_multiple_of(18) {
+        bail!("Peers list is provided in binary model for ipv6 but it is not aligned to 18 bytes");
+    }
+    let mut peers_list = Vec::with_capacity(peers_bytes.len() / 18);
+    for chunk in peers_bytes.chunks_exact(18) {
+        let ip_bytes: [u8; 16] = chunk[..16]
+            .try_into()
+            .expect("chunks_exact returns exact elems");
+
+        let ip = Ipv6Addr::from(ip_bytes).to_string();
+        let port = u16::from_be_bytes([chunk[16], chunk[17]]);
+
+        peers_list.push(Peer {
+            peer_id: None,
+            ip,
+            port,
+        });
+    }
+
     Ok(peers_list)
 }
 
@@ -646,6 +698,37 @@ mod tests {
             Peer {
                 peer_id: None,
                 ip: "5.6.7.8".to_string(),
+                port: 1213,
+            },
+        ]
+        .to_vec();
+
+        assert_matches!(peers_result, Ok(peers) => {
+            assert_eq!(peers, expected)
+        });
+    }
+
+    #[test]
+    fn binary_peer_conversion_ipv6() {
+        let byte_peers = [
+            // IP: 2001:db8::1
+            0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x01, 0x00, 0x50, // port 80
+            // IP: 2001:db8::2
+            0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x02, 0x04, 0xbd, // port 1213
+        ]
+        .to_vec();
+        let peers_result = get_peers_with_binary_model_ipv6(&byte_peers);
+        let expected = [
+            Peer {
+                peer_id: None,
+                ip: "2001:db8::1".to_string(),
+                port: 80,
+            },
+            Peer {
+                peer_id: None,
+                ip: "2001:db8::2".to_string(),
                 port: 1213,
             },
         ]
