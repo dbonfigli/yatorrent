@@ -55,7 +55,9 @@ struct Args {
 
     /// Local IP addresses to listen on for incoming peer connections for the torrent protocol (comma or space separated)
     #[arg(
+        short,
         long = "listen-ips",
+        env,
         value_delimiter = ',',
         num_args = 1..,
         default_values_t = [

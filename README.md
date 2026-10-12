@@ -77,8 +77,8 @@ Options:
           Magnet Link URI (optional, either this or a torrent file must be provided) [env: MAGNET_URI=]
   -b, --base-path <BASE_PATH>
           Base path where files are downloaded (directory will be created if it does not exist) [env: BASE_PATH=] [default: _current working dir_]
-      --listen-ips <LISTEN_IPS>...
-          Local IP addresses to listen on for incoming peer connections for the torrent protocol (comma or space separated) [default: 0.0.0.0 ::]
+  -l, --listen-ips <LISTEN_IPS>...
+          Local IP addresses to listen on for incoming peer connections for the torrent protocol (comma or space separated) [env: LISTEN_IPS=] [default: 0.0.0.0 ::]
   -p, --port <PORT>
           Listening port for Torrent protocol [env: PORT=] [default: 8000]
   -d, --dht-port <DHT_PORT>
