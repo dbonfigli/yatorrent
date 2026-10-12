@@ -15,6 +15,7 @@ Yatorrent is a fast and lightweight BitTorrent client written from scratch in Ru
 ## Supported Platforms
 
 It is cross-platform: runs on Linux, macOS, and Windows.
+Supports both IPv4 and IPv6, but DHT is implemented only for IPv4.
 
 ## Performance
 
@@ -76,6 +77,8 @@ Options:
           Magnet Link URI (optional, either this or a torrent file must be provided) [env: MAGNET_URI=]
   -b, --base-path <BASE_PATH>
           Base path where files are downloaded (directory will be created if it does not exist) [env: BASE_PATH=] [default: _current working dir_]
+      --listen-ips <LISTEN_IPS>...
+          Local IP addresses to listen on for incoming peer connections for the torrent protocol (comma or space separated) [default: 0.0.0.0 ::]
   -p, --port <PORT>
           Listening port for Torrent protocol [env: PORT=] [default: 8000]
   -d, --dht-port <DHT_PORT>

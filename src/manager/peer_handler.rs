@@ -1,6 +1,6 @@
 use core::fmt;
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -179,6 +179,7 @@ pub enum ToNewIncomingPeersHandlerMsg {
 }
 
 pub async fn run_new_incoming_peers_handler(
+    bind_ips: Vec<IpAddr>,
     info_hash: [u8; 20],
     own_peer_id: String,
     tcp_wire_protocol_listening_port: u16,
@@ -235,111 +236,116 @@ pub async fn run_new_incoming_peers_handler(
         }
     });
 
-    let addr = format!("0.0.0.0:{tcp_wire_protocol_listening_port}");
-    log::info!("starting listening to torrent protocol (tcp) at: {addr}");
-    let incoming_connection_listener = TcpListener::bind(addr)
-        .await
-        .expect("failed binding to torrent protocol tcp port");
-
-    if tcp_wire_protocol_listening_port == 0 {
-        match incoming_connection_listener.local_addr() {
-            Ok(local_addr) => log::info!(
-                "listening port for torrent protocol (tcp) is {}",
-                local_addr.port()
-            ),
-            Err(e) => log::warn!("could not get listening port for torrent protocol: {e}"),
-        }
-    }
-
     let pending_handshakes = Arc::new(Semaphore::new(MAX_PENDING_INCOMING_HANDSHAKES));
 
-    tokio::spawn(async move {
-        loop {
-            log::debug!("waiting for incoming peer connections...");
-            // never timeout on accept, wait forever if needed
-            let mut stream = match incoming_connection_listener.accept().await {
-                Ok((stream, _)) => stream,
-                Err(e) => {
-                    log::warn!("accept failed: {e}");
-                    continue;
-                }
-            };
-            let ok_to_accept_connection_lock = ok_to_accept_connection.lock().await;
-            let ok_to_accept_connection = *ok_to_accept_connection_lock;
-            drop(ok_to_accept_connection_lock);
-            if !ok_to_accept_connection {
-                log::trace!(
-                    "reached limit of incoming connections, shutting down new connection from: {}",
-                    addr_or_unknown(&stream)
-                );
-                _ = stream.shutdown().await;
+    for ip in bind_ips {
+        let addr = SocketAddr::new(ip, tcp_wire_protocol_listening_port);
+        log::info!("starting listening to torrent protocol (tcp) at: {addr}");
+        // in case of binding to 0.0.0.0 and ::, 0.0.0.0 must come first because :: could bind to both ipv4 and ipv6,
+        // causing Address already in use (os error 48). This is harmless but misleading.
+        let incoming_connection_listener = match TcpListener::bind(addr).await {
+            Ok(incoming_connection_listener) => incoming_connection_listener,
+            Err(e) => {
+                log::error!("failed binding to {addr} for torrent protocol (tcp): {e}");
                 continue;
             }
+        };
 
-            let pending_handshake_permit = match pending_handshakes.clone().try_acquire_owned() {
-                Ok(permit) => permit,
-                Err(_) => {
-                    log::debug!(
-                        "rejecting incoming connection from {}: pending handshake limit reached ({MAX_PENDING_INCOMING_HANDSHAKES})",
+        let pending_handshakes = pending_handshakes.clone();
+        let ok_to_accept_connection = ok_to_accept_connection.clone();
+        let piece_completion_status = piece_completion_status.clone();
+        let metadata_size = metadata_size.clone();
+        let own_peer_id = own_peer_id.clone();
+        let peer_handler_to_torrent_manager_tx = peer_handler_to_torrent_manager_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                log::debug!("waiting for incoming peer connections at {addr}...");
+                // never timeout on accept, wait forever if needed
+                let mut stream = match incoming_connection_listener.accept().await {
+                    Ok((stream, _)) => stream,
+                    Err(e) => {
+                        log::warn!("accept failed: {e}");
+                        continue;
+                    }
+                };
+                let ok_to_accept_connection_lock = ok_to_accept_connection.lock().await;
+                let ok_to_accept_connection = *ok_to_accept_connection_lock;
+                drop(ok_to_accept_connection_lock);
+                if !ok_to_accept_connection {
+                    log::trace!(
+                        "reached limit of incoming connections, shutting down new connection from: {}",
                         addr_or_unknown(&stream)
                     );
                     _ = stream.shutdown().await;
                     continue;
                 }
-            };
 
-            let piece_completion_status_for_spawn = piece_completion_status.clone();
-            let metadata_size_for_spawn = metadata_size.clone();
-            let own_peer_id_for_spawn = own_peer_id.clone();
-            let peer_handler_to_torrent_manager_tx_for_spawn =
-                peer_handler_to_torrent_manager_tx.clone();
-            tokio::spawn(async move {
-                let _pending_handshake_permit = pending_handshake_permit; // hold the permit till the end of the task
-                let pcs_lock = piece_completion_status_for_spawn.lock().await;
-                let pcs = pcs_lock.clone();
-                drop(pcs_lock);
-                let metadata_size_lock = metadata_size_for_spawn.lock().await;
-                let metadata_size = *metadata_size_lock;
-                drop(metadata_size_lock);
-                let remote_addr = addr_or_unknown(&stream);
-                match timeout(
-                    DEFAULT_TIMEOUT,
-                    handshake(
-                        stream,
-                        info_hash,
-                        own_peer_id_for_spawn,
-                        tcp_wire_protocol_listening_port,
-                        pcs,
-                        metadata_size,
-                    ),
-                )
-                .await
+                let pending_handshake_permit = match pending_handshakes.clone().try_acquire_owned()
                 {
-                    Err(_elapsed) => {
-                        log::trace!("handshake timeout with peer {remote_addr}");
-                    }
-                    Ok(Err(e)) => {
-                        log::trace!("handshake failed with peer {remote_addr}: {e}");
-                    }
-                    Ok(Ok(HandshakeResult {
-                        tcp_stream,
-                        peer_id,
-                        supports_fast_extension,
-                    })) => {
-                        send_handler_msg_to_torrent_manager(
-                            &peer_handler_to_torrent_manager_tx_for_spawn,
-                            PeerHandlerToManagerMsg::NewPeer {
-                                tcp_stream,
-                                peer_id,
-                                supports_fast_extension,
-                                listening_torrent_protocol_port: None,
-                            },
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        log::debug!(
+                            "rejecting incoming connection from {}: pending handshake limit reached ({MAX_PENDING_INCOMING_HANDSHAKES})",
+                            addr_or_unknown(&stream)
                         );
+                        _ = stream.shutdown().await;
+                        continue;
                     }
-                }
-            });
-        }
-    });
+                };
+
+                let piece_completion_status_for_spawn = piece_completion_status.clone();
+                let metadata_size_for_spawn = metadata_size.clone();
+                let own_peer_id_for_spawn = own_peer_id.clone();
+                let peer_handler_to_torrent_manager_tx_for_spawn =
+                    peer_handler_to_torrent_manager_tx.clone();
+                tokio::spawn(async move {
+                    let _pending_handshake_permit = pending_handshake_permit; // hold the permit till the end of the task
+                    let pcs_lock = piece_completion_status_for_spawn.lock().await;
+                    let pcs = pcs_lock.clone();
+                    drop(pcs_lock);
+                    let metadata_size_lock = metadata_size_for_spawn.lock().await;
+                    let metadata_size = *metadata_size_lock;
+                    drop(metadata_size_lock);
+                    let remote_addr = addr_or_unknown(&stream);
+                    match timeout(
+                        DEFAULT_TIMEOUT,
+                        handshake(
+                            stream,
+                            info_hash,
+                            own_peer_id_for_spawn,
+                            tcp_wire_protocol_listening_port,
+                            pcs,
+                            metadata_size,
+                        ),
+                    )
+                    .await
+                    {
+                        Err(_elapsed) => {
+                            log::trace!("handshake timeout with peer {remote_addr}");
+                        }
+                        Ok(Err(e)) => {
+                            log::trace!("handshake failed with peer {remote_addr}: {e}");
+                        }
+                        Ok(Ok(HandshakeResult {
+                            tcp_stream,
+                            peer_id,
+                            supports_fast_extension,
+                        })) => {
+                            send_handler_msg_to_torrent_manager(
+                                &peer_handler_to_torrent_manager_tx_for_spawn,
+                                PeerHandlerToManagerMsg::NewPeer {
+                                    tcp_stream,
+                                    peer_id,
+                                    supports_fast_extension,
+                                    listening_torrent_protocol_port: None,
+                                },
+                            );
+                        }
+                    }
+                });
+            }
+        });
+    }
 }
 
 fn addr_or_unknown(stream: &TcpStream) -> String {

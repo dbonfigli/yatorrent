@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -66,6 +66,7 @@ pub struct TorrentManagerStorageOptions {
 }
 
 pub struct TorrentManagerNetworkOptions {
+    pub listen_ips: Vec<IpAddr>,
     pub listening_torrent_wire_protocol_port: u16,
     pub listening_dht_port: u16,
     pub dht_nodes: Vec<HostAndPort>,
@@ -87,6 +88,7 @@ struct TorrentManagerConfig {
     base_path: PathBuf,
     info_hash: [u8; 20],
     own_peer_id: String,
+    listen_ips: Vec<IpAddr>,
     listening_torrent_wire_protocol_port: u16,
     listening_dht_port: u16,
     show_peers_stats: bool,
@@ -158,6 +160,7 @@ impl TorrentManager {
             base_path: PathBuf::from(base_path),
             info_hash: opts.info_hash,
             own_peer_id: own_peer_id.clone(),
+            listen_ips: opts.network_opts.listen_ips.clone(),
             listening_torrent_wire_protocol_port: opts
                 .network_opts
                 .listening_torrent_wire_protocol_port,
@@ -238,11 +241,7 @@ impl TorrentManager {
         };
 
         let tracker_requestor = TrackerRequestor::new(
-            vec![
-                // in the future for BEP7 we can list all the non loopback interface, or user defined interfaces
-                "0.0.0.0".parse().expect("cannot be wrong"), // bind to ip v4
-                "::".parse().expect("cannot be wrong"),      // bind to ip v6
-            ],
+            opts.network_opts.listen_ips,
             own_peer_id,
             opts.tracker_announce_list,
             opts.network_opts.listening_torrent_wire_protocol_port,
@@ -298,6 +297,7 @@ impl TorrentManager {
 
         // start incoming peer connections handler
         peer_handler::run_new_incoming_peers_handler(
+            self.torrent_manager_config.listen_ips.clone(),
             self.torrent_manager_config.info_hash,
             self.torrent_manager_config.own_peer_id.clone(),
             self.torrent_manager_config

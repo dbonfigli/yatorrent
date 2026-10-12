@@ -3,6 +3,7 @@ use clap::{CommandFactory, Parser};
 use manager::torrent_manager;
 use size::{self, Size};
 use std::env::current_dir;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::process::exit;
 use std::{fmt, fs};
 use torrent_manager::TorrentManager;
@@ -51,6 +52,18 @@ struct Args {
     /// Base path where files are downloaded (directory will be created if it does not exist)
     #[arg(short, long, env, default_value_t = current_dir().expect("current directory cannot be used").to_str().expect("current path must be an utf8 string").to_string())]
     base_path: String,
+
+    /// Local IP addresses to listen on for incoming peer connections for the torrent protocol (comma or space separated)
+    #[arg(
+        long = "listen-ips",
+        value_delimiter = ',',
+        num_args = 1..,
+        default_values_t = [
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+        ]
+    )]
+    listen_ips: Vec<IpAddr>,
 
     /// Listening port for Torrent protocol
     #[arg(short, long, env, default_value_t = 8000)]
@@ -212,6 +225,7 @@ async fn main() -> Result<()> {
                 let tm_res = TorrentManager::new(TorrentManagerOptions {
                     info_hash: m.info_hash,
                     network_opts: TorrentManagerNetworkOptions {
+                        listen_ips: args.listen_ips,
                         listening_torrent_wire_protocol_port: args.port,
                         listening_dht_port: args.dht_port,
                         dht_nodes: m.nodes.clone(),
@@ -267,6 +281,7 @@ async fn main() -> Result<()> {
                 let tm_res = TorrentManager::new(TorrentManagerOptions {
                     info_hash: magnet.info_hash,
                     network_opts: TorrentManagerNetworkOptions {
+                        listen_ips: args.listen_ips,
                         listening_torrent_wire_protocol_port: args.port,
                         listening_dht_port: args.dht_port,
                         dht_nodes: Vec::new(),

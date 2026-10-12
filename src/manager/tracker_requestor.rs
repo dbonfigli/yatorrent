@@ -168,18 +168,20 @@ async fn request_to_tracker(
     {
         Err(e) => {
             match e.downcast_ref() {
-                Some(NoTrackerError) => log::info!("could not perform request to tracker: {e}"),
-                _ => log::debug!("could not perform request to tracker: {e}"),
+                Some(NoTrackerError) => log::debug!("no known trackers to perform requests to"),
+                _ => log::debug!(
+                    "could not perform request to tracker (from source: \"{bind_ip}\"): {e}"
+                ),
             }
             bail!(e);
         }
         Ok(Response::Failure(msg)) => {
-            log::debug!("tracker responded with failure: {msg}");
+            log::debug!("tracker responded with failure (from source: \"{bind_ip}\"): {msg}");
             bail!(msg);
         }
         Ok(Response::Ok(ok_response)) => {
             if let Some(msg) = ok_response.warning_message.clone() {
-                log::warn!("tracker sent a warning: {msg}");
+                log::warn!("tracker sent a warning (from source: \"{bind_ip}\"): {msg}");
             }
             log::info!(
                 "tracker request succeeded: seeders: {}; leechers: {}; peers provided: {}",
@@ -191,7 +193,7 @@ async fn request_to_tracker(
                     .map_or("unknown".to_string(), |i| i.to_string()),
                 ok_response.peers.len()
             );
-            log::trace!("full tracker response:\n{ok_response:?}");
+            log::trace!("full tracker response (from source: \"{bind_ip}\"):\n{ok_response:?}");
 
             // an http tracker could reply with a hostname, on this case, we immediatelly resolve the dns name
             // and we put as peers all the IPs resolved: when selecting the peers to connect, we will avoid
