@@ -10,6 +10,7 @@ use crate::{
         torrent_manager::{TorrentManager, peer_context::AdvertisedPeer, util::should_choke},
     },
     torrent_protocol::wire_protocol::Message,
+    tracker::Event,
 };
 use rand::seq::IndexedRandom;
 
@@ -225,7 +226,8 @@ impl TorrentManager {
 
     async fn send_status_to_tracker(&mut self) {
         self.tracker_requestor
-            .async_update_to_tracker(
+            .async_request_to_tracker(
+                Event::None,
                 &self.peers_ctx.advertised_peers,
                 self.torrent_data_status.as_ref().map(|f| f.bytes_left()),
                 (

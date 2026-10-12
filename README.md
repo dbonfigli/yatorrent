@@ -4,6 +4,7 @@ Yatorrent is a fast and lightweight BitTorrent client written from scratch in Ru
 
 - [BEP 5 - DHT Protocol](http://bittorrent.org/beps/bep_0005.html);
 - [BEP 6 - Fast Extension](https://www.bittorrent.org/beps/bep_0006.html);
+- [BEP 7 - IPv6 Tracker Extension](https://www.bittorrent.org/beps/bep_0007.html);
 - [BEP 9 - Extension for Peers to Send Metadata Files (Magnet links)](https://www.bittorrent.org/beps/bep_0009.html);
 - [BEP 10 - Extension Protocol](http://bittorrent.org/beps/bep_0010.html);
 - [BEP 11 - Peer Exchange (PEX)](https://www.bittorrent.org/beps/bep_0011.html);
@@ -112,7 +113,6 @@ Options:
 - check for stalled downloads / try new peers if no current one has a piece we want
 - remove not interested peers if we are also not interested if connection count is high
 - text-based UI
-- [BEP 7 - IPv6 Tracker Extension](https://www.bittorrent.org/beps/bep_0007.html);
 - [BEP 29 - uTorrent transport protocol](https://www.bittorrent.org/beps/bep_0029.html)
 - [BEP 55 - Holepunch extension](https://www.bittorrent.org/beps/bep_0055.html)
 

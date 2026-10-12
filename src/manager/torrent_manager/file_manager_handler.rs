@@ -193,7 +193,7 @@ impl TorrentManager {
                             .completed()
                     {
                         log::warn!("torrent download completed");
-                        let join_handle = self
+                        let join_handles = self
                             .tracker_requestor
                             .async_request_to_tracker(
                                 Event::Completed,
@@ -206,12 +206,14 @@ impl TorrentManager {
                             )
                             .await;
                         if self.torrent_manager_config.exit_when_complete
-                            && let Some(join_handle) = join_handle
+                            && let Some(join_handles) = join_handles
                         {
                             // if we must exit when complete, let's wait for the tracker completed event request
                             // even if we block here, we don't care, we will shut down soon
                             log::info!("sending completed event to tracker...");
-                            let _ = join_handle.await;
+                            for handle in join_handles {
+                                let _ = handle.await;
+                            }
                             self.send_shutdown_request(ShutdownRequest::Success);
                         }
                     }

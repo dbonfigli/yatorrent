@@ -258,14 +258,18 @@ impl TorrentManager {
             )
             .await
         {
-            Some(tracker_req_join_handle) => {
+            Some(tracker_req_join_handles) => {
                 tokio::select!(
                     _ = tokio::signal::ctrl_c() => {
                         // on a second Ctrl+C, we just give up waiting for the tracker request
                         return;
                     }
-                    _ = tracker_req_join_handle => {
-                        // tracker request completed
+                    _ = async {
+                        for handle in tracker_req_join_handles {
+                            let _ = handle.await;
+                        }
+                    } => {
+                        // All tracker requests completed
                         return;
                     }
                 )

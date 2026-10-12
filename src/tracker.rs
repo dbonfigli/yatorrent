@@ -6,15 +6,15 @@ use tokio::{
 
 use crate::bencoding::Value;
 use anyhow::{Result, bail};
-use rand::{RngExt, seq::IndexedRandom};
+use rand::seq::IndexedRandom;
 use std::{
     fmt,
+    fmt::Display,
     io::Read,
-    net::{Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     str,
     time::Duration,
 };
-use std::{fmt::Display, net::Ipv6Addr};
 use thiserror::Error;
 
 const UDP_TRACKER_MAGIC_CONSTANT: [u8; 8] = 0x41727101980u64.to_be_bytes();
@@ -83,7 +83,7 @@ impl Display for Response {
     }
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Copy)]
 pub enum Event {
     None,
     Started,
@@ -117,13 +117,17 @@ pub struct TrackerClient {
 }
 
 impl TrackerClient {
-    pub fn new(peer_id: String, trackers_url: Vec<Vec<String>>, listening_port: u16) -> Self {
+    pub fn new(
+        peer_id: String,
+        announce_key: u32,
+        trackers_url: Vec<Vec<String>>,
+        listening_port: u16,
+    ) -> Self {
         let mut randomized_tiers: Vec<Vec<String>> = Vec::new();
         for tier in trackers_url {
             let randomized_tier = tier.sample(&mut rand::rng(), tier.len()).cloned().collect();
             randomized_tiers.push(randomized_tier);
         }
-        let announce_key: u32 = rand::rng().random();
         TrackerClient {
             peer_id,
             announce_key,
@@ -136,6 +140,7 @@ impl TrackerClient {
 
     pub async fn request(
         &mut self,
+        bind_ip: IpAddr,
         info_hash: [u8; 20],
         uploaded: u64,
         downloaded: u64,
@@ -148,6 +153,7 @@ impl TrackerClient {
                 let url = self.trackers_url[tier_idx][tracker_idx].clone();
                 match self
                     .request_to_tracker(
+                        bind_ip,
                         url.clone(),
                         info_hash,
                         uploaded,
@@ -159,11 +165,14 @@ impl TrackerClient {
                 {
                     Ok(Response::Failure(msg)) => {
                         error_message.push(format!(
-                            "tracker {} errored: \"{}\"",
+                            "tracker {} errored (from source: \"{bind_ip}\"): \"{}\"",
                             url.clone(),
                             msg.clone()
                         ));
-                        log::debug!("tracker {} responded with failure: {msg}", url.clone());
+                        log::debug!(
+                            "tracker {} responded with failure (from source: \"{bind_ip}\"): {msg}",
+                            url.clone()
+                        );
                         log::debug!("will try next tracker if it exists...");
                     }
                     Ok(Response::Ok(response)) => {
@@ -201,6 +210,7 @@ impl TrackerClient {
 
     async fn request_to_tracker(
         &self,
+        bind_ip: IpAddr,
         url: String,
         info_hash: [u8; 20],
         uploaded: u64,
@@ -209,11 +219,11 @@ impl TrackerClient {
         event: Event,
     ) -> Result<Response> {
         if url.starts_with("http") {
-            log::debug!("trying reaching http tracker {url}...");
-            self.request_to_http_tracker(url, info_hash, uploaded, downloaded, left, event)
+            log::debug!("trying reaching http tracker {url} (from source: \"{bind_ip}\")...");
+            self.request_to_http_tracker(bind_ip, url, info_hash, uploaded, downloaded, left, event)
                 .await
         } else if url.starts_with("udp") {
-            log::debug!("trying reaching udp tracker {url}...");
+            log::debug!("trying reaching udp tracker {url} (from source: \"{bind_ip}\")...");
             let parsed = reqwest::Url::parse(&url)?;
             let host = parsed
                 .host_str()
@@ -223,10 +233,14 @@ impl TrackerClient {
                 .ok_or_else(|| anyhow::anyhow!("tracker URL {url} has no port"))?;
             let addresses: Vec<SocketAddr> = lookup_host((host, port))
                 .await?
-                .filter(SocketAddr::is_ipv4)
+                .filter(|s| match bind_ip {
+                    IpAddr::V4(_) => SocketAddr::is_ipv4(s),
+                    IpAddr::V6(_) => SocketAddr::is_ipv6(s),
+                })
                 .collect();
             if addresses.is_empty() {
-                bail!("No IPv4 address found for {url}");
+                let stack = if bind_ip.is_ipv4() { "IPv4" } else { "IPv6" };
+                bail!("No {stack} address found for {url}");
             }
             let mut attempts = 0;
             let mut errors = Vec::new();
@@ -235,6 +249,7 @@ impl TrackerClient {
                     log::debug!("trying reaching udp tracker {url} with address {dest_addr}...");
                     match self
                         .request_to_udp_tracker(
+                            bind_ip,
                             *dest_addr,
                             info_hash,
                             uploaded,
@@ -246,6 +261,9 @@ impl TrackerClient {
                     {
                         Ok(r) => return Ok(r),
                         Err(e) => {
+                            if is_network_unreachable(&e) {
+                                bail!("network unreachable binding on ip \"{bind_ip}\": {e}");
+                            }
                             errors.push(e);
                         }
                     }
@@ -273,6 +291,7 @@ impl TrackerClient {
 
     async fn request_to_http_tracker(
         &self,
+        bind_ip: IpAddr,
         url: String,
         info_hash: [u8; 20],
         uploaded: u64,
@@ -308,6 +327,7 @@ impl TrackerClient {
         log::debug!("requesting url: {url}");
 
         let body: Vec<u8> = match ClientBuilder::new()
+            .local_address(bind_ip)
             .connect_timeout(TRACKER_REQUEST_CONNECT_TIMEOUT)
             .timeout(TRACKER_REQUEST_TIMEOUT)
             .build()?
@@ -421,6 +441,7 @@ impl TrackerClient {
 
     async fn request_to_udp_tracker(
         &self,
+        bind_ip: IpAddr,
         dest_addr: SocketAddr,
         info_hash: [u8; 20],
         uploaded: u64,
@@ -428,12 +449,7 @@ impl TrackerClient {
         left: Option<u64>,
         event: Event,
     ) -> Result<Response> {
-        let bind_addr = if dest_addr.is_ipv6() {
-            "[::]:0"
-        } else {
-            "0.0.0.0:0"
-        };
-
+        let bind_addr = SocketAddr::new(bind_ip, 0);
         let socket = UdpSocket::bind(bind_addr).await?;
         if let Err(e) = socket.connect(dest_addr).await {
             bail!(e);
@@ -754,4 +770,19 @@ mod tests {
             assert_eq!(peers, expected)
         });
     }
+}
+
+fn is_network_unreachable(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        let Some(err) = cause.downcast_ref::<std::io::Error>() else {
+            return false;
+        };
+
+        matches!(
+            err.kind(),
+            std::io::ErrorKind::NetworkUnreachable
+                | std::io::ErrorKind::HostUnreachable
+                | std::io::ErrorKind::AddrNotAvailable
+        )
+    })
 }

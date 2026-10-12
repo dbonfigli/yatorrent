@@ -238,6 +238,11 @@ impl TorrentManager {
         };
 
         let tracker_requestor = TrackerRequestor::new(
+            vec![
+                // in the future for BEP7 we can list all the non loopback interface, or user defined interfaces
+                "0.0.0.0".parse().expect("cannot be wrong"), // bind to ip v4
+                "::".parse().expect("cannot be wrong"),      // bind to ip v6
+            ],
             own_peer_id,
             opts.tracker_announce_list,
             opts.network_opts.listening_torrent_wire_protocol_port,

@@ -1,4 +1,6 @@
 use anyhow::{Result, bail};
+use rand::RngExt;
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::net::lookup_host;
@@ -7,76 +9,97 @@ use tokio::task::JoinHandle;
 use crate::manager::torrent_manager::peer_context::{AdvertisedPeers, PeerAddrAndId};
 use crate::tracker::{Event, NoTrackerError, Response, TrackerClient};
 
-pub struct TrackerRequestor {
+struct TrackerClientEntry {
+    bind_ip: IpAddr,
     tracker_client: Arc<Mutex<TrackerClient>>,
     last_tracker_request_time: Option<Instant>,
+}
+
+impl TrackerClientEntry {
+    async fn async_request_to_tracker(
+        &mut self,
+        event: Event,
+        advertised_peers: &AdvertisedPeers,
+        bytes_left: Option<u64>,
+        uploaded_downloaded_bytes: (u64, u64),
+        info_hash: [u8; 20],
+    ) -> JoinHandle<()> {
+        self.last_tracker_request_time = Some(Instant::now());
+
+        let mut cloned_tracker_client = {
+            self.tracker_client
+                .lock()
+                .expect("another user panicked while holding the lock")
+                .clone()
+        };
+
+        let mut advertised_peers = advertised_peers.clone();
+        let bind_ip = self.bind_ip;
+        let tracker_client_arc = self.tracker_client.clone();
+        tokio::spawn(async move {
+            if let Ok(latest_advertised_peers) = request_to_tracker(
+                &mut cloned_tracker_client,
+                bind_ip,
+                event,
+                bytes_left,
+                info_hash,
+                uploaded_downloaded_bytes.0,
+                uploaded_downloaded_bytes.1,
+            )
+            .await
+            {
+                advertised_peers.insert(latest_advertised_peers);
+                *tracker_client_arc
+                    .lock()
+                    .expect("another user panicked while holding the lock") = cloned_tracker_client;
+            }
+        })
+    }
+}
+
+pub struct TrackerRequestor {
+    tracker_clients: Vec<TrackerClientEntry>,
     completed_sent_to_tracker: bool,
     info_hash: [u8; 20],
 }
 
 impl TrackerRequestor {
     pub fn new(
+        bind_ips: Vec<IpAddr>,
         peer_id: String,
         trackers_url: Vec<Vec<String>>,
         listening_torrent_wire_protocol_port: u16,
         info_hash: [u8; 20],
     ) -> Self {
+        let announce_key: u32 = rand::rng().random();
+        let mut tracker_clients = Vec::new();
+        for bind_ip in bind_ips {
+            tracker_clients.push(TrackerClientEntry {
+                bind_ip,
+                tracker_client: Arc::new(Mutex::new(TrackerClient::new(
+                    peer_id.clone(),
+                    announce_key,
+                    trackers_url.clone(),
+                    listening_torrent_wire_protocol_port,
+                ))),
+                last_tracker_request_time: None,
+            });
+        }
+
         TrackerRequestor {
-            tracker_client: Arc::new(Mutex::new(TrackerClient::new(
-                peer_id,
-                trackers_url,
-                listening_torrent_wire_protocol_port,
-            ))),
-            last_tracker_request_time: None,
+            tracker_clients,
             completed_sent_to_tracker: false,
             info_hash,
         }
     }
 
-    // used to send recurring updates to tracker
-    pub async fn async_update_to_tracker(
-        &mut self,
-        advertised_peers: &AdvertisedPeers,
-        bytes_left: Option<u64>,
-        uploaded_downloaded_bytes: (u64, u64),
-    ) {
-        let tracker_request_interval = {
-            let tracker_client_mg = self
-                .tracker_client
-                .lock()
-                .expect("another user panicked while holding the lock");
-            let tracker_request_interval = tracker_client_mg.tracker_request_interval;
-            drop(tracker_client_mg);
-            tracker_request_interval
-        };
-        if self.last_tracker_request_time.is_none_or(|last_req_time| {
-            Instant::now().duration_since(last_req_time) > tracker_request_interval
-        }) {
-            let event = if self.last_tracker_request_time.is_none() {
-                Event::Started
-            } else {
-                Event::None
-            };
-            _ = self
-                .async_request_to_tracker(
-                    event,
-                    advertised_peers,
-                    bytes_left,
-                    uploaded_downloaded_bytes,
-                )
-                .await;
-        }
-    }
-
-    // used for specific events
     pub async fn async_request_to_tracker(
         &mut self,
         event: Event,
         advertised_peers: &AdvertisedPeers,
         bytes_left: Option<u64>,
         uploaded_downloaded_bytes: (u64, u64),
-    ) -> Option<JoinHandle<()>> // optional join handle so callers can wait for the tracker request completion if needed
-    {
+    ) -> Option<Vec<JoinHandle<()>>> {
         if event == Event::Completed {
             if self.completed_sent_to_tracker {
                 return None;
@@ -84,49 +107,57 @@ impl TrackerRequestor {
             self.completed_sent_to_tracker = true;
         }
 
-        self.last_tracker_request_time = Some(Instant::now());
-        let (uploaded_bytes, downloaded_bytes) = uploaded_downloaded_bytes;
-        let tracker_client_mg = self
-            .tracker_client
-            .lock()
-            .expect("another user panicked while holding the lock");
-        let tracker_client = tracker_client_mg.clone();
-        drop(tracker_client_mg);
-        let tracker_client_arc = self.tracker_client.clone();
-        let info_hash = self.info_hash;
-        let mut advertised_peers = advertised_peers.clone();
-        Some(tokio::spawn(async move {
-            if let Ok((updated_tracker_client, latest_advertised_peers)) = request_to_tracker(
-                tracker_client,
-                event,
-                bytes_left,
-                info_hash,
-                uploaded_bytes,
-                downloaded_bytes,
-            )
-            .await
-            {
-                let mut tracker_client_mg = tracker_client_arc
+        let mut join_handles = Vec::new();
+        for t in self.tracker_clients.iter_mut() {
+            let event = if event == Event::None && t.last_tracker_request_time.is_none() {
+                Event::Started
+            } else {
+                event
+            };
+
+            // avoid sending if this is a normal update and we already sent a request to the tracker
+            if event == Event::None {
+                let tracker_request_interval = t
+                    .tracker_client
                     .lock()
-                    .expect("another user panicked while holding the lock");
-                *tracker_client_mg = updated_tracker_client;
-                drop(tracker_client_mg);
-                advertised_peers.insert(latest_advertised_peers);
+                    .expect("another user panicked while holding the lock")
+                    .tracker_request_interval;
+
+                if let Some(last_req_time) = t.last_tracker_request_time
+                    && Instant::now().duration_since(last_req_time) < tracker_request_interval
+                {
+                    continue;
+                }
             }
-        }))
+
+            let join_handle = t
+                .async_request_to_tracker(
+                    event,
+                    advertised_peers,
+                    bytes_left,
+                    uploaded_downloaded_bytes,
+                    self.info_hash,
+                )
+                .await;
+            join_handles.push(join_handle);
+        }
+
+        Some(join_handles)
     }
 }
 
 async fn request_to_tracker(
-    mut tracker_client: TrackerClient,
+    tracker_client: &mut TrackerClient,
+    bind_ip: IpAddr,
     event: Event,
     bytes_left: Option<u64>,
     info_hash: [u8; 20],
     uploaded_bytes: u64,
     downloaded_bytes: u64,
-) -> Result<(TrackerClient, Vec<PeerAddrAndId>)> {
+) -> Result<Vec<PeerAddrAndId>> {
     match tracker_client
         .request(
+            bind_ip,
             info_hash,
             uploaded_bytes,
             downloaded_bytes,
@@ -138,17 +169,17 @@ async fn request_to_tracker(
         Err(e) => {
             match e.downcast_ref() {
                 Some(NoTrackerError) => log::info!("could not perform request to tracker: {e}"),
-                _ => log::error!("could not perform request to tracker: {e}"),
+                _ => log::debug!("could not perform request to tracker: {e}"),
             }
             bail!(e);
         }
         Ok(Response::Failure(msg)) => {
-            log::error!("tracker responded with failure: {msg}");
+            log::debug!("tracker responded with failure: {msg}");
             bail!(msg);
         }
         Ok(Response::Ok(ok_response)) => {
             if let Some(msg) = ok_response.warning_message.clone() {
-                log::error!("tracker sent a warning: {msg}");
+                log::warn!("tracker sent a warning: {msg}");
             }
             log::info!(
                 "tracker request succeeded: seeders: {}; leechers: {}; peers provided: {}",
@@ -184,7 +215,7 @@ async fn request_to_tracker(
                 }
             }
 
-            Ok((tracker_client, peers))
+            Ok(peers)
         }
     }
 }
