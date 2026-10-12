@@ -1,10 +1,12 @@
 use core::fmt;
 use std::collections::HashMap;
+use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
+use socket2::{Domain, Protocol as SocketProtocol, Socket, Type};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
@@ -241,10 +243,9 @@ pub async fn run_new_incoming_peers_handler(
     for ip in bind_ips {
         let addr = SocketAddr::new(ip, tcp_wire_protocol_listening_port);
         log::info!("starting listening to torrent protocol (tcp) at: {addr}");
-        // in case of binding to 0.0.0.0 and ::, 0.0.0.0 must come first because :: could bind to both ipv4 and ipv6,
-        // causing Address already in use (os error 48). This is harmless but misleading.
-        let incoming_connection_listener = match TcpListener::bind(addr).await {
-            Ok(incoming_connection_listener) => incoming_connection_listener,
+
+        let incoming_connection_listener = match bind_tcp_listener(addr) {
+            Ok(listener) => listener,
             Err(e) => {
                 log::error!("failed binding to {addr} for torrent protocol (tcp): {e}");
                 continue;
@@ -353,6 +354,33 @@ fn addr_or_unknown(stream: &TcpStream) -> String {
         Ok(s) => s.to_string(),
         Err(_) => "<unknown>".to_string(),
     }
+}
+
+// in order to avoid clashes with :: and 0.0.0.0 when they are defined on binding addresses,
+// where :: can potentially bind to both ipv4 and ipv6, we don't use TcpListener from tokio,
+// but we use socket2 to specifically bind to ipv6 only
+fn bind_tcp_listener(addr: SocketAddr) -> io::Result<TcpListener> {
+    let domain = match addr.ip() {
+        IpAddr::V4(_) => Domain::IPV4,
+        IpAddr::V6(_) => Domain::IPV6,
+    };
+    let socket = Socket::new(domain, Type::STREAM, Some(SocketProtocol::TCP))?;
+    if addr.is_ipv6() {
+        socket.set_only_v6(true)?;
+    }
+
+    // same as tokio, where on mac and linux it enables SO_REUSEADDR, while not on Windows
+    #[cfg(not(windows))]
+    socket.set_reuse_address(true)?;
+
+    socket.bind(&addr.into())?;
+    socket.listen(512)?; // same value as tokio TcpListener
+    socket.set_nonblocking(true)?; // to make it work with tokio
+
+    // convert socket2 to a std socket
+    let std_listener: std::net::TcpListener = socket.into();
+    // and from there to a tokio listener
+    TcpListener::from_std(std_listener)
 }
 
 pub fn start_peer_msg_handlers(
