@@ -42,20 +42,20 @@ extern crate assert_matches;
 #[command(version, about, long_about = None)]
 struct Args {
     /// Path to the .torrent file (optional, either this or a magnet link must be provided)
-    #[arg(short, long, env)]
+    #[arg(short = 't', long, env)]
     torrent_file: Option<String>,
 
     /// Magnet Link URI (optional, either this or a torrent file must be provided)
-    #[arg(short, long, env)]
+    #[arg(short = 'm', long, env)]
     magnet_uri: Option<String>,
 
     /// Base path where files are downloaded (directory will be created if it does not exist)
-    #[arg(short, long, env, default_value_t = current_dir().expect("current directory cannot be used").to_str().expect("current path must be an utf8 string").to_string())]
+    #[arg(short = 'b', long, env, default_value_t = current_dir().expect("current directory cannot be used").to_str().expect("current path must be an utf8 string").to_string())]
     base_path: String,
 
     /// Local IP addresses to listen on for incoming peer connections for the torrent protocol (comma or space separated)
     #[arg(
-        short,
+        short= 'i',
         long = "listen-ips",
         env,
         value_delimiter = ',',
@@ -68,19 +68,19 @@ struct Args {
     listen_ips: Vec<IpAddr>,
 
     /// Listening port for Torrent protocol
-    #[arg(short, long, env, default_value_t = 8000)]
+    #[arg(short = 'p', long, env, default_value_t = 8000)]
     port: u16,
 
     /// Listening port for DHT protocol. 0 means the client will use a random port (will be logged)
-    #[arg(short, long, env, default_value_t = 8001)]
+    #[arg(short = 'd', long, env, default_value_t = 8001)]
     dht_port: u16,
 
     /// Log level
-    #[arg(short, long, env, default_value_t = LogLevels::Info)]
+    #[arg(short = 'l', long, env, default_value_t = LogLevels::Info)]
     log_level: LogLevels,
 
     /// Show detailed stats per peer
-    #[arg(short, long, env, default_value_t = false)]
+    #[arg(short = 's', long, env, default_value_t = false)]
     show_peers_stats: bool,
 
     /// Maximum number of connected peers allowed
