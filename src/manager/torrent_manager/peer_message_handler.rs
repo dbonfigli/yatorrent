@@ -4,6 +4,7 @@ use crate::{
     bencoding::Value::{self, Dict, Int},
     manager::{
         BLOCK_SIZE_B,
+        peer::PeerDiscoverySource,
         peer_handler::ToPeerMsg,
         pex_handler,
         torrent_manager::{TorrentManager, peer_context::PeerAddrAndId, util},
@@ -404,7 +405,9 @@ impl TorrentManager {
                         .into_iter()
                         .map(|p| PeerAddrAndId::new(p, None))
                         .collect();
-                self.peers_ctx.advertised_peers.insert(new_peers);
+                self.peers_ctx
+                    .advertised_peers
+                    .insert(new_peers, PeerDiscoverySource::PEX);
             }
             _ if extension_id == peer.get_ut_metadata_id() => {
                 // this is an ut_metadata extended message

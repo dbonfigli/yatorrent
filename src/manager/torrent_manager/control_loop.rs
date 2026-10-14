@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     time::Duration,
 };
@@ -8,7 +9,7 @@ use tokio::{net::TcpStream, sync::mpsc, time::MissedTickBehavior};
 use crate::{
     dht::dht_manager::DhtToTorrentManagerMsg,
     manager::{
-        peer::Peer,
+        peer::{Peer, PeerDiscoverySource},
         peer_handler::{
             self, FastExtensionSupport, MAX_OUTSTANDING_INCOMING_PIECE_BLOCK_REQUESTS_PER_PEER,
             PeerError, PeerHandlerToManagerMsg, PeerMessage, ToNewIncomingPeersHandlerMsg,
@@ -104,8 +105,8 @@ impl TorrentManager {
                         PeerHandlerToManagerMsg::Error(peer_addr, error_type) => {
                             self.handle_peer_error(peer_addr, error_type);
                         }
-                        PeerHandlerToManagerMsg::NewPeer { tcp_stream, peer_id, supports_fast_extension, listening_torrent_protocol_port } => {
-                            self.handle_new_peer(tcp_stream, peer_id, supports_fast_extension, listening_torrent_protocol_port).await;
+                        PeerHandlerToManagerMsg::NewPeer { tcp_stream, peer_id, supports_fast_extension, listening_torrent_protocol_port, known_via } => {
+                            self.handle_new_peer(tcp_stream, peer_id, supports_fast_extension, listening_torrent_protocol_port, known_via).await;
                         }
                         PeerHandlerToManagerMsg::PieceBlockRequestFulfilled(peer_addr) => {
                             self.handle_piece_block_request_fulfilled(peer_addr);
@@ -127,12 +128,13 @@ impl TorrentManager {
     }
 
     fn handle_new_peer_from_dht(&mut self, ip: Ipv4Addr, port: u16) {
-        self.peers_ctx
-            .advertised_peers
-            .insert(vec![PeerAddrAndId::new(
+        self.peers_ctx.advertised_peers.insert(
+            vec![PeerAddrAndId::new(
                 SocketAddr::new(IpAddr::V4(ip), port),
                 None,
-            )]);
+            )],
+            PeerDiscoverySource::DHT,
+        );
     }
 
     fn handle_peer_error(&mut self, peer_addr: SocketAddr, error_type: PeerError) {
@@ -156,6 +158,7 @@ impl TorrentManager {
         peer_id: [u8; 20],
         supports_fast_extension: FastExtensionSupport,
         peer_listening_torrent_protocol_port: Option<u16>,
+        known_via: HashSet<PeerDiscoverySource>,
     ) {
         // disconnect if we detect via peer_id that we are already connected to this peer
         if self
@@ -226,6 +229,7 @@ impl TorrentManager {
                 to_peer_cancel_tx,
                 supports_fast_extension,
                 peer_listening_torrent_protocol_port,
+                known_via,
             ),
         );
         log::debug!("new peer initialized: {peer_addr}");

@@ -1,11 +1,11 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::{Arc, Mutex},
     time::Instant,
 };
 
-use crate::manager::peer::Peer;
+use crate::manager::peer::{Peer, PeerDiscoverySource};
 
 const HIGH_NUMBER_OF_BAD_PEERS: usize = 10000;
 const HIGH_NUMBER_OF_ADVERTISED_PEERS: usize = 10000;
@@ -54,6 +54,7 @@ impl PeersContext {
 pub struct AdvertisedPeer {
     pub peer_id: Option<String>,
     pub last_connection_attempt: Option<Instant>,
+    pub known_via: HashSet<PeerDiscoverySource>,
     known_since: Instant,
 }
 
@@ -67,7 +68,10 @@ impl AdvertisedPeers {
         let mut s = AdvertisedPeers {
             advertised_peers: Arc::new(Mutex::new(HashMap::new())),
         };
-        s.insert(initial_advertised_peers);
+        s.insert(
+            initial_advertised_peers,
+            PeerDiscoverySource::ConfigProvided,
+        );
         s
     }
 
@@ -97,19 +101,22 @@ impl AdvertisedPeers {
         }
     }
 
-    pub fn insert(&mut self, peers: Vec<PeerAddrAndId>) {
+    pub fn insert(&mut self, peers: Vec<PeerAddrAndId>, known_via: PeerDiscoverySource) {
         let mut advertised_peers_mg = self
             .advertised_peers
             .lock()
             .expect("another user panicked while holding the lock");
         for p in peers {
-            advertised_peers_mg
-                .entry(p.peer_addr)
-                .or_insert_with(|| AdvertisedPeer {
-                    peer_id: p.peer_id,
-                    last_connection_attempt: None,
-                    known_since: Instant::now(),
-                });
+            let advertised_peer =
+                advertised_peers_mg
+                    .entry(p.peer_addr)
+                    .or_insert_with(|| AdvertisedPeer {
+                        peer_id: p.peer_id,
+                        last_connection_attempt: None,
+                        known_since: Instant::now(),
+                        known_via: HashSet::new(),
+                    });
+            advertised_peer.known_via.insert(known_via);
         }
 
         if advertised_peers_mg.len() > HIGH_NUMBER_OF_ADVERTISED_PEERS * 2 {

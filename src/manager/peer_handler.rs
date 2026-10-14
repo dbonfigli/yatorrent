@@ -1,5 +1,5 @@
 use core::fmt;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -15,6 +15,7 @@ use tokio::sync::{Mutex, Semaphore};
 use tokio::time::{sleep, timeout};
 
 use crate::bencoding::Value;
+use crate::manager::peer::PeerDiscoverySource;
 use crate::manager::rate_limiter::RateLimiter;
 use crate::torrent_protocol::wire_protocol::{
     BlockRequest, Handshake, Message, Protocol, ProtocolReadHalf, ProtocolWriteHalf,
@@ -54,6 +55,7 @@ pub enum PeerHandlerToManagerMsg {
         peer_id: [u8; 20],
         supports_fast_extension: FastExtensionSupport,
         listening_torrent_protocol_port: Option<u16>,
+        known_via: HashSet<PeerDiscoverySource>,
     },
     PieceBlockRequestFulfilled(SocketAddr),
 }
@@ -81,6 +83,7 @@ pub async fn connect_to_new_peer(
     piece_completion_status: Option<Vec<bool>>,
     metadata_size: Option<i64>,
     peer_handler_to_torrent_manager_tx: UnboundedSender<PeerHandlerToManagerMsg>,
+    known_via: HashSet<PeerDiscoverySource>,
 ) {
     log::trace!(
         "initiating connection to peer: {dest}, (id: {})",
@@ -163,6 +166,7 @@ pub async fn connect_to_new_peer(
                             peer_id,
                             supports_fast_extension,
                             listening_torrent_protocol_port: Some(dest.port()),
+                            known_via,
                         },
                     );
                 }
@@ -339,6 +343,9 @@ pub async fn run_new_incoming_peers_handler(
                                     peer_id,
                                     supports_fast_extension,
                                     listening_torrent_protocol_port: None,
+                                    known_via: HashSet::from([
+                                        PeerDiscoverySource::RemoteInitiated,
+                                    ]),
                                 },
                             );
                         }

@@ -87,7 +87,7 @@ impl TorrentManager {
                 || bandwidth_up > 0.0
             {
                 log::info!(
-                    "{peer_addr:>22} rtt: {rtt}, {bandwidth_tracker}, pending blocks: {pending_block_requests} (on {assigned_pieces} pieces), haves: {have}, client: {client_version}{choking}{stalled}",
+                    "{peer_addr:>22} rtt: {rtt}, {bandwidth_tracker}, pending blocks: {pending_block_requests} (on {assigned_pieces} pieces), haves: {have}, client: {client_version}{choking}{stalled}, known via: {known_via}",
                     bandwidth_tracker = peer.get_bandwidth_tracker(),
                     assigned_pieces = self.piece_requestor.get_assigned_pieces_for_peer(peer_addr),
                     client_version = peer.get_client_version(),
@@ -108,6 +108,15 @@ impl TorrentManager {
                         format!("{}{}", ", ".normal(), "stalled".red())
                     } else {
                         "".to_string()
+                    },
+                    known_via = {
+                        let mut v: Vec<_> = peer
+                            .get_known_via()
+                            .iter()
+                            .map(|source| source.to_string())
+                            .collect();
+                        v.sort();
+                        v.join(",")
                     },
                 )
             }

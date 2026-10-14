@@ -6,6 +6,7 @@ use std::time::Instant;
 use tokio::net::lookup_host;
 use tokio::task::JoinHandle;
 
+use crate::manager::peer::PeerDiscoverySource;
 use crate::manager::torrent_manager::peer_context::{AdvertisedPeers, PeerAddrAndId};
 use crate::tracker::{Event, NoTrackerError, Response, TrackerClient};
 
@@ -48,7 +49,7 @@ impl TrackerClientEntry {
             )
             .await
             {
-                advertised_peers.insert(latest_advertised_peers);
+                advertised_peers.insert(latest_advertised_peers, PeerDiscoverySource::Tracker);
                 *tracker_client_arc
                     .lock()
                     .expect("another user panicked while holding the lock") = cloned_tracker_client;

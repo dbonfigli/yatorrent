@@ -1,5 +1,6 @@
+use core::fmt;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     net::SocketAddr,
     time::{Duration, Instant},
 };
@@ -43,6 +44,27 @@ pub enum MetadataMessage {
     Reject(u64), // piece idx
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PeerDiscoverySource {
+    ConfigProvided,
+    Tracker,
+    DHT,
+    PEX,
+    RemoteInitiated,
+}
+
+impl fmt::Display for PeerDiscoverySource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ConfigProvided => write!(f, "ConfigProvided"),
+            Self::Tracker => write!(f, "Tracker"),
+            Self::DHT => write!(f, "DHT"),
+            Self::PEX => write!(f, "PEX"),
+            Self::RemoteInitiated => write!(f, "RemoteInitiated"),
+        }
+    }
+}
+
 pub struct Peer {
     // peer_addr is ip:port of the remote peer we are connected to.
     // Note that the ip and port could NOT be one the peer is listening too for the torrent protocol,
@@ -70,6 +92,7 @@ pub struct Peer {
     rtt_samples: VecDeque<Duration>,
     supports_fast_extension: bool,
     listening_torrent_protocol_port: Option<u16>,
+    known_via: HashSet<PeerDiscoverySource>,
 }
 
 impl Peer {
@@ -81,6 +104,7 @@ impl Peer {
         to_peer_cancel_tx: Sender<ToPeerCancelMsg>,
         supports_fast_extension: FastExtensionSupport,
         listening_torrent_protocol_port: Option<u16>,
+        known_via: HashSet<PeerDiscoverySource>,
     ) -> Self {
         Peer {
             peer_addr,
@@ -110,6 +134,7 @@ impl Peer {
             rtt: None,
             rtt_samples: VecDeque::new(),
             listening_torrent_protocol_port,
+            known_via: known_via,
         }
     }
 
@@ -512,6 +537,10 @@ impl Peer {
             .collect();
         dropped.truncate(MAX_PEX_PEER_LIST_SIZE_FOR_PERIODIC_MESSAGES);
         self.send_pex_extension_message(added, dropped).await;
+    }
+
+    pub fn get_known_via(&self) -> &HashSet<PeerDiscoverySource> {
+        &self.known_via
     }
 }
 

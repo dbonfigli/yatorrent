@@ -119,6 +119,7 @@ impl TorrentManager {
                 self.peers_channels
                     .peer_handler_to_torrent_manager_tx
                     .clone(),
+                advertised_peer.known_via.clone(),
             ));
         }
         // update last connection attempt
