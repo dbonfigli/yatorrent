@@ -111,7 +111,7 @@ impl UnhashedDataSize {
     fn decrease(&self, size: usize) {
         // relaxed here and below is ok since threshold check is approximate by nature
         self.current
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 Some(current.saturating_sub(size))
             })
             .expect("etch_update closure always returns Some");
