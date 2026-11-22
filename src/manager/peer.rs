@@ -294,10 +294,6 @@ impl Peer {
         self.ut_pex_id != 0
     }
 
-    pub fn get_ut_pex_id(&self) -> u8 {
-        self.ut_pex_id
-    }
-
     pub fn set_ut_pex_id(&mut self, ut_pex_id: u8) {
         self.ut_pex_id = ut_pex_id;
     }
@@ -343,10 +339,6 @@ impl Peer {
             log::trace!("sending pex message to peer {}: {pex_msg}", self.peer_addr);
             self.send(ToPeerMsg::Send(pex_msg)).await;
         }
-    }
-
-    pub fn get_ut_metadata_id(&self) -> u8 {
-        self.ut_metadata_id
     }
 
     pub fn set_ut_metadata_id(&mut self, ut_metadata_id: u8) {

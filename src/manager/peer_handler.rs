@@ -30,8 +30,8 @@ const MAX_PENDING_INCOMING_HANDSHAKES: usize = 32;
 const CANCELLATION_DURATION: Duration = Duration::from_secs(120);
 const PEER_NO_INBOUND_TRAFFIC_FAILURE_TIMEOUT: Duration = Duration::from_secs(180);
 
-const UT_PEX_EXTENSION_ID: i64 = 1;
-const UT_METADATA_EXTENSION_ID: i64 = 2;
+pub const UT_PEX_EXTENSION_ID: i64 = 1;
+pub const UT_METADATA_EXTENSION_ID: i64 = 2;
 pub enum ToPeerMsg {
     Send(Message),
     Disconnect(),

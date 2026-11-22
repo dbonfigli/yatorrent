@@ -5,7 +5,7 @@ use crate::{
     manager::{
         BLOCK_SIZE_B,
         peer::PeerDiscoverySource,
-        peer_handler::ToPeerMsg,
+        peer_handler::{ToPeerMsg, UT_METADATA_EXTENSION_ID, UT_PEX_EXTENSION_ID},
         pex_handler,
         torrent_manager::{TorrentManager, peer_context::PeerAddrAndId, util},
     },
@@ -398,7 +398,7 @@ impl TorrentManager {
                 self.handle_receive_extended_message_handshake(extended_message, peer_addr)
                     .await;
             }
-            _ if extension_id == peer.get_ut_pex_id() => {
+            _ if extension_id == UT_PEX_EXTENSION_ID as u8 => {
                 // this is an ut_pex extended message
                 let new_peers =
                     pex_handler::parse_extended_message_ut_pex(extended_message, peer_addr)
@@ -409,7 +409,7 @@ impl TorrentManager {
                     .advertised_peers
                     .insert(new_peers, PeerDiscoverySource::PEX);
             }
-            _ if extension_id == peer.get_ut_metadata_id() => {
+            _ if extension_id == UT_METADATA_EXTENSION_ID as u8 => {
                 // this is an ut_metadata extended message
                 self.handle_receive_extended_message_ut_metadata(
                     extended_message,
