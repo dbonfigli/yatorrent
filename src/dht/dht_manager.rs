@@ -302,6 +302,7 @@ impl DhtManager {
 
     // bootstrap initial known nodes by finding nodes closest to self
     async fn bootstrap_dht(&mut self, socket: &UdpSocket) {
+        self.last_routing_table_bootstrap = Instant::now();
         for bootstrap_node in self.bootstrap_nodes.clone() {
             match lookup_host(&bootstrap_node).await {
                 Err(e) => {
