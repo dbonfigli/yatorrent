@@ -112,10 +112,18 @@ impl Peer {
             // at start, a peer starts choked and we start also choked
             // we need to set the choke time back in time so that we immediatelly
             // unchoke if possible
-            am_choking_since: Some(Instant::now() - Duration::from_mins(60)),
+            am_choking_since: Some(
+                Instant::now()
+                    .checked_sub(Duration::from_mins(60))
+                    .unwrap_or(Instant::now()),
+            ),
             am_interested: false,
             // same considerations as am_choking_since
-            peer_choking_since: Some(Instant::now() - Duration::from_mins(60)),
+            peer_choking_since: Some(
+                Instant::now()
+                    .checked_sub(Duration::from_mins(60))
+                    .unwrap_or(Instant::now()),
+            ),
             peer_interested: false,
             haves: num_pieces.map(|n| vec![false; n]),
             to_peer_tx,

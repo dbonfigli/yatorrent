@@ -40,7 +40,9 @@ impl DhtHandler {
             dht_nodes,
             to_dht_manager_tx,
             to_dht_manager_rx: Some(to_dht_manager_rx),
-            last_get_peers_requested_time: Instant::now() - DHT_NEW_PEER_COOL_OFF_PERIOD
+            last_get_peers_requested_time: Instant::now()
+                .checked_sub(DHT_NEW_PEER_COOL_OFF_PERIOD)
+                .unwrap_or(Instant::now())
                 + DHT_BOOTSTRAP_TIME, // try to wait a bit before the first request, in hope that the dht has been bootstrapped, so that we don't waste time for the first request with an empty routing table
             dht_to_torrent_manager_rx,
             dht_to_torrent_manager_tx,
